@@ -84,11 +84,11 @@ func (p *QuPanSouPlugin) Name() string {
 
 // Priority 返回插件优先级
 func (p *QuPanSouPlugin) Priority() int {
-	return 2 // 较高优先级
+	return 3 // 中等优先级
 }
 
 // Search 执行搜索并返回结果
-func (p *QuPanSouPlugin) Search(keyword string) ([]model.SearchResult, error) {
+func (p *QuPanSouPlugin) Search(keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
 	// 生成缓存键
 	cacheKey := keyword
 	

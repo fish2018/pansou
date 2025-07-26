@@ -43,13 +43,13 @@ func NewHunhepanAsyncPlugin() *HunhepanAsyncPlugin {
 }
 
 // Search 执行搜索并返回结果
-func (p *HunhepanAsyncPlugin) Search(keyword string) ([]model.SearchResult, error) {
-	// 使用保存的主缓存键
-	return p.AsyncSearch(keyword, p.doSearch, p.MainCacheKey)
+func (p *HunhepanAsyncPlugin) Search(keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
+	// 使用保存的主缓存键，传递ext参数但不使用
+	return p.AsyncSearch(keyword, p.doSearch, p.MainCacheKey, ext)
 }
 
 // doSearch 实际的搜索实现
-func (p *HunhepanAsyncPlugin) doSearch(client *http.Client, keyword string) ([]model.SearchResult, error) {
+func (p *HunhepanAsyncPlugin) doSearch(client *http.Client, keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
 	// 创建结果通道和错误通道
 	resultChan := make(chan []HunhepanItem, 3)
 	errChan := make(chan error, 3)
@@ -126,66 +126,117 @@ func (p *HunhepanAsyncPlugin) doSearch(client *http.Client, keyword string) ([]m
 
 // searchAPI 向单个API发送请求
 func (p *HunhepanAsyncPlugin) searchAPI(client *http.Client, apiURL, keyword string) ([]HunhepanItem, error) {
-	// 构建请求体
-	reqBody := map[string]interface{}{
-		"q":      keyword,
-		"exact":  true,
-		"page":   1,
-		"size":   DefaultPageSize,
-		"type":   "",
-		"time":   "",
-		"from":   "web",
-		"user_id": 0,
-		"filter": true,
+	maxPages := 3 // 最多获取3页数据，可以根据需要调整
+	
+	// 创建结果通道和错误通道
+	resultChan := make(chan []HunhepanItem, maxPages)
+	errChan := make(chan error, maxPages)
+	
+	// 创建等待组，用于等待所有页面请求完成
+	var wg sync.WaitGroup
+	
+	// 并发请求每一页
+	for page := 1; page <= maxPages; page++ {
+		wg.Add(1)
+		
+		go func(pageNum int) {
+			defer wg.Done()
+			
+			// 构建请求体
+			reqBody := map[string]interface{}{
+				"q":      keyword,
+				"exact":  true,
+				"page":   pageNum,
+				"size":   DefaultPageSize,
+				"type":   "",
+				"time":   "",
+				"from":   "web",
+				"user_id": 0,
+				"filter": true,
+			}
+			
+			jsonData, err := json.Marshal(reqBody)
+			if err != nil {
+				errChan <- fmt.Errorf("marshal request failed (page %d): %w", pageNum, err)
+				return
+			}
+			
+			req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
+			if err != nil {
+				errChan <- fmt.Errorf("create request failed (page %d): %w", pageNum, err)
+				return
+			}
+			
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+			
+			// 根据不同的API设置不同的Referer
+			if strings.Contains(apiURL, "qkpanso.com") {
+				req.Header.Set("Referer", "https://qkpanso.com/search")
+			} else if strings.Contains(apiURL, "kuake8.com") {
+				req.Header.Set("Referer", "https://kuake8.com/search")
+			} else if strings.Contains(apiURL, "hunhepan.com") {
+				req.Header.Set("Referer", "https://hunhepan.com/search")
+			}
+			
+			// 发送请求
+			resp, err := client.Do(req)
+			if err != nil {
+				errChan <- fmt.Errorf("request failed (page %d): %w", pageNum, err)
+				return
+			}
+			defer resp.Body.Close()
+			
+			// 读取响应体
+			respBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				errChan <- fmt.Errorf("read response body failed (page %d): %w", pageNum, err)
+				return
+			}
+			
+			// 解析响应
+			var apiResp HunhepanResponse
+			if err := json.Unmarshal(respBody, &apiResp); err != nil {
+				errChan <- fmt.Errorf("decode response failed (page %d): %w", pageNum, err)
+				return
+			}
+			
+			// 检查响应状态
+			if apiResp.Code != 200 {
+				errChan <- fmt.Errorf("API returned error (page %d): %s", pageNum, apiResp.Msg)
+				return
+			}
+			
+			// 将结果发送到通道
+			resultChan <- apiResp.Data.List
+		}(page)
 	}
 	
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request failed: %w", err)
+	// 启动一个goroutine等待所有页面请求完成并关闭通道
+	go func() {
+		wg.Wait()
+		close(resultChan)
+		close(errChan)
+	}()
+	
+	// 收集结果
+	var allItems []HunhepanItem
+	for items := range resultChan {
+		allItems = append(allItems, items...)
 	}
 	
-	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("create request failed: %w", err)
+	// 检查是否有错误
+	var errors []error
+	for err := range errChan {
+		errors = append(errors, err)
 	}
 	
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	
-	// 根据不同的API设置不同的Referer
-	if strings.Contains(apiURL, "qkpanso.com") {
-		req.Header.Set("Referer", "https://qkpanso.com/search")
-	} else if strings.Contains(apiURL, "kuake8.com") {
-		req.Header.Set("Referer", "https://kuake8.com/search")
-	} else if strings.Contains(apiURL, "hunhepan.com") {
-		req.Header.Set("Referer", "https://hunhepan.com/search")
+	// 如果没有获取到任何结果且有错误，则返回第一个错误
+	if len(allItems) == 0 && len(errors) > 0 {
+		return nil, errors[0]
 	}
 	
-	// 发送请求
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	
-	// 读取响应体
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response body failed: %w", err)
-	}
-	
-	// 解析响应
-	var apiResp HunhepanResponse
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return nil, fmt.Errorf("decode response failed: %w", err)
-	}
-	
-	// 检查响应状态
-	if apiResp.Code != 200 {
-		return nil, fmt.Errorf("API returned error: %s", apiResp.Msg)
-	}
-	
-	return apiResp.Data.List, nil
+	return allItems, nil
 }
 
 // deduplicateItems 去重处理

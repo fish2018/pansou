@@ -56,13 +56,13 @@ func NewPan666AsyncPlugin() *Pan666AsyncPlugin {
 }
 
 // Search 执行搜索并返回结果
-func (p *Pan666AsyncPlugin) Search(keyword string) ([]model.SearchResult, error) {
-	// 使用保存的主缓存键
-	return p.AsyncSearch(keyword, p.doSearch, p.MainCacheKey)
+func (p *Pan666AsyncPlugin) Search(keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
+	// 使用保存的主缓存键，传递ext参数但不使用
+	return p.AsyncSearch(keyword, p.doSearch, p.MainCacheKey, ext)
 }
 
 // doSearch 实际的搜索实现
-func (p *Pan666AsyncPlugin) doSearch(client *http.Client, keyword string) ([]model.SearchResult, error) {
+func (p *Pan666AsyncPlugin) doSearch(client *http.Client, keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
 	// 初始化随机数种子
 	rand.Seed(time.Now().UnixNano())
 	

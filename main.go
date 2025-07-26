@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/netutil"
 
 	"pansou/api"
 	"pansou/config"
@@ -21,6 +25,9 @@ import (
 	_ "pansou/plugin/pansearch"
 	_ "pansou/plugin/panta"
 	_ "pansou/plugin/qupansou"
+	_ "pansou/plugin/susu"
+	_ "pansou/plugin/panyq"
+	_ "pansou/plugin/xuexizhinan"
 	"pansou/service"
 	"pansou/util"
 )
@@ -53,6 +60,9 @@ func startServer() {
 	// 注册所有全局插件（通过init函数自动注册到全局注册表）
 	pluginManager.RegisterAllGlobalPlugins()
 	
+	// 更新默认并发数（使用实际插件数）
+	config.UpdateDefaultConcurrency(len(pluginManager.GetPlugins()))
+	
 	// 初始化搜索服务
 	searchService := service.NewSearchService(pluginManager)
 	
@@ -67,8 +77,11 @@ func startServer() {
 	
 	// 创建HTTP服务器
 	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: router,
+		Addr:         ":" + port,
+		Handler:      router,
+		ReadTimeout:  config.AppConfig.HTTPReadTimeout,
+		WriteTimeout: config.AppConfig.HTTPWriteTimeout,
+		IdleTimeout:  config.AppConfig.HTTPIdleTimeout,
 	}
 	
 	// 创建通道来接收操作系统信号
@@ -77,8 +90,26 @@ func startServer() {
 	
 	// 在单独的goroutine中启动服务器
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("启动服务器失败: %v", err)
+		// 如果设置了最大连接数，使用限制监听器
+		if config.AppConfig.HTTPMaxConns > 0 {
+			// 创建监听器
+			listener, err := net.Listen("tcp", srv.Addr)
+			if err != nil {
+				log.Fatalf("创建监听器失败: %v", err)
+			}
+			
+			// 创建限制连接数的监听器
+			limitListener := netutil.LimitListener(listener, config.AppConfig.HTTPMaxConns)
+			
+			// 使用限制监听器启动服务器
+			if err := srv.Serve(limitListener); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("启动服务器失败: %v", err)
+			}
+		} else {
+			// 使用默认方式启动服务器（不限制连接数）
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("启动服务器失败: %v", err)
+			}
 		}
 	}()
 	
@@ -113,6 +144,19 @@ func printServiceInfo(port string, pluginManager *plugin.PluginManager) {
 		fmt.Println("未使用代理")
 	}
 	
+	// 输出并发信息
+	if os.Getenv("CONCURRENCY") != "" {
+		fmt.Printf("默认并发数: %d (由环境变量CONCURRENCY指定)\n", config.AppConfig.DefaultConcurrency)
+	} else {
+		channelCount := len(config.AppConfig.DefaultChannels)
+		pluginCount := 0
+		if pluginManager != nil {
+			pluginCount = len(pluginManager.GetPlugins())
+		}
+		fmt.Printf("默认并发数: %d (= 频道数%d + 插件数%d + 10)\n", 
+			config.AppConfig.DefaultConcurrency, channelCount, pluginCount)
+	}
+	
 	// 输出缓存信息
 	if config.AppConfig.CacheEnabled {
 		fmt.Printf("缓存已启用: 路径=%s, 最大大小=%dMB, TTL=%d分钟\n", 
@@ -136,12 +180,58 @@ func printServiceInfo(port string, pluginManager *plugin.PluginManager) {
 		config.AppConfig.GCPercent, 
 		config.AppConfig.OptimizeMemory)
 	
+	// 输出HTTP服务器配置信息
+	readTimeoutMsg := ""
+	if os.Getenv("HTTP_READ_TIMEOUT") != "" {
+		readTimeoutMsg = "(由环境变量指定)"
+	} else {
+		readTimeoutMsg = "(自动计算)"
+	}
+	
+	writeTimeoutMsg := ""
+	if os.Getenv("HTTP_WRITE_TIMEOUT") != "" {
+		writeTimeoutMsg = "(由环境变量指定)"
+	} else {
+		writeTimeoutMsg = "(自动计算)"
+	}
+	
+	maxConnsMsg := ""
+	if os.Getenv("HTTP_MAX_CONNS") != "" {
+		maxConnsMsg = "(由环境变量指定)"
+	} else {
+		cpuCount := runtime.NumCPU()
+		maxConnsMsg = fmt.Sprintf("(自动计算: CPU核心数%d × 200)", cpuCount)
+	}
+	
+	fmt.Printf("HTTP服务器配置: 读取超时=%v %s, 写入超时=%v %s, 空闲超时=%v, 最大连接数=%d %s\n",
+		config.AppConfig.HTTPReadTimeout, readTimeoutMsg,
+		config.AppConfig.HTTPWriteTimeout, writeTimeoutMsg,
+		config.AppConfig.HTTPIdleTimeout,
+		config.AppConfig.HTTPMaxConns, maxConnsMsg)
+	
 	// 输出异步插件配置信息
 	if config.AppConfig.AsyncPluginEnabled {
-		fmt.Printf("异步插件已启用: 响应超时=%d秒, 最大工作者=%d, 最大任务=%d, 缓存TTL=%d小时\n",
+		// 检查工作者数量是否由环境变量指定
+		workersMsg := ""
+		if os.Getenv("ASYNC_MAX_BACKGROUND_WORKERS") != "" {
+			workersMsg = "(由环境变量指定)"
+		} else {
+			cpuCount := runtime.NumCPU()
+			workersMsg = fmt.Sprintf("(自动计算: CPU核心数%d × 5)", cpuCount)
+		}
+		
+		// 检查任务数量是否由环境变量指定
+		tasksMsg := ""
+		if os.Getenv("ASYNC_MAX_BACKGROUND_TASKS") != "" {
+			tasksMsg = "(由环境变量指定)"
+		} else {
+			tasksMsg = "(自动计算: 工作者数量 × 5)"
+		}
+		
+		fmt.Printf("异步插件已启用: 响应超时=%d秒, 最大工作者=%d %s, 最大任务=%d %s, 缓存TTL=%d小时\n",
 			config.AppConfig.AsyncResponseTimeout,
-			config.AppConfig.AsyncMaxBackgroundWorkers,
-			config.AppConfig.AsyncMaxBackgroundTasks,
+			config.AppConfig.AsyncMaxBackgroundWorkers, workersMsg,
+			config.AppConfig.AsyncMaxBackgroundTasks, tasksMsg,
 			config.AppConfig.AsyncCacheTTLHours)
 	} else {
 		fmt.Println("异步插件已禁用")

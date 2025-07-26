@@ -140,6 +140,25 @@ func SearchHandler(c *gin.Context) {
             }
         }
 
+        // 处理ext参数，JSON格式
+        var ext map[string]interface{}
+        extStr := c.Query("ext")
+        if extStr != "" && extStr != " " {
+            // 处理特殊情况：ext={}
+            if extStr == "{}" {
+                ext = make(map[string]interface{})
+            } else {
+                if err := jsonutil.Unmarshal([]byte(extStr), &ext); err != nil {
+                    c.JSON(http.StatusBadRequest, model.NewErrorResponse(400, "无效的ext参数格式: "+err.Error()))
+                    return
+                }
+            }
+        }
+        // 确保ext不为nil
+        if ext == nil {
+            ext = make(map[string]interface{})
+        }
+
         req = model.SearchRequest{
             Keyword:      keyword,
             Channels:     channels,
@@ -148,6 +167,7 @@ func SearchHandler(c *gin.Context) {
             ResultType:   resultType,
             SourceType:   sourceType,
             Plugins:      plugins,
+            Ext:          ext,
         }
     } else {
         // POST方式：从请求体获取
@@ -189,7 +209,7 @@ func SearchHandler(c *gin.Context) {
     }
     
     // 执行搜索
-    result, err := searchService.Search(req.Keyword, req.Channels, req.Concurrency, req.ForceRefresh, req.ResultType, req.SourceType, req.Plugins)
+    result, err := searchService.Search(req.Keyword, req.Channels, req.Concurrency, req.ForceRefresh, req.ResultType, req.SourceType, req.Plugins, req.Ext)
     
     if err != nil {
         response := model.NewErrorResponse(500, "搜索失败: "+err.Error())
@@ -299,6 +319,7 @@ func LoggerMiddleware() gin.HandlerFunc {
 | res | string | 否 | 结果类型：all(返回所有结果)、results(仅返回results)、merge(仅返回merged_by_type)，默认为merge |
 | src | string | 否 | 数据来源类型：all(默认，全部来源)、tg(仅Telegram)、plugin(仅插件) |
 | plugins | string[] | 否 | 指定搜索的插件列表，不指定则搜索全部插件 |
+| ext | object | 否 | 扩展参数，用于传递给插件的自定义参数，如{"title_en":"English Title", "is_all":true} |
 
 #### GET请求参数
 
@@ -311,6 +332,7 @@ func LoggerMiddleware() gin.HandlerFunc {
 | res | string | 否 | 结果类型：all(返回所有结果)、results(仅返回results)、merge(仅返回merged_by_type)，默认为merge |
 | src | string | 否 | 数据来源类型：all(默认，全部来源)、tg(仅Telegram)、plugin(仅插件) |
 | plugins | string | 否 | 指定搜索的插件列表，使用英文逗号分隔多个插件名，不指定则搜索全部插件 |
+| ext | string | 否 | JSON格式的扩展参数，用于传递给插件的自定义参数，如{"title_en":"English Title", "is_all":true} |
 
 #### 成功响应
 
@@ -410,7 +432,30 @@ if c.Request.URL.Query().Has("plugins") {
 }
 ```
 
-### 7.2 参数互斥与规范化处理
+### 7.2 扩展参数处理
+
+```go
+// 处理ext参数，JSON格式
+var ext map[string]interface{}
+extStr := c.Query("ext")
+if extStr != "" && extStr != " " {
+    // 处理特殊情况：ext={}
+    if extStr == "{}" {
+        ext = make(map[string]interface{})
+    } else {
+        if err := jsonutil.Unmarshal([]byte(extStr), &ext); err != nil {
+            c.JSON(http.StatusBadRequest, model.NewErrorResponse(400, "无效的ext参数格式: "+err.Error()))
+            return
+        }
+    }
+}
+// 确保ext不为nil
+if ext == nil {
+    ext = make(map[string]interface{})
+}
+```
+
+### 7.3 参数互斥与规范化处理
 
 ```go
 // 参数互斥逻辑：当src=tg时忽略plugins参数，当src=plugin时忽略channels参数

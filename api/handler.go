@@ -89,6 +89,25 @@ func SearchHandler(c *gin.Context) {
 			// 如果请求中不存在plugins参数，设置为nil
 			plugins = nil
 		}
+		
+		// 处理ext参数，JSON格式
+		var ext map[string]interface{}
+		extStr := c.Query("ext")
+		if extStr != "" && extStr != " " {
+			// 处理特殊情况：ext={}
+			if extStr == "{}" {
+				ext = make(map[string]interface{})
+			} else {
+				if err := jsonutil.Unmarshal([]byte(extStr), &ext); err != nil {
+					c.JSON(http.StatusBadRequest, model.NewErrorResponse(400, "无效的ext参数格式: "+err.Error()))
+					return
+				}
+			}
+		}
+		// 确保ext不为nil
+		if ext == nil {
+			ext = make(map[string]interface{})
+		}
 
 		req = model.SearchRequest{
 			Keyword:      keyword,
@@ -98,6 +117,7 @@ func SearchHandler(c *gin.Context) {
 			ResultType:   resultType,
 			SourceType:   sourceType,
 			Plugins:      plugins,
+			Ext:          ext,
 		}
 	} else {
 		// POST方式：从请求体获取
@@ -144,7 +164,7 @@ func SearchHandler(c *gin.Context) {
 	}
 	
 	// 执行搜索
-	result, err := searchService.Search(req.Keyword, req.Channels, req.Concurrency, req.ForceRefresh, req.ResultType, req.SourceType, req.Plugins)
+	result, err := searchService.Search(req.Keyword, req.Channels, req.Concurrency, req.ForceRefresh, req.ResultType, req.SourceType, req.Plugins, req.Ext)
 	
 	if err != nil {
 		response := model.NewErrorResponse(500, "搜索失败: "+err.Error())

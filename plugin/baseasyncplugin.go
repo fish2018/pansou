@@ -526,9 +526,15 @@ func (p *BaseAsyncPlugin) Priority() int {
 // AsyncSearch 异步搜索基础方法
 func (p *BaseAsyncPlugin) AsyncSearch(
 	keyword string,
-	searchFunc func(*http.Client, string) ([]model.SearchResult, error),
-	mainCacheKey string, // 主缓存key参数
+	searchFunc func(*http.Client, string, map[string]interface{}) ([]model.SearchResult, error),
+	mainCacheKey string,
+	ext map[string]interface{},
 ) ([]model.SearchResult, error) {
+	// 确保ext不为nil
+	if ext == nil {
+		ext = make(map[string]interface{})
+	}
+	
 	now := time.Now()
 	
 	// 修改缓存键，确保包含插件名称
@@ -545,7 +551,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 			
 			// 如果缓存接近过期（已用时间超过TTL的80%），在后台刷新缓存
 			if time.Since(cachedResult.Timestamp) > (p.cacheTTL * 4 / 5) {
-				go p.refreshCacheInBackground(keyword, pluginSpecificCacheKey, searchFunc, cachedResult, mainCacheKey)
+				go p.refreshCacheInBackground(keyword, pluginSpecificCacheKey, searchFunc, cachedResult, mainCacheKey, ext)
 			}
 			
 			return cachedResult.Results, nil
@@ -559,7 +565,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 			// 标记为部分过期
 			if time.Since(cachedResult.Timestamp) >= p.cacheTTL {
 				// 在后台刷新缓存
-				go p.refreshCacheInBackground(keyword, pluginSpecificCacheKey, searchFunc, cachedResult, mainCacheKey)
+				go p.refreshCacheInBackground(keyword, pluginSpecificCacheKey, searchFunc, cachedResult, mainCacheKey, ext)
 				
 				// 日志记录
 				fmt.Printf("[%s] 缓存已过期，后台刷新中: %s (已过期: %v)\n", 
@@ -582,7 +588,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 		// 尝试获取工作槽
 		if !acquireWorkerSlot() {
 			// 工作池已满，使用快速响应客户端直接处理
-			results, err := searchFunc(p.client, keyword)
+			results, err := searchFunc(p.client, keyword, ext)
 			if err != nil {
 				select {
 				case errorChan <- err:
@@ -613,7 +619,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 		defer releaseWorkerSlot()
 		
 		// 执行搜索
-		results, err := searchFunc(p.backgroundClient, keyword)
+		results, err := searchFunc(p.backgroundClient, keyword, ext)
 		
 		// 检查是否已经响应
 		select {
@@ -775,10 +781,16 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 func (p *BaseAsyncPlugin) refreshCacheInBackground(
 	keyword string,
 	cacheKey string,
-	searchFunc func(*http.Client, string) ([]model.SearchResult, error),
+	searchFunc func(*http.Client, string, map[string]interface{}) ([]model.SearchResult, error),
 	oldCache cachedResponse,
 	originalCacheKey string,
+	ext map[string]interface{},
 ) {
+	// 确保ext不为nil
+	if ext == nil {
+		ext = make(map[string]interface{})
+	}
+	
 	// 注意：这里的cacheKey已经是插件特定的了，因为是从AsyncSearch传入的
 	
 	// 检查是否有足够的工作槽
@@ -791,7 +803,7 @@ func (p *BaseAsyncPlugin) refreshCacheInBackground(
 	refreshStart := time.Now()
 	
 	// 执行搜索
-	results, err := searchFunc(p.backgroundClient, keyword)
+	results, err := searchFunc(p.backgroundClient, keyword, ext)
 	if err != nil || len(results) == 0 {
 		return
 	}

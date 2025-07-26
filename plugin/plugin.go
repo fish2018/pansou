@@ -19,7 +19,8 @@ type SearchPlugin interface {
 	Name() string
 	
 	// Search 执行搜索并返回结果
-	Search(keyword string) ([]model.SearchResult, error)
+	// ext参数用于传递额外的搜索参数，插件可以根据需要使用或忽略
+	Search(keyword string, ext map[string]interface{}) ([]model.SearchResult, error)
 	
 	// Priority 返回插件优先级（可选，用于控制结果排序）
 	Priority() int
