@@ -1,0 +1,55 @@
+{
+  "mcpServers": {
+    "pansou": {
+      "command": "node",
+      "args": [
+        "C:\\full\\path\\to\\your\\project\\typescript\\dist\\index.js"
+      ],
+      "env": {
+        "PANSOU_SERVER_URL": "http://localhost:8888",
+        "REQUEST_TIMEOUT": "60",
+        "MAX_RESULTS": "50",
+        "DEFAULT_CLOUD_TYPES": "baidu,aliyun,quark,115",
+        "AUTO_START_BACKEND": "true",
+        "DOCKER_MODE": "true",
+        "BACKEND_SHUTDOWN_DELAY": "5000",
+        "BACKEND_STARTUP_TIMEOUT": "30000",
+        "IDLE_TIMEOUT": "300000",
+        "ENABLE_IDLE_SHUTDOWN": "true",
+        "PROJECT_ROOT_PATH": "C:\\full\\path\\to\\your\\project"
+      }
+    }
+  },
+  "_comments": {
+    "description": "PanSou MCP服务统一配置文件",
+    "version": "2.0",
+    "智能模式说明": {
+      "自动检测": "如果DOCKER_MODE未设置或为false，服务将自动检测部署模式",
+      "检测优先级": [
+        "1. 检查是否有运行中的Docker容器（名称包含pansou）",
+        "2. 检查是否存在Go可执行文件（pansou.exe/main.exe）",
+        "3. 检查后端服务是否已在运行"
+      ],
+      "环境变量覆盖": "可通过环境变量强制指定模式，如 DOCKER_MODE=true"
+    },
+    "配置说明": {
+      "PANSOU_SERVER_URL": "后端服务地址，默认http://localhost:8888",
+      "REQUEST_TIMEOUT": "请求超时时间（秒），默认30",
+      "MAX_RESULTS": "最大搜索结果数，默认50",
+      "DEFAULT_CLOUD_TYPES": "默认搜索的网盘类型，逗号分隔",
+      "AUTO_START_BACKEND": "是否自动启动后端服务（源码模式），默认true",
+      "DOCKER_MODE": "是否强制使用Docker模式，默认false（自动检测）",
+      "BACKEND_SHUTDOWN_DELAY": "后端服务关闭延迟（毫秒），默认5000",
+      "BACKEND_STARTUP_TIMEOUT": "后端服务启动超时（毫秒），默认30000",
+      "IDLE_TIMEOUT": "空闲超时时间（毫秒），默认300000（5分钟）",
+      "ENABLE_IDLE_SHUTDOWN": "是否启用空闲自动关闭，默认true",
+      "PROJECT_ROOT_PATH": "项目根目录路径，用于查找Go可执行文件"
+    },
+    "使用示例": {
+      "自动模式": "默认配置，自动检测部署方式",
+      "强制Docker模式": "设置 DOCKER_MODE=true",
+      "强制源码模式": "设置 DOCKER_MODE=false 且 AUTO_START_BACKEND=true",
+      "仅连接模式": "设置 AUTO_START_BACKEND=false（适用于手动启动的后端）"
+    }
+  }
+}

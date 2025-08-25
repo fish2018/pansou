@@ -1,0 +1,60 @@
+{
+  "name": "@pansou/mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for PanSou netdisk search service",
+  "main": "dist/index.js",
+  "bin": {
+    "pansou-mcp-server": "dist/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "prepare": "npm run build",
+    "test": "jest",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "pansou",
+    "netdisk",
+    "search",
+    "claude"
+  ],
+  "author": "PanSou Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fish2018/pansou-mcp.git"
+  },
+  "homepage": "https://github.com/fish2018/pansou-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/fish2018/pansou-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "axios": "^1.6.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    "ts-node": "^10.0.0",
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ]
+}
