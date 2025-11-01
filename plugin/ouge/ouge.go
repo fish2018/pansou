@@ -229,7 +229,13 @@ func (p *OugeAsyncPlugin) parseAPIItem(item OugeAPIItem) model.SearchResult {
 	
 	// 解析下载链接
 	links := p.parseDownloadLinks(item.VodDownFrom, item.VodDownURL)
-	
+
+	// 提取封面图片
+	var images []string
+	if item.VodPic != "" {
+		images = append(images, item.VodPic)
+	}
+
 	// 构建标签
 	var tags []string
 	if item.VodYear != "" {
@@ -238,13 +244,14 @@ func (p *OugeAsyncPlugin) parseAPIItem(item OugeAPIItem) model.SearchResult {
 	if item.VodArea != "" {
 		tags = append(tags, item.VodArea)
 	}
-	
+
 	return model.SearchResult{
 		UniqueID: uniqueID,
 		Title:    title,
 		Content:  content,
 		Links:    links,
 		Tags:     tags,
+		Images:   images,
 		Channel:  "", // 插件搜索结果Channel为空
 		Datetime: time.Time{}, // 使用零值而不是nil，参考jikepan插件标准
 	}

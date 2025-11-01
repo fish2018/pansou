@@ -2,35 +2,52 @@ package erxiao
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
 	"context"
+	"sync"
 	"sync/atomic"
 
+	"github.com/PuerkitoBio/goquery"
 	"pansou/model"
 	"pansou/plugin"
-	"pansou/util/json"
 )
 
 const (
-	// 默认超时时间 - 优化为更短时间
+	// 默认超时时间
 	DefaultTimeout = 8 * time.Second
+	DetailTimeout  = 6 * time.Second
 
 	// HTTP连接池配置
 	MaxIdleConns        = 200
 	MaxIdleConnsPerHost = 50
 	MaxConnsPerHost     = 100
 	IdleConnTimeout     = 90 * time.Second
+
+	// 并发控制
+	MaxConcurrency = 20
+
+	// 缓存TTL
+	cacheTTL = 1 * time.Hour
 )
 
 // 性能统计（原子操作）
 var (
-	searchRequests  int64 = 0
-	totalSearchTime int64 = 0 // 纳秒
+	searchRequests    int64 = 0
+	totalSearchTime   int64 = 0 // 纳秒
+	detailPageRequests int64 = 0
+	totalDetailTime   int64 = 0 // 纳秒
+	cacheHits         int64 = 0
+	cacheMisses       int64 = 0
+)
+
+// Detail page缓存
+var (
+	detailCache sync.Map
+	cacheMutex  sync.RWMutex
 )
 
 func init() {
@@ -41,7 +58,10 @@ func init() {
 var (
 	// 密码提取正则表达式
 	passwordRegex = regexp.MustCompile(`\?pwd=([0-9a-zA-Z]+)`)
-	
+
+	// 详情页ID提取正则表达式
+	detailIDRegex = regexp.MustCompile(`/id/(\d+)`)
+
 	// 常见网盘链接的正则表达式（支持16种类型）
 	quarkLinkRegex     = regexp.MustCompile(`https?://pan\.quark\.cn/s/[0-9a-zA-Z]+`)
 	ucLinkRegex        = regexp.MustCompile(`https?://drive\.uc\.cn/s/[0-9a-zA-Z]+(\?[^"'\s]*)?`)
@@ -100,7 +120,7 @@ func (p *ErxiaoAsyncPlugin) SearchWithResult(keyword string, ext map[string]inte
 	return p.AsyncSearchWithResult(keyword, p.searchImpl, p.MainCacheKey, ext)
 }
 
-// searchImpl 搜索实现
+// searchImpl 搜索实现 - HTML解析版本
 func (p *ErxiaoAsyncPlugin) searchImpl(client *http.Client, keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
 	// 性能统计
 	start := time.Now()
@@ -115,270 +135,306 @@ func (p *ErxiaoAsyncPlugin) searchImpl(client *http.Client, keyword string, ext 
 		client = p.optimizedClient
 	}
 
-	// 构建API搜索URL
-	searchURL := fmt.Sprintf("https://erxiaofn.click/api.php/provide/vod?ac=detail&wd=%s", url.QueryEscape(keyword))
-	
-	// 创建HTTP请求
+	// 1. 构建搜索URL
+	searchURL := fmt.Sprintf("https://erxiaofn.click/index.php/vod/search/wd/%s.html", url.QueryEscape(keyword))
+
+	// 2. 创建带超时的上下文
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
 	defer cancel()
-	
+
+	// 3. 创建请求
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("[%s] 创建搜索请求失败: %w", p.Name(), err)
+		return nil, fmt.Errorf("[%s] 创建请求失败: %w", p.Name(), err)
 	}
-	
-	// 设置请求头
+
+	// 4. 设置请求头
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Referer", "https://erxiaofn.click/")
-	req.Header.Set("Cache-Control", "no-cache")
-	
-	// 发送请求
+
+	// 5. 发送请求
 	resp, err := p.doRequestWithRetry(req, client)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 搜索请求失败: %w", p.Name(), err)
 	}
 	defer resp.Body.Close()
-	
-	// 解析JSON响应
-	body, err := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("[%s] 搜索请求返回状态码: %d", p.Name(), resp.StatusCode)
+	}
+
+	// 6. 解析搜索结果页面
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
+		return nil, fmt.Errorf("[%s] 解析搜索页面失败: %w", p.Name(), err)
 	}
-	
-	var apiResponse ErxiaoAPIResponse
-	if err := json.Unmarshal(body, &apiResponse); err != nil {
-		return nil, fmt.Errorf("[%s] 解析JSON响应失败: %w", p.Name(), err)
-	}
-	
-	// 检查API响应状态
-	if apiResponse.Code != 1 {
-		return nil, fmt.Errorf("[%s] API返回错误: %s", p.Name(), apiResponse.Msg)
-	}
-	
-	// 解析搜索结果
+
+	// 7. 提取搜索结果
 	var results []model.SearchResult
-	for _, item := range apiResponse.List {
-		if result := p.parseAPIItem(item); result.Title != "" {
+
+	doc.Find(".module-search-item").Each(func(i int, s *goquery.Selection) {
+		result := p.parseSearchItem(s, keyword)
+		if result.UniqueID != "" {
 			results = append(results, result)
 		}
+	})
+
+	// 8. 异步获取详情页信息
+	enhancedResults := p.enhanceWithDetails(client, results)
+
+	// 9. 关键词过滤
+	return plugin.FilterResultsByKeyword(enhancedResults, keyword), nil
+}
+
+// parseSearchItem 解析单个搜索结果项
+func (p *ErxiaoAsyncPlugin) parseSearchItem(s *goquery.Selection, keyword string) model.SearchResult {
+	result := model.SearchResult{}
+
+	// 提取详情页链接和ID
+	detailLink, exists := s.Find(".video-info-header h3 a").First().Attr("href")
+	if !exists {
+		return result
 	}
-	
-	return results, nil
-}
 
-type ErxiaoAPIResponse struct {
-	Code      int           `json:"code"`
-	Msg       string        `json:"msg"`
-	Page      int           `json:"page"`
-	PageCount int           `json:"pagecount"`
-	Limit     int           `json:"limit"`
-	Total     int           `json:"total"`
-	List      []ErxiaoAPIItem `json:"list"`
-}
+	// 提取ID
+	matches := detailIDRegex.FindStringSubmatch(detailLink)
+	if len(matches) < 2 {
+		return result
+	}
+	itemID := matches[1]
 
-type ErxiaoAPIItem struct {
-	VodID       int    `json:"vod_id"`
-	VodName     string `json:"vod_name"`
-	VodActor    string `json:"vod_actor"`
-	VodDirector string `json:"vod_director"`
-	VodDownFrom string `json:"vod_down_from"`
-	VodDownURL  string `json:"vod_down_url"`
-	VodRemarks  string `json:"vod_remarks"`
-	VodPubdate  string `json:"vod_pubdate"`
-	VodArea     string `json:"vod_area"`
-	VodYear     string `json:"vod_year"`
-	VodContent  string `json:"vod_content"`
-	VodPic      string `json:"vod_pic"`
-}
-
-// parseAPIItem 解析API数据项
-func (p *ErxiaoAsyncPlugin) parseAPIItem(item ErxiaoAPIItem) model.SearchResult {
 	// 构建唯一ID
-	uniqueID := fmt.Sprintf("%s-%d", p.Name(), item.VodID)
-	
-	// 构建标题
-	title := strings.TrimSpace(item.VodName)
+	uniqueID := fmt.Sprintf("%s-%s", p.Name(), itemID)
+
+	// 提取标题
+	title := strings.TrimSpace(s.Find(".video-info-header h3 a").First().Text())
 	if title == "" {
-		return model.SearchResult{}
+		return result
 	}
-	
-	// 构建描述
+
+	// 提取分类
+	category := strings.TrimSpace(s.Find(".video-info-items").First().Find(".video-info-item").First().Text())
+
+	// 提取导演
+	directorElement := s.Find(".video-info-items").FilterFunction(func(i int, item *goquery.Selection) bool {
+		title := strings.TrimSpace(item.Find(".video-info-itemtitle").Text())
+		return strings.Contains(title, "导演")
+	})
+	director := strings.TrimSpace(directorElement.Find(".video-info-item").Text())
+
+	// 提取主演
+	actorElement := s.Find(".video-info-items").FilterFunction(func(i int, item *goquery.Selection) bool {
+		title := strings.TrimSpace(item.Find(".video-info-itemtitle").Text())
+		return strings.Contains(title, "主演")
+	})
+	actor := strings.TrimSpace(actorElement.Find(".video-info-item").Text())
+
+	// 提取年份
+	year := strings.TrimSpace(s.Find(".video-info-items").Last().Find(".video-info-item").First().Text())
+
+	// 提取质量/状态
+	quality := strings.TrimSpace(s.Find(".video-info-header .video-info-remarks").Text())
+
+	// 提取剧情简介
+	plotElement := s.Find(".video-info-items").FilterFunction(func(i int, item *goquery.Selection) bool {
+		title := strings.TrimSpace(item.Find(".video-info-itemtitle").Text())
+		return strings.Contains(title, "剧情")
+	})
+	plot := strings.TrimSpace(plotElement.Find(".video-info-item").Text())
+
+	// 提取封面图片
+	var images []string
+	if picURL, exists := s.Find(".module-item-pic > img").Attr("data-src"); exists && picURL != "" {
+		images = append(images, picURL)
+	}
+	result.Images = images
+
+	// 构建内容描述
 	var contentParts []string
-	if item.VodActor != "" {
-		contentParts = append(contentParts, fmt.Sprintf("主演: %s", item.VodActor))
+	if quality != "" {
+		contentParts = append(contentParts, "【"+quality+"】")
 	}
-	if item.VodDirector != "" {
-		contentParts = append(contentParts, fmt.Sprintf("导演: %s", item.VodDirector))
+	if director != "" {
+		contentParts = append(contentParts, "导演："+director)
 	}
-	if item.VodArea != "" {
-		contentParts = append(contentParts, fmt.Sprintf("地区: %s", item.VodArea))
+	if actor != "" {
+		contentParts = append(contentParts, "主演："+actor)
 	}
-	if item.VodYear != "" {
-		contentParts = append(contentParts, fmt.Sprintf("年份: %s", item.VodYear))
+	if year != "" {
+		contentParts = append(contentParts, "年份："+year)
 	}
-	if item.VodRemarks != "" {
-		contentParts = append(contentParts, fmt.Sprintf("状态: %s", item.VodRemarks))
+	if plot != "" {
+		contentParts = append(contentParts, "剧情："+plot)
 	}
-	content := strings.Join(contentParts, " | ")
-	
-	// 解析下载链接
-	links := p.parseDownloadLinks(item.VodDownFrom, item.VodDownURL)
-	
+	content := strings.Join(contentParts, "\n")
+
 	// 构建标签
 	var tags []string
-	if item.VodYear != "" {
-		tags = append(tags, item.VodYear)
+	if year != "" {
+		tags = append(tags, year)
 	}
-	if item.VodArea != "" {
-		tags = append(tags, item.VodArea)
+	if category != "" {
+		tags = append(tags, category)
 	}
-	
-	return model.SearchResult{
-		UniqueID: uniqueID,
-		Title:    title,
-		Content:  content,
-		Links:    links,
-		Tags:     tags,
-		Channel:  "", // 插件搜索结果Channel为空
-		Datetime: time.Time{}, // 使用零值而不是nil，参考jikepan插件标准
-	}
+
+	result.UniqueID = uniqueID
+	result.Title = title
+	result.Content = content
+	result.Tags = tags
+	result.Channel = "" // 插件搜索结果Channel为空
+	result.Datetime = time.Time{} // 使用零值
+
+	return result
 }
 
-// parseDownloadLinks 解析下载链接
-func (p *ErxiaoAsyncPlugin) parseDownloadLinks(vodDownFrom, vodDownURL string) []model.Link {
-	if vodDownFrom == "" || vodDownURL == "" {
-		return nil
+// enhanceWithDetails 异步获取详情页信息
+func (p *ErxiaoAsyncPlugin) enhanceWithDetails(client *http.Client, results []model.SearchResult) []model.SearchResult {
+	var enhancedResults []model.SearchResult
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	// 创建信号量限制并发数
+	semaphore := make(chan struct{}, MaxConcurrency)
+
+	for _, result := range results {
+		wg.Add(1)
+		go func(result model.SearchResult) {
+			defer wg.Done()
+			semaphore <- struct{}{}        // 获取信号量
+			defer func() { <-semaphore }() // 释放信号量
+
+			// 从UniqueID中提取itemID
+			parts := strings.Split(result.UniqueID, "-")
+			if len(parts) < 2 {
+				mu.Lock()
+				enhancedResults = append(enhancedResults, result)
+				mu.Unlock()
+				return
+			}
+			itemID := parts[1]
+
+			// 检查缓存
+			if cached, ok := detailCache.Load(itemID); ok {
+				atomic.AddInt64(&cacheHits, 1)
+				r := cached.(model.SearchResult)
+				mu.Lock()
+				enhancedResults = append(enhancedResults, r)
+				mu.Unlock()
+				return
+			}
+
+			atomic.AddInt64(&cacheMisses, 1)
+
+			// 获取详情页链接和图片
+			detailLinks, detailImages := p.fetchDetailLinksAndImages(client, itemID)
+			result.Links = detailLinks
+
+			// 合并图片：优先使用详情页的海报，如果没有则使用搜索结果的图片
+			if len(detailImages) > 0 {
+				result.Images = detailImages
+			}
+
+			// 缓存结果
+			detailCache.Store(itemID, result)
+
+			mu.Lock()
+			enhancedResults = append(enhancedResults, result)
+			mu.Unlock()
+		}(result)
 	}
-	
-	// 按$$$分隔
-	fromParts := strings.Split(vodDownFrom, "$$$")
-	urlParts := strings.Split(vodDownURL, "$$$")
-	
-	// 确保数组长度一致
-	minLen := len(fromParts)
-	if len(urlParts) < minLen {
-		minLen = len(urlParts)
+
+	wg.Wait()
+	return enhancedResults
+}
+
+// fetchDetailLinksAndImages 获取详情页的下载链接和图片
+func (p *ErxiaoAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, itemID string) ([]model.Link, []string) {
+	// 性能统计
+	start := time.Now()
+	atomic.AddInt64(&detailPageRequests, 1)
+	defer func() {
+		duration := time.Since(start).Nanoseconds()
+		atomic.AddInt64(&totalDetailTime, duration)
+	}()
+
+	detailURL := fmt.Sprintf("https://erxiaofn.click/index.php/vod/detail/id/%s.html", itemID)
+
+	// 创建带超时的上下文
+	ctx, cancel := context.WithTimeout(context.Background(), DetailTimeout)
+	defer cancel()
+
+	// 创建请求
+	req, err := http.NewRequestWithContext(ctx, "GET", detailURL, nil)
+	if err != nil {
+		return nil, nil
 	}
-	
+
+	// 设置请求头
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Referer", "https://erxiaofn.click/")
+
+	// 发送请求（带重试）
+	resp, err := p.doRequestWithRetry(req, client)
+	if err != nil {
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, nil
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, nil
+	}
+
 	var links []model.Link
-	for i := 0; i < minLen; i++ {
-		fromType := strings.TrimSpace(fromParts[i])
-		urlStr := strings.TrimSpace(urlParts[i])
-		
-		if urlStr == "" {
-			continue
-		}
-		
-		// 直接确定链接类型（合并验证和类型判断，避免重复正则匹配）
-		linkType := p.determineLinkTypeOptimized(fromType, urlStr)
-		if linkType == "" {
-			continue
-		}
-		
-		// 提取密码
-		password := p.extractPassword(urlStr)
-		
-		links = append(links, model.Link{
-			Type:     linkType,
-			URL:      urlStr,
-			Password: password,
-		})
+	var images []string
+
+	// 提取详情页的海报图片
+	if posterURL, exists := doc.Find(".mobile-play .lazyload").Attr("data-src"); exists && posterURL != "" {
+		images = append(images, posterURL)
 	}
-	
-	return links
+
+	// 查找下载链接区域
+	doc.Find("#download-list .module-row-one").Each(func(i int, s *goquery.Selection) {
+		// 从data-clipboard-text属性提取链接
+		if linkURL, exists := s.Find("[data-clipboard-text]").Attr("data-clipboard-text"); exists {
+			// 过滤掉无效链接
+			if p.isValidNetworkDriveURL(linkURL) {
+				if linkType := p.determineLinkType(linkURL); linkType != "" {
+					link := model.Link{
+						Type:     linkType,
+						URL:      linkURL,
+						Password: "", // 大部分网盘不需要密码
+					}
+					links = append(links, link)
+				}
+			}
+		}
+	})
+
+	return links, images
 }
 
-
-
-
-
-// determineLinkTypeOptimized 优化的链接类型判断（避免重复正则匹配）
-func (p *ErxiaoAsyncPlugin) determineLinkTypeOptimized(apiType, url string) string {
-	// 基本验证（包含原 isValidNetworkDriveURL 的逻辑）
-	if strings.Contains(url, "javascript:") || 
+// isValidNetworkDriveURL 验证是否为有效的网盘URL
+func (p *ErxiaoAsyncPlugin) isValidNetworkDriveURL(url string) bool {
+	if strings.Contains(url, "javascript:") ||
 	   strings.Contains(url, "#") ||
 	   url == "" ||
 	   (!strings.HasPrefix(url, "http") && !strings.HasPrefix(url, "magnet:") && !strings.HasPrefix(url, "ed2k:")) {
-		return ""
+		return false
 	}
-	
-	// 优先根据API标识快速映射（避免正则匹配）
-	switch strings.ToUpper(apiType) {
-	case "BD":
-		if baiduLinkRegex.MatchString(url) {
-			return "baidu"
-		}
-	case "KG":
-		if quarkLinkRegex.MatchString(url) {
-			return "quark"
-		}
-	case "UC":
-		if ucLinkRegex.MatchString(url) {
-			return "uc"
-		}
-	case "ALY":
-		if aliyunLinkRegex.MatchString(url) {
-			return "aliyun"
-		}
-	case "XL":
-		if xunleiLinkRegex.MatchString(url) {
-			return "xunlei"
-		}
-	case "TY":
-		if tianyiLinkRegex.MatchString(url) {
-			return "tianyi"
-		}
-	case "115":
-		if link115Regex.MatchString(url) {
-			return "115"
-		}
-	case "MB":
-		if mobileLinkRegex.MatchString(url) {
-			return "mobile"
-		}
-	case "123":
-		if link123Regex.MatchString(url) {
-			return "123"
-		}
-	case "PIKPAK":
-		if pikpakLinkRegex.MatchString(url) {
-			return "pikpak"
-		}
-	}
-	
-	// 如果API标识匹配失败，回退到URL正则匹配（一次性匹配）
-	switch {
-	case baiduLinkRegex.MatchString(url):
-		return "baidu"
-	case ucLinkRegex.MatchString(url):
-		return "uc"
-	case aliyunLinkRegex.MatchString(url):
-		return "aliyun"
-	case xunleiLinkRegex.MatchString(url):
-		return "xunlei"
-	case tianyiLinkRegex.MatchString(url):
-		return "tianyi"
-	case link115Regex.MatchString(url):
-		return "115"
-	case mobileLinkRegex.MatchString(url):
-		return "mobile"
-	case link123Regex.MatchString(url):
-		return "123"
-	case pikpakLinkRegex.MatchString(url):
-		return "pikpak"
-	case magnetLinkRegex.MatchString(url):
-		return "magnet"
-	case ed2kLinkRegex.MatchString(url):
-		return "ed2k"
-	case quarkLinkRegex.MatchString(url):
-		return "quark" 
-	default:
-		return "" // 不支持的类型
-	}
+	return true
 }
+
 
 // determineLinkType 根据URL确定链接类型
 func (p *ErxiaoAsyncPlugin) determineLinkType(url string) string {
@@ -421,11 +477,11 @@ func (p *ErxiaoAsyncPlugin) extractPassword(url string) string {
 	return ""
 }
 
-// doRequestWithRetry 带重试的HTTP请求（优化JSON API的重试策略）
+// doRequestWithRetry 带重试的HTTP请求
 func (p *ErxiaoAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
-	maxRetries := 2  // 对于JSON API减少重试次数
+	maxRetries := 2
 	var lastErr error
-	
+
 	for i := 0; i < maxRetries; i++ {
 		resp, err := client.Do(req)
 		if err == nil {
@@ -437,13 +493,13 @@ func (p *ErxiaoAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.C
 		} else {
 			lastErr = err
 		}
-		
-		// JSON API快速重试：只等待很短时间
+
+		// 快速重试：只等待很短时间
 		if i < maxRetries-1 {
-			time.Sleep(100 * time.Millisecond) // 从秒级改为100毫秒
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
-	
+
 	return nil, fmt.Errorf("[%s] 请求失败，重试%d次后仍失败: %w", p.Name(), maxRetries, lastErr)
 }
 
@@ -451,15 +507,29 @@ func (p *ErxiaoAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.C
 func (p *ErxiaoAsyncPlugin) GetPerformanceStats() map[string]interface{} {
 	totalRequests := atomic.LoadInt64(&searchRequests)
 	totalTime := atomic.LoadInt64(&totalSearchTime)
-	
+	detailRequests := atomic.LoadInt64(&detailPageRequests)
+	detailTime := atomic.LoadInt64(&totalDetailTime)
+	hits := atomic.LoadInt64(&cacheHits)
+	misses := atomic.LoadInt64(&cacheMisses)
+
 	var avgTime float64
 	if totalRequests > 0 {
 		avgTime = float64(totalTime) / float64(totalRequests) / 1e6 // 转换为毫秒
 	}
-	
+
+	var avgDetailTime float64
+	if detailRequests > 0 {
+		avgDetailTime = float64(detailTime) / float64(detailRequests) / 1e6 // 转换为毫秒
+	}
+
 	return map[string]interface{}{
-		"search_requests":    totalRequests,
-		"avg_search_time_ms": avgTime,
+		"search_requests":      totalRequests,
+		"avg_search_time_ms":   avgTime,
 		"total_search_time_ns": totalTime,
+		"detail_page_requests": detailRequests,
+		"avg_detail_time_ms":   avgDetailTime,
+		"total_detail_time_ns": detailTime,
+		"cache_hits":           hits,
+		"cache_misses":         misses,
 	}
 }

@@ -273,7 +273,14 @@ func (p *DuoduoAsyncPlugin) parseSearchItem(s *goquery.Selection, keyword string
 		return strings.Contains(title, "剧情")
 	})
 	plot := strings.TrimSpace(plotElement.Find(".video-info-item").Text())
-	
+
+	// 提取封面图片 (参考 Pan_mogg.js 的选择器)
+	var images []string
+	if picURL, exists := s.Find(".module-item-pic > img").Attr("data-src"); exists && picURL != "" {
+		images = append(images, picURL)
+	}
+	result.Images = images
+
 	// 构建内容描述
 	var contentParts []string
 	if quality != "" {
@@ -328,7 +335,7 @@ func (p *DuoduoAsyncPlugin) enhanceWithDetails(client *http.Client, results []mo
 			}
 			
 			itemID := parts[1]
-			
+
 			// 检查缓存
 			if cached, ok := detailCache.Load(itemID); ok {
 				if cachedResult, ok := cached.(model.SearchResult); ok {
@@ -340,14 +347,19 @@ func (p *DuoduoAsyncPlugin) enhanceWithDetails(client *http.Client, results []mo
 				}
 			}
 			atomic.AddInt64(&cacheMisses, 1)
-			
-			// 获取详情页链接
-			detailLinks := p.fetchDetailLinks(client, itemID)
+
+			// 获取详情页链接和图片
+			detailLinks, detailImages := p.fetchDetailLinksAndImages(client, itemID)
 			r.Links = detailLinks
-			
+
+			// 合并图片：优先使用详情页的海报，如果没有则使用搜索结果的图片
+			if len(detailImages) > 0 {
+				r.Images = detailImages
+			}
+
 			// 缓存结果
 			detailCache.Store(itemID, r)
-			
+
 			mu.Lock()
 			enhancedResults = append(enhancedResults, r)
 			mu.Unlock()
@@ -387,8 +399,8 @@ func (p *DuoduoAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.C
 	return nil, fmt.Errorf("重试 %d 次后仍然失败: %w", maxRetries, lastErr)
 }
 
-// fetchDetailLinks 获取详情页的下载链接
-func (p *DuoduoAsyncPlugin) fetchDetailLinks(client *http.Client, itemID string) []model.Link {
+// fetchDetailLinksAndImages 获取详情页的下载链接和图片
+func (p *DuoduoAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, itemID string) ([]model.Link, []string) {
 	// 性能统计
 	start := time.Now()
 	atomic.AddInt64(&detailPageRequests, 1)
@@ -398,42 +410,48 @@ func (p *DuoduoAsyncPlugin) fetchDetailLinks(client *http.Client, itemID string)
 	}()
 
 	detailURL := fmt.Sprintf("https://tv.yydsys.top/index.php/vod/detail/id/%s.html", itemID)
-	
+
 	// 创建带超时的上下文
 	ctx, cancel := context.WithTimeout(context.Background(), DetailTimeout)
 	defer cancel()
-	
+
 	// 创建请求
 	req, err := http.NewRequestWithContext(ctx, "GET", detailURL, nil)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	
+
 	// 设置请求头
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Referer", "https://tv.yydsys.top/")
-	
+
 	// 发送请求（带重试）
 	resp, err := p.doRequestWithRetry(req, client)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != 200 {
-		return nil
+		return nil, nil
 	}
-	
+
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	
+
 	var links []model.Link
-	
+	var images []string
+
+	// 提取详情页的海报图片 (参考 Pan_mogg.js 的选择器)
+	if posterURL, exists := doc.Find(".mobile-play .lazyload").Attr("data-src"); exists && posterURL != "" {
+		images = append(images, posterURL)
+	}
+
 	// 查找下载链接区域
 	doc.Find("#download-list .module-row-one").Each(func(i int, s *goquery.Selection) {
 		// 从data-clipboard-text属性提取链接
@@ -450,7 +468,7 @@ func (p *DuoduoAsyncPlugin) fetchDetailLinks(client *http.Client, itemID string)
 				}
 			}
 		}
-		
+
 		// 也检查直接的href属性
 		s.Find("a[href]").Each(func(j int, a *goquery.Selection) {
 			if linkURL, exists := a.Attr("href"); exists {
@@ -465,7 +483,7 @@ func (p *DuoduoAsyncPlugin) fetchDetailLinks(client *http.Client, itemID string)
 								break
 							}
 						}
-						
+
 						if !isDuplicate {
 							link := model.Link{
 								Type:     linkType,
@@ -479,7 +497,13 @@ func (p *DuoduoAsyncPlugin) fetchDetailLinks(client *http.Client, itemID string)
 			}
 		})
 	})
-	
+
+	return links, images
+}
+
+// fetchDetailLinks 获取详情页的下载链接（兼容性方法，仅返回链接）
+func (p *DuoduoAsyncPlugin) fetchDetailLinks(client *http.Client, itemID string) []model.Link {
+	links, _ := p.fetchDetailLinksAndImages(client, itemID)
 	return links
 }
 
