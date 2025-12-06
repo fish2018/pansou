@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
-	"time"
 	"pansou/model"
 	"pansou/plugin"
 	"pansou/util/json"
+	"strings"
+	"time"
 )
 
 // 在init函数中注册插件
@@ -146,10 +146,10 @@ func (p *JikepanAsyncV2Plugin) convertResults(items []JikepanItem) []model.Searc
 		
 		// 创建搜索结果
 		result := model.SearchResult{
-			UniqueID:  uniqueID,
-			Title:     item.Name,
-			Datetime:  time.Time{}, // 使用零值而不是nil
-			Links:     links,
+			UniqueID: uniqueID,
+			Title:    item.Name,
+			Datetime: time.Time{}, // 使用零值而不是nil
+			Links:    links,
 		}
 		
 		results = append(results, result)
@@ -210,4 +210,4 @@ type JikepanLink struct {
 	Service string `json:"service"`
 	Link    string `json:"link"`
 	Pwd     string `json:"pwd,omitempty"`
-} 
+}

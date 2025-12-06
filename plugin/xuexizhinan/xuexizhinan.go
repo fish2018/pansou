@@ -9,10 +9,11 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/PuerkitoBio/goquery"
+	
 	"pansou/model"
 	"pansou/plugin"
+	
+	"github.com/PuerkitoBio/goquery"
 )
 
 // 常量定义
@@ -420,4 +421,4 @@ func (p *XuexizhinanPlugin) detailResponseToResult(detailURL string, response de
 	}
 	
 	return result
-} 
+}
