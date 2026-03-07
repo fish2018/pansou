@@ -189,10 +189,28 @@ node .\typescript\dist\index.js
 }
 ```
 
+- 添加streamable方式的MCP
+```json
+{
+  "mcpServers": {
+    "pansou": {
+      "type": "streamableHttp",
+      "description": "",
+      "isActive": true,
+      "baseUrl": "http://localhost:8888/mcp",
+      "headers": {
+        "Authorization": "your-mcp-token"
+      }
+    }
+  }
+}
+```
+
 **注意**：
 - 请将 `C:\\full\\path\\to\\your\\project` 替换为您项目实际的完整路径
 - 如需强制指定部署模式，可修改 `DOCKER_MODE` 和 `AUTO_START_BACKEND` 参数
 - **重要**：从当前版本开始，必须通过 `ENABLED_PLUGINS` 显式指定要启用的插件，否则不会启用任何插件
+- **注意**：如果启动的时候指定了AUTH_MCP_TOKEN环境变量，则streamable的方式连接的时候才需要验证Authorization
 
 ### 4. 启动 MCP 服务并开始使用
 

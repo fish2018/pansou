@@ -26,6 +26,8 @@ services:
       # - AUTH_USERS=admin:admin123,user:pass456
       # - AUTH_TOKEN_EXPIRY=24
       # - AUTH_JWT_SECRET=your-secret-key-here
+      #  如何需要认证mcp 则填写，不填写默认不验证mcp，不使用上面的用户名及密码是为了省去AI每次要判断token的有效请
+      # - AUTH_MCP_TOKEN=your-token-mcp
       # 如果需要代理，取消下面的注释并设置代理地址
       # - PROXY=socks5://proxy:7897
     volumes:
@@ -54,4 +56,4 @@ volumes:
 
 networks:
   pansou-network:
-    name: pansou-network 
+    name: pansou-network

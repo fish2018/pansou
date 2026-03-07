@@ -1,16 +1,19 @@
 package api
 
 import (
+	"context"
 	// "fmt"
 	"net/http"
 	// "os"
-	
+
 	"github.com/gin-gonic/gin"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"pansou/config"
 	"pansou/model"
 	"pansou/service"
-	jsonutil "pansou/util/json"
 	"pansou/util"
+	jsonutil "pansou/util/json"
 	"strings"
 )
 
@@ -32,7 +35,7 @@ func SearchHandler(c *gin.Context) {
 		// GET方式：从URL参数获取
 		// 获取keyword，必填参数
 		keyword := c.Query("kw")
-		
+
 		// 处理channels参数，支持逗号分隔
 		channelsStr := c.Query("channels")
 		var channels []string
@@ -46,32 +49,32 @@ func SearchHandler(c *gin.Context) {
 				}
 			}
 		}
-		
+
 		// 处理并发数
 		concurrency := 0
 		concStr := c.Query("conc")
 		if concStr != "" && concStr != " " {
 			concurrency = util.StringToInt(concStr)
 		}
-		
+
 		// 处理强制刷新
 		forceRefresh := false
 		refreshStr := c.Query("refresh")
 		if refreshStr != "" && refreshStr != " " && refreshStr == "true" {
 			forceRefresh = true
 		}
-		
+
 		// 处理结果类型和来源类型
 		resultType := c.Query("res")
 		if resultType == "" || resultType == " " {
 			resultType = "merge" // 直接设置为默认值merge
 		}
-		
+
 		sourceType := c.Query("src")
 		if sourceType == "" || sourceType == " " {
 			sourceType = "all" // 直接设置为默认值all
 		}
-		
+
 		// 处理plugins参数，支持逗号分隔
 		var plugins []string
 		// 检查请求中是否存在plugins参数
@@ -91,7 +94,7 @@ func SearchHandler(c *gin.Context) {
 			// 如果请求中不存在plugins参数，设置为nil
 			plugins = nil
 		}
-		
+
 		// 处理cloud_types参数，支持逗号分隔
 		var cloudTypes []string
 		// 检查请求中是否存在cloud_types参数
@@ -111,7 +114,7 @@ func SearchHandler(c *gin.Context) {
 			// 如果请求中不存在cloud_types参数，设置为nil
 			cloudTypes = nil
 		}
-		
+
 		// 处理ext参数，JSON格式
 		var ext map[string]interface{}
 		extStr := c.Query("ext")
@@ -130,7 +133,7 @@ func SearchHandler(c *gin.Context) {
 		if ext == nil {
 			ext = make(map[string]interface{})
 		}
-		
+
 		// 处理filter参数，JSON格式
 		var filter *model.FilterConfig
 		filterStr := c.Query("filter")
@@ -167,12 +170,12 @@ func SearchHandler(c *gin.Context) {
 			return
 		}
 	}
-	
+
 	// 检查并设置默认值
 	if len(req.Channels) == 0 {
 		req.Channels = config.AppConfig.DefaultChannels
 	}
-	
+
 	// 如果未指定结果类型，默认返回merge并转换为merged_by_type
 	if req.ResultType == "" {
 		req.ResultType = "merged_by_type"
@@ -180,12 +183,12 @@ func SearchHandler(c *gin.Context) {
 		// 将merge转换为merged_by_type，以兼容内部处理
 		req.ResultType = "merged_by_type"
 	}
-	
+
 	// 如果未指定数据来源类型，默认为全部
 	if req.SourceType == "" {
 		req.SourceType = "all"
 	}
-	
+
 	// 参数互斥逻辑：当src=tg时忽略plugins参数，当src=plugin时忽略channels参数
 	if req.SourceType == "tg" {
 		req.Plugins = nil // 忽略plugins参数
@@ -197,14 +200,14 @@ func SearchHandler(c *gin.Context) {
 			req.Plugins = nil
 		}
 	}
-	
+
 	// 可选：启用调试输出（生产环境建议注释掉）
-	// fmt.Printf("🔧 [调试] 搜索参数: keyword=%s, channels=%v, concurrency=%d, refresh=%v, resultType=%s, sourceType=%s, plugins=%v, cloudTypes=%v, ext=%v\n", 
+	// fmt.Printf("🔧 [调试] 搜索参数: keyword=%s, channels=%v, concurrency=%d, refresh=%v, resultType=%s, sourceType=%s, plugins=%v, cloudTypes=%v, ext=%v\n",
 	//	req.Keyword, req.Channels, req.Concurrency, req.ForceRefresh, req.ResultType, req.SourceType, req.Plugins, req.CloudTypes, req.Ext)
-	
+
 	// 执行搜索
 	result, err := searchService.Search(req.Keyword, req.Channels, req.Concurrency, req.ForceRefresh, req.ResultType, req.SourceType, req.Plugins, req.CloudTypes, req.Ext)
-	
+
 	if err != nil {
 		response := model.NewErrorResponse(500, "搜索失败: "+err.Error())
 		jsonData, _ := jsonutil.Marshal(response)
@@ -221,4 +224,24 @@ func SearchHandler(c *gin.Context) {
 	response := model.NewSuccessResponse(result)
 	jsonData, _ := jsonutil.Marshal(response)
 	c.Data(http.StatusOK, "application/json", jsonData)
-} 
+}
+
+func SearchMcpHandler(_ context.Context, request *mcp.CallToolRequest, mcpReq model.McpSearchRequest) (toolCallResult *mcp.CallToolResult, result model.SearchResponse, err error) {
+	searchReq := model.SearchRequest{
+		Keyword:      mcpReq.Keyword,
+		ForceRefresh: mcpReq.ForceRefresh,
+		Filter:       mcpReq.Filter,
+		CloudTypes:   mcpReq.CloudTypes,
+		Channels:     config.AppConfig.DefaultChannels, // 设置默认值
+		SourceType:   "all",                            // 默认为全部
+		ResultType:   "merged_by_type",
+		Plugins:      nil,
+	}
+	// 执行搜索
+	result, err = searchService.Search(searchReq.Keyword, searchReq.Channels, searchReq.Concurrency, searchReq.ForceRefresh, searchReq.ResultType, searchReq.SourceType, searchReq.Plugins, searchReq.CloudTypes, searchReq.Ext)
+	if err != nil {
+		return
+	}
+
+	return
+}
