@@ -17,6 +17,8 @@ PanSou是一个高性能的网盘资源搜索API服务，支持TG搜索和自定
 
 PanSou 还提供了一个基于 [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 的服务，可以将搜索功能集成到 Claude Desktop 等支持 MCP 的应用中。详情请参阅 [MCP 服务文档](docs/MCP-SERVICE.md)。
 
+同时，PanSou 也支持通过 [OpenClaw Skill](https://clawhub.ai/212-mei/pansou) 集成到兼容的客户端中。
+
 ## 支持的网盘类型
 
 百度网盘 (`baidu`)、阿里云盘 (`aliyun`)、夸克网盘 (`quark`)、天翼云盘 (`tianyi`)、UC网盘 (`uc`)、移动云盘 (`mobile`)、115网盘 (`115`)、PikPak (`pikpak`)、迅雷网盘 (`xunlei`)、123网盘 (`123`)、磁力链接 (`magnet`)、电驴链接 (`ed2k`)、其他 (`others`)
