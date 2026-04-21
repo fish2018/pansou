@@ -14,6 +14,8 @@ PanSou是一个高性能的网盘资源搜索API服务，支持TG搜索和自定
 - **二级缓存**：分片内存+分片磁盘缓存机制，大幅提升重复查询速度和并发性能  
 
 
+同时，PanSou 也支持通过 [OpenClaw Skill](https://clawhub.ai/212-mei/pansou) 在 OpenClaw 中直接调用。
+
 ## 支持的网盘类型
 
 百度网盘 (`baidu`)、阿里云盘 (`aliyun`)、夸克网盘 (`quark`)、光鸭云盘 (`guangya`)、天翼云盘 (`tianyi`)、UC网盘 (`uc`)、移动云盘 (`mobile`)、115网盘 (`115`)、PikPak (`pikpak`)、迅雷网盘 (`xunlei`)、123网盘 (`123`)、磁力链接 (`magnet`)、电驴链接 (`ed2k`)、其他 (`others`)
