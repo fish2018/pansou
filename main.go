@@ -73,6 +73,7 @@ import (
 	_ "pansou/plugin/panlian"
 	_ "pansou/plugin/pansearch"
 	_ "pansou/plugin/panta"
+	_ "pansou/plugin/panzun"
 	_ "pansou/plugin/panwiki"
 	_ "pansou/plugin/panyq"
 	_ "pansou/plugin/pianku"
