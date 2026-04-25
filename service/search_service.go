@@ -470,8 +470,8 @@ func (s *SearchService) Search(keyword string, channels []string, concurrency in
 	// 合并结果
 	allResults := mergeSearchResults(tgResults, pluginResults)
 
-	// 按照优化后的规则排序结果
-	sortResultsByTimeAndKeywords(allResults)
+	// 按照优化后的规则排序结果，并获取排名和总分映射
+	rankMap := sortResultsByTimeAndKeywords(allResults)
 
 	// 过滤结果，只保留有时间的结果或包含优先关键词的结果或高等级插件结果到Results中
 	filteredForResults := make([]model.SearchResult, 0, len(allResults))
@@ -485,8 +485,8 @@ func (s *SearchService) Search(keyword string, channels []string, concurrency in
 		}
 	}
 
-	// 合并链接按网盘类型分组（使用所有过滤后的结果）
-	mergedLinks := mergeResultsByType(allResults, keyword, cloudTypes)
+	// 合并链接按网盘类型分组（使用所有过滤后的结果），并传递排名和总分映射
+	mergedLinks := mergeResultsByType(allResults, keyword, cloudTypes, rankMap)
 
 	// 构建响应
 	var total int
@@ -540,8 +540,14 @@ func filterResponseByType(response model.SearchResponse, resultType string) mode
 	}
 }
 
-// 根据时间和关键词排序结果
-func sortResultsByTimeAndKeywords(results []model.SearchResult) {
+// ResultRankInfo 结果排名和总分信息
+type ResultRankInfo struct {
+	Rank       int     // 排名
+	TotalScore float64 // 总分
+}
+
+// sortResultsByTimeAndKeywords 根据时间和关键词排序结果，并返回排名和总分映射
+func sortResultsByTimeAndKeywords(results []model.SearchResult) map[string]ResultRankInfo {
 	// 1. 计算每个结果的综合得分
 	scores := make([]ResultScore, len(results))
 
@@ -567,10 +573,39 @@ func sortResultsByTimeAndKeywords(results []model.SearchResult) {
 		return scores[i].TotalScore > scores[j].TotalScore
 	})
 
-	// 3. 更新原数组
+	// 3. 更新原数组并创建排名映射
+	rankMap := make(map[string]ResultRankInfo)
 	for i, score := range scores {
 		results[i] = score.Result
+		// 提取来源名称
+		source := getResultSource(score.Result)
+		sourceName := extractSourceName(source)
+		// 生成格式化标题
+		formattedTitle := formatTitle(i+1, score.TotalScore, sourceName, score.Result.Title)
+		// 更新 SearchResult.Title
+		results[i].Title = formattedTitle
+		// 保存排名（从1开始）和总分
+		rankMap[score.Result.UniqueID] = ResultRankInfo{
+			Rank:       i + 1,
+			TotalScore: score.TotalScore,
+		}
 	}
+
+	return rankMap
+}
+
+// formatTitle 统一处理标题格式化逻辑
+func formatTitle(rank int, totalScore float64, sourceName, title string) string {
+	return fmt.Sprintf("%04d %.0f %s %s", rank, totalScore, sourceName, title)
+}
+
+// extractSourceName 从来源字符串中提取实际的频道名或插件名
+func extractSourceName(source string) string {
+	parts := strings.Split(source, ":")
+	if len(parts) >= 2 {
+		return parts[1] // 返回冒号后的实际名称
+	}
+	return source // 回退，返回原始字符串
 }
 
 // 获取标题中包含优先关键词的优先级
@@ -986,8 +1021,53 @@ func isEmpty(line string) bool {
 	return strings.TrimSpace(line) == ""
 }
 
-// 将搜索结果按网盘类型分组
-func mergeResultsByType(results []model.SearchResult, keyword string, cloudTypes []string) model.MergedLinks {
+// generateResultNoteInfo 生成结果备注信息
+func generateResultNoteInfo(result model.SearchResult, source string, keyword string, rank int) string {
+	var parts []string
+
+	// 获取来源名称
+	var sourceName string
+
+	if strings.HasPrefix(source, "plugin:") {
+		sourceName = strings.TrimPrefix(source, "plugin:")
+	} else if strings.HasPrefix(source, "tg:") {
+		sourceName = strings.TrimPrefix(source, "tg:")
+	} else {
+		sourceName = "unknown"
+	}
+
+	// 计算综合得分
+	timeScore := calculateTimeScore(result.Datetime)
+	keywordScore := getKeywordPriority(result.Title)
+	pluginScore := getPluginLevelScore(source)
+	totalScore := timeScore + float64(keywordScore) + float64(pluginScore)
+
+	// 添加排名
+	if rank > 0 {
+		parts = append(parts, fmt.Sprintf("%03d", rank))
+	}
+
+	// 添加来源
+	if sourceName != "" {
+		parts = append(parts, sourceName)
+	}
+
+	// 添加得分
+	if totalScore > 0 {
+		parts = append(parts, fmt.Sprintf("%.0f", totalScore))
+	}
+
+	// 如果没有任何信息，返回空字符串
+	if len(parts) == 0 {
+		return ""
+	}
+
+	// 返回备注信息，格式：001 panta 1710
+	return strings.Join(parts, " ")
+}
+
+// 将搜索结果按网盘类型分组，并在标题前添加排名、总分和来源
+func mergeResultsByType(results []model.SearchResult, keyword string, cloudTypes []string, rankMap map[string]ResultRankInfo) model.MergedLinks {
 	// 创建合并结果的映射
 	mergedLinks := make(model.MergedLinks, 12) // 预分配容量，假设有12种不同的网盘类型
 
@@ -1125,10 +1205,25 @@ func mergeResultsByType(results []model.SearchResult, keyword string, cloudTypes
 				linkDatetime = link.Datetime
 			}
 
+			// 获取排名和总分信息
+			rankInfo, hasRank := rankMap[result.UniqueID]
+			rank := 0
+			totalScore := 0.0
+			if hasRank {
+				rank = rankInfo.Rank
+				totalScore = rankInfo.TotalScore
+			}
+
+			// 提取实际的来源名称（频道名或插件名）
+			sourceName := extractSourceName(source)
+
+			// 生成带排名、总分和来源的格式化标题
+			formattedTitle := formatTitle(rank, totalScore, sourceName, title)
+
 			mergedLink := model.MergedLink{
 				URL:      link.URL,
 				Password: link.Password,
-				Note:     title, // 使用找到的特定标题
+				Note:     formattedTitle, // 使用格式化后的标题
 				Datetime: linkDatetime,
 				Source:   source,        // 添加数据来源字段
 				Images:   result.Images, // 添加TG消息中的图片链接
@@ -1534,22 +1629,43 @@ func calculateTimeScore(datetime time.Time) float64 {
 	}
 
 	now := time.Now()
-	daysDiff := now.Sub(datetime).Hours() / 24
+	duration := now.Sub(datetime)
+	minutesDiff := duration.Minutes()
+	hoursDiff := duration.Hours()
+	daysDiff := hoursDiff / 24
 
-	// 时间得分：越新得分越高，最大500分（增加时间权重）
+	// 时间得分：越新得分越高
 	switch {
+	// 15分钟内
+	case minutesDiff <= 15:
+		return 3000
+	// 半小时内
+	case minutesDiff <= 30:
+		return 2000
+	// 1小时内
+	case hoursDiff <= 1:
+		return 1500
+	// 2小时内
+	case hoursDiff <= 2:
+		return 1000
+	// 1天内
 	case daysDiff <= 1:
-		return 500 // 1天内
+		return 500
+	// 3天内
 	case daysDiff <= 3:
-		return 400 // 3天内
+		return 400
+	// 1周内
 	case daysDiff <= 7:
-		return 300 // 1周内
+		return 300
+	// 1月内
 	case daysDiff <= 30:
-		return 200 // 1月内
+		return 200
+	// 3月内
 	case daysDiff <= 90:
-		return 100 // 3月内
+		return 100
+	// 1年内
 	case daysDiff <= 365:
-		return 50 // 1年内
+		return 50
 	default:
 		return 20 // 1年以上
 	}
