@@ -1,6 +1,7 @@
 package gying
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,9 +38,15 @@ import (
 
 // 插件配置参数
 const (
-	MaxConcurrentUsers   = 10    // 最多使用的用户数
-	MaxConcurrentDetails = 50    // 最大并发详情请求数
-	DebugLog             = false // 调试日志开关（排查问题时改为true）
+	MaxConcurrentUsers          = 10    // 最多使用的用户数
+	MaxConcurrentDetails        = 50    // 最大并发详情请求数
+	DefaultSearchTabPanPages    = 5     // 默认抓取网盘页签页数
+	DefaultSearchTabBTPages     = 2     // 默认抓取种子页签页数
+	DefaultSearchTabBTDetail    = 6     // 默认种子页签详情并发数
+	MaxSearchTabPages           = 10    // 页签抓取页数硬上限，避免频繁触发风控
+	MaxSearchTabBTDetail        = 12    // 种子页签详情并发硬上限
+	SearchTabRequestDelayMillis = 250   // 页签翻页之间的轻量延迟
+	DebugLog                    = false // 调试日志开关（排查问题时改为true）
 )
 
 // 默认账户配置（可通过Web界面添加更多账户）
@@ -51,12 +59,14 @@ const (
 var (
 	challengeJSONPattern  = regexp.MustCompile(`const json=(\{.*?\});const jss=`)
 	searchDataPattern     = regexp.MustCompile(`_obj\.search=(\{.*?\});`)
+	searchPageDataPattern = regexp.MustCompile(`_obj\.page=(\{.*?\});`)
+	btDetailDataPattern   = regexp.MustCompile(`_obj\.d=(\{.*?\});\s*_obj\.footer=`)
 	accessCodeBlockRegex  = regexp.MustCompile(`[（(]\s*访问码[:：]\s*[^)）]+[)）]`)
 	yearSuffixRegex       = regexp.MustCompile(`[（(]\d{4}[)）]`)
 	baiduLinkRegex        = regexp.MustCompile(`https?://pan\.baidu\.com/s/[a-zA-Z0-9_-]+(?:\?pwd=[a-zA-Z0-9]{4})?`)
 	quarkLinkRegex        = regexp.MustCompile(`https?://pan\.quark\.cn/s/[a-zA-Z0-9]+`)
 	aliyunLinkRegex       = regexp.MustCompile(`https?://(?:www\.)?(?:alipan|aliyundrive)\.com/s/[a-zA-Z0-9]+`)
-	xunleiLinkRegex       = regexp.MustCompile(`https?://pan\.xunlei\.com/s/[a-zA-Z0-9]+(?:\?pwd=[a-zA-Z0-9]{4})?`)
+	xunleiLinkRegex       = regexp.MustCompile(`https?://pan\.xunlei\.com/s/[a-zA-Z0-9_-]+(?:\?pwd=[a-zA-Z0-9]{4,8})?`)
 	tianyiLinkRegex       = regexp.MustCompile(`https?://cloud\.189\.cn/(?:t/|web/share\?code=)[a-zA-Z0-9]+`)
 	tianyiShareCodeRegex  = regexp.MustCompile(`(?i)sharecode=([a-zA-Z0-9]+)`)
 	tianyiCloudRegex      = regexp.MustCompile(`https?://(?:www\.)?tianyi\.cloud/[^\s<>"']+`)
@@ -503,9 +513,11 @@ type User struct {
 
 // SearchData 搜索页面JSON数据结构
 type SearchData struct {
-	Q  string   `json:"q"`  // 搜索关键词
-	WD []string `json:"wd"` // 分词
-	N  string   `json:"n"`  // 结果数量
+	Q  string        `json:"q"`  // 搜索关键词
+	WD []string      `json:"wd"` // 分词
+	N  string        `json:"n"`  // 结果数量
+	NS []interface{} `json:"ns"` // 各分类数量：全部/电影/剧集/动漫/种子/网盘（站点会混用数字和字符串）
+	TY int           `json:"ty"` // 当前搜索分类
 	L  struct {
 		Title  []string `json:"title"`  // 标题数组
 		Year   []int    `json:"year"`   // 年份数组
@@ -514,7 +526,33 @@ type SearchData struct {
 		Info   []string `json:"info"`   // 信息数组
 		Daoyan []string `json:"daoyan"` // 导演数组
 		Zhuyan []string `json:"zhuyan"` // 主演数组
+		TName  []string `json:"tname"`  // 网盘类型名称（type=5）
+		URL    []string `json:"url"`    // 网盘链接（type=5）
+		PW     []string `json:"pw"`     // 网盘提取码（type=5）
+		Time   []string `json:"time"`   // 更新时间（type=4/type=5）
+		Size   []string `json:"size"`   // 种子大小（type=4）
+		Seeds  []int    `json:"seeds"`  // 做种数（type=4）
+		K      []int    `json:"k"`      // 种子类型（type=4）
 	} `json:"l"`
+	Page SearchPageData `json:"-"`
+}
+
+type SearchPageData struct {
+	Pages int `json:"pages"`
+	Curr  int `json:"curr"`
+	Set   int `json:"set"`
+}
+
+type BTDetailData struct {
+	Title   string `json:"title"`
+	I       string `json:"i"`
+	T1      string `json:"t1"`
+	T2      string `json:"t2"`
+	S       string `json:"s"`
+	DU      string `json:"du"`
+	Type    string `json:"type"`
+	Magnet  string `json:"magnet"`
+	Torrent string `json:"torrent"`
 }
 
 // DetailData 详情接口JSON数据结构
@@ -952,7 +990,7 @@ func (p *GyingPlugin) initDefaultAccounts() {
 				continue
 			}
 
-			p.initOrRestoreUser(user.Username, password, "restore")
+			p.initOrRestoreUserWithHash(user.Hash, user.Username, password, "restore")
 		}
 	}
 
@@ -962,7 +1000,10 @@ func (p *GyingPlugin) initDefaultAccounts() {
 // initOrRestoreUser 初始化或恢复单个用户（登录并保存）
 func (p *GyingPlugin) initOrRestoreUser(username, password, source string) {
 	hash := p.generateHash(username)
+	p.initOrRestoreUserWithHash(hash, username, password, source)
+}
 
+func (p *GyingPlugin) initOrRestoreUserWithHash(hash, username, password, source string) {
 	// 检查scraper是否已存在
 	_, scraperExists := p.scrapers.Load(hash)
 	if scraperExists {
@@ -1326,7 +1367,8 @@ func (p *GyingPlugin) handleTestSearch(c *gin.Context, hash string, reqData map[
 	}
 
 	// 限制返回数量
-	maxResults := 10
+	maxResults := p.parseMaxResults(reqData, 10, 100)
+	totalFound := len(results)
 	if len(results) > maxResults {
 		results = results[:maxResults]
 	}
@@ -1351,10 +1393,37 @@ func (p *GyingPlugin) handleTestSearch(c *gin.Context, hash string, reqData map[
 	}
 
 	respondSuccess(c, fmt.Sprintf("找到 %d 条结果", len(frontendResults)), gin.H{
-		"keyword":       keyword,
-		"total_results": len(frontendResults),
-		"results":       frontendResults,
+		"keyword":          keyword,
+		"total_results":    totalFound,
+		"returned_results": len(frontendResults),
+		"limited":          totalFound > len(frontendResults),
+		"max_results":      maxResults,
+		"results":          frontendResults,
 	})
+}
+
+func (p *GyingPlugin) parseMaxResults(reqData map[string]interface{}, defaultValue, maxValue int) int {
+	maxResults := defaultValue
+	if raw, exists := reqData["max_results"]; exists {
+		switch v := raw.(type) {
+		case float64:
+			maxResults = int(v)
+		case int:
+			maxResults = v
+		case string:
+			if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+				maxResults = parsed
+			}
+		}
+	}
+
+	if maxResults <= 0 {
+		return defaultValue
+	}
+	if maxResults > maxValue {
+		return maxValue
+	}
+	return maxResults
 }
 
 // ============ 密码加密/解密 ============
@@ -1730,6 +1799,7 @@ func (p *GyingPlugin) createScraperWithCookies(cookieStr string) (*cloudscraper.
 	if err != nil {
 		return nil, fmt.Errorf("创建cloudscraper失败: %w", err)
 	}
+	p.configureScraperDNSFallback(scraper)
 
 	// 如果有保存的cookies，使用反射设置到scraper的内部http.Client
 	if cookieStr != "" {
@@ -1739,16 +1809,8 @@ func (p *GyingPlugin) createScraperWithCookies(cookieStr string) (*cloudscraper.
 			fmt.Printf("[Gying] 正在恢复 %d 个cookie到scraper实例\n", len(cookies))
 		}
 
-		// 使用反射访问scraper的unexported client字段
-		scraperValue := reflect.ValueOf(scraper).Elem()
-		clientField := scraperValue.FieldByName("client")
-
-		if clientField.IsValid() && !clientField.IsNil() {
-			// 使用反射访问client (需要使用Elem()因为是指针)
-			clientValue := reflect.NewAt(clientField.Type(), unsafe.Pointer(clientField.UnsafeAddr())).Elem()
-			client, ok := clientValue.Interface().(*http.Client)
-
-			if ok && client != nil && client.Jar != nil {
+		if client, ok := scraperHTTPClient(scraper); ok {
+			if client != nil && client.Jar != nil {
 				// 将cookies设置到cookiejar
 				// 注意：必须使用正确的URL和cookie属性
 				gyingURL, _ := url.Parse(p.getBaseURL())
@@ -1796,6 +1858,175 @@ func (p *GyingPlugin) createScraperWithCookies(cookieStr string) (*cloudscraper.
 	}
 
 	return scraper, nil
+}
+
+func scraperHTTPClient(scraper *cloudscraper.Scraper) (*http.Client, bool) {
+	if scraper == nil {
+		return nil, false
+	}
+
+	scraperValue := reflect.ValueOf(scraper)
+	if scraperValue.Kind() != reflect.Ptr || scraperValue.IsNil() {
+		return nil, false
+	}
+
+	clientField := scraperValue.Elem().FieldByName("client")
+	if !clientField.IsValid() || clientField.IsNil() {
+		return nil, false
+	}
+
+	clientValue := reflect.NewAt(clientField.Type(), unsafe.Pointer(clientField.UnsafeAddr())).Elem()
+	client, ok := clientValue.Interface().(*http.Client)
+	return client, ok && client != nil
+}
+
+func (p *GyingPlugin) configureScraperDNSFallback(scraper *cloudscraper.Scraper) {
+	client, ok := scraperHTTPClient(scraper)
+	if !ok || client.Transport == nil {
+		return
+	}
+
+	baseURL, err := url.Parse(p.getBaseURL())
+	if err != nil {
+		return
+	}
+	baseHost := strings.ToLower(baseURL.Hostname())
+	if baseHost == "" {
+		return
+	}
+
+	fallbackTargets := p.resolveFallbackTargets(baseHost)
+	if len(fallbackTargets) == 0 {
+		return
+	}
+
+	transport := scraperHTTPTransport(client.Transport)
+	if transport == nil {
+		return
+	}
+
+	originalDial := transport.DialContext
+	if originalDial == nil {
+		originalDial = (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext
+	}
+
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, splitErr := net.SplitHostPort(address)
+		if splitErr != nil || !strings.EqualFold(host, baseHost) {
+			return originalDial(ctx, network, address)
+		}
+
+		conn, err := originalDial(ctx, network, address)
+		if err == nil {
+			return conn, nil
+		}
+
+		fallbackAddress, resolveErr := p.resolveFallbackAddress(ctx, fallbackTargets, port)
+		if resolveErr != nil {
+			return nil, err
+		}
+
+		fallbackConn, fallbackErr := originalDial(ctx, network, fallbackAddress)
+		if fallbackErr != nil {
+			return nil, fmt.Errorf("%w; DNS兜底连接 %s 失败: %v", err, fallbackAddress, fallbackErr)
+		}
+		return fallbackConn, nil
+	}
+}
+
+func scraperHTTPTransport(roundTripper http.RoundTripper) *http.Transport {
+	if transport, ok := roundTripper.(*http.Transport); ok {
+		return transport
+	}
+
+	value := reflect.ValueOf(roundTripper)
+	if value.Kind() != reflect.Ptr || value.IsNil() {
+		return nil
+	}
+
+	transportField := value.Elem().FieldByName("Transport")
+	if !transportField.IsValid() || transportField.IsNil() {
+		return nil
+	}
+
+	transport, ok := transportField.Interface().(*http.Transport)
+	if !ok {
+		return nil
+	}
+	return transport
+}
+
+func (p *GyingPlugin) resolveFallbackTargets(baseHost string) []string {
+	seen := make(map[string]struct{})
+	targets := make([]string, 0, 2)
+
+	addTarget := func(target string) {
+		target = strings.TrimSpace(strings.ToLower(target))
+		if target == "" {
+			return
+		}
+		if _, exists := seen[target]; exists {
+			return
+		}
+		seen[target] = struct{}{}
+		targets = append(targets, target)
+	}
+
+	for _, target := range strings.Split(os.Getenv("GYING_RESOLVE_IP"), ",") {
+		addTarget(target)
+	}
+	if strings.HasPrefix(baseHost, "www.") {
+		addTarget(strings.TrimPrefix(baseHost, "www."))
+	}
+
+	return targets
+}
+
+func (p *GyingPlugin) resolveFallbackAddress(ctx context.Context, targets []string, port string) (string, error) {
+	var lastErr error
+	for _, target := range targets {
+		if ip := net.ParseIP(target); isUsableIP(ip) {
+			return net.JoinHostPort(ip.String(), port), nil
+		}
+
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, target)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if ip := selectUsableIP(ips); ip != "" {
+			return net.JoinHostPort(ip, port), nil
+		}
+	}
+
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("没有可用的DNS兜底地址")
+}
+
+func selectUsableIP(ips []net.IPAddr) string {
+	var firstIPv6 string
+	for _, item := range ips {
+		ip := item.IP
+		if !isUsableIP(ip) {
+			continue
+		}
+		if ipv4 := ip.To4(); ipv4 != nil {
+			return ipv4.String()
+		}
+		if firstIPv6 == "" {
+			firstIPv6 = ip.String()
+		}
+	}
+	return firstIPv6
+}
+
+func isUsableIP(ip net.IP) bool {
+	return ip != nil && !ip.IsUnspecified()
 }
 
 // parseCookieString 解析cookie字符串为map
@@ -1847,6 +2078,7 @@ func (p *GyingPlugin) doLogin(username, password string) (*cloudscraper.Scraper,
 		}
 		return nil, "", fmt.Errorf("创建cloudscraper失败: %w", err)
 	}
+	p.configureScraperDNSFallback(scraper)
 
 	if DebugLog {
 		fmt.Printf("[Gying] cloudscraper创建成功（已禁用403自动刷新）\n")
@@ -2174,16 +2406,17 @@ func (p *GyingPlugin) searchWithScraperWithRetry(keyword string, scraper *clouds
 	return results, err
 }
 
-// searchWithScraper 使用scraper搜索
-func (p *GyingPlugin) searchWithScraper(keyword string, scraper *cloudscraper.Scraper) ([]model.SearchResult, error) {
-	if DebugLog {
-		fmt.Printf("[Gying] ---------- searchWithScraper 开始 ----------\n")
-		fmt.Printf("[Gying] 关键词: %s\n", keyword)
+func (p *GyingPlugin) buildSearchURL(keyword, searchType string, page int) string {
+	searchURL := fmt.Sprintf("%s/search?q=%s&type=%s&mode=1",
+		p.getBaseURL(), url.QueryEscape(keyword), url.QueryEscape(searchType))
+	if page > 1 {
+		searchURL += fmt.Sprintf("&page=%d", page)
 	}
+	return searchURL
+}
 
-	// 1. 使用cloudscraper请求搜索页面
-	// searchURL := fmt.Sprintf("%s/s/1---1/%s", p.getBaseURL(), url.QueryEscape(keyword))
-	searchURL := fmt.Sprintf("%s/search?q=%s&type=&mode=1", p.getBaseURL(), url.QueryEscape(keyword))
+func (p *GyingPlugin) fetchSearchData(scraper *cloudscraper.Scraper, keyword, searchType string, page int) (*SearchData, error) {
+	searchURL := p.buildSearchURL(keyword, searchType, page)
 
 	if DebugLog {
 		fmt.Printf("[Gying] 搜索URL: %s\n", searchURL)
@@ -2229,7 +2462,6 @@ func (p *GyingPlugin) searchWithScraper(keyword string, scraper *cloudscraper.Sc
 		return nil, fmt.Errorf("HTTP 403 Forbidden - 可能需要重新登录")
 	}
 
-	// 2. 提取 _obj.search JSON
 	matches := searchDataPattern.FindSubmatch(body)
 
 	if DebugLog {
@@ -2271,9 +2503,20 @@ func (p *GyingPlugin) searchWithScraper(keyword string, scraper *cloudscraper.Sc
 		return nil, fmt.Errorf("解析搜索数据失败: %w", err)
 	}
 
+	if pageMatches := searchPageDataPattern.FindSubmatch(body); len(pageMatches) >= 2 {
+		var pageData SearchPageData
+		if err := json.Unmarshal(pageMatches[1], &pageData); err == nil {
+			searchData.Page = pageData
+		} else if DebugLog {
+			fmt.Printf("[Gying] 分页数据解析失败: %v\n", err)
+		}
+	}
+
 	if DebugLog {
 		fmt.Printf("[Gying] 搜索数据解析成功:\n")
 		fmt.Printf("[Gying]   - 关键词: %s\n", searchData.Q)
+		fmt.Printf("[Gying]   - 当前分类: %d, 分类数量: %v\n", searchData.TY, searchData.NS)
+		fmt.Printf("[Gying]   - 分页: 当前=%d, 总页=%d\n", searchData.Page.Curr, searchData.Page.Pages)
 		fmt.Printf("[Gying]   - 结果数量字符串: %s\n", searchData.N)
 		fmt.Printf("[Gying]   - 资源ID数组长度: %d\n", len(searchData.L.I))
 		fmt.Printf("[Gying]   - 标题数组长度: %d\n", len(searchData.L.Title))
@@ -2281,6 +2524,25 @@ func (p *GyingPlugin) searchWithScraper(keyword string, scraper *cloudscraper.Sc
 			fmt.Printf("[Gying]   - 前3个资源ID: %v\n", searchData.L.I[:min(3, len(searchData.L.I))])
 			fmt.Printf("[Gying]   - 前3个标题: %v\n", searchData.L.Title[:min(3, len(searchData.L.Title))])
 		}
+	}
+
+	return &searchData, nil
+}
+
+// searchWithScraper 使用scraper搜索
+func (p *GyingPlugin) searchWithScraper(keyword string, scraper *cloudscraper.Scraper) ([]model.SearchResult, error) {
+	if DebugLog {
+		fmt.Printf("[Gying] ---------- searchWithScraper 开始 ----------\n")
+		fmt.Printf("[Gying] 关键词: %s\n", keyword)
+	}
+
+	// 1. 使用cloudscraper请求影视条目搜索页面
+	searchData, err := p.fetchSearchData(scraper, keyword, "", 1)
+	if err != nil {
+		if DebugLog {
+			fmt.Printf("[Gying] 搜索请求失败: %v\n", err)
+		}
+		return nil, err
 	}
 
 	// 3. 刷新防爬cookies（关键！访问详情页触发vrg_sc、vrg_go等防爬cookies）
@@ -2294,8 +2556,29 @@ func (p *GyingPlugin) searchWithScraper(keyword string, scraper *cloudscraper.Sc
 		}
 	}
 
-	// 4. 并发请求详情接口
-	results, err := p.fetchAllDetails(&searchData, scraper, keyword)
+	// 4. 抓取页签第一页及有限翻页，补齐搜索页“网盘/种子”页签的数据
+	panResults, err := p.fetchDirectPanSearchResults(scraper, keyword)
+	if err != nil {
+		if strings.Contains(err.Error(), "403") {
+			return nil, err
+		}
+		if DebugLog {
+			fmt.Printf("[Gying] fetchDirectPanSearchResults 失败，继续详情接口: %v\n", err)
+		}
+	}
+
+	btResults, err := p.fetchDirectBTSearchResults(scraper, keyword)
+	if err != nil {
+		if strings.Contains(err.Error(), "403") {
+			return nil, err
+		}
+		if DebugLog {
+			fmt.Printf("[Gying] fetchDirectBTSearchResults 失败，继续详情接口: %v\n", err)
+		}
+	}
+
+	// 5. 并发请求详情接口，保留原有综合结果能力
+	detailResults, err := p.fetchAllDetails(searchData, scraper, keyword)
 	if err != nil {
 		if DebugLog {
 			fmt.Printf("[Gying] fetchAllDetails 失败: %v\n", err)
@@ -2304,12 +2587,440 @@ func (p *GyingPlugin) searchWithScraper(keyword string, scraper *cloudscraper.Sc
 		return nil, err
 	}
 
+	results := make([]model.SearchResult, 0, len(panResults)+len(btResults)+len(detailResults))
+	results = append(results, panResults...)
+	results = append(results, btResults...)
+	results = append(results, detailResults...)
+	results = p.deduplicateResults(results)
+
 	if DebugLog {
-		fmt.Printf("[Gying] fetchAllDetails 返回 %d 条结果\n", len(results))
+		fmt.Printf("[Gying] fetchDirectPanSearchResults 返回 %d 条结果\n", len(panResults))
+		fmt.Printf("[Gying] fetchDirectBTSearchResults 返回 %d 条结果\n", len(btResults))
+		fmt.Printf("[Gying] fetchAllDetails 返回 %d 条结果\n", len(detailResults))
+		fmt.Printf("[Gying] 搜索合并后返回 %d 条结果\n", len(results))
 		fmt.Printf("[Gying] ---------- searchWithScraper 结束 ----------\n")
 	}
 
 	return results, nil
+}
+
+func (p *GyingPlugin) fetchDirectPanSearchResults(scraper *cloudscraper.Scraper, keyword string) ([]model.SearchResult, error) {
+	pageLimit := p.searchTabPageLimit("GYING_PAN_TAB_PAGES", DefaultSearchTabPanPages, MaxSearchTabPages)
+	if pageLimit <= 0 {
+		return nil, nil
+	}
+
+	allResults := make([]model.SearchResult, 0)
+	seenLinks := make(map[string]struct{})
+	firstPageItems := 0
+
+	for page := 1; page <= pageLimit; page++ {
+		p.waitBeforeSearchTabPage(page)
+
+		searchData, err := p.fetchSearchData(scraper, keyword, "5", page)
+		if err != nil {
+			if page == 1 {
+				return nil, err
+			}
+			if DebugLog {
+				fmt.Printf("[Gying] 网盘页签第 %d 页失败，停止翻页: %v\n", page, err)
+			}
+			break
+		}
+
+		pageResults := p.buildDirectPanResults(searchData, seenLinks)
+		allResults = append(allResults, pageResults...)
+
+		pageItems := max(len(searchData.L.Title), len(searchData.L.URL))
+		if DebugLog {
+			fmt.Printf("[Gying] 网盘页签第 %d 页: 原始条目=%d, 有效结果=%d\n", page, pageItems, len(pageResults))
+		}
+		if pageItems == 0 {
+			break
+		}
+		if page == 1 {
+			firstPageItems = pageItems
+			if searchData.Page.Pages > 0 && searchData.Page.Pages < pageLimit {
+				pageLimit = searchData.Page.Pages
+			} else if estimatedPages := p.estimateSearchPages(searchData.N, pageItems); estimatedPages > 0 && estimatedPages < pageLimit {
+				pageLimit = estimatedPages
+			}
+		} else if firstPageItems > 0 && pageItems < firstPageItems {
+			break
+		}
+		if searchData.Page.Pages > 0 && page >= searchData.Page.Pages {
+			break
+		}
+	}
+
+	return allResults, nil
+}
+
+func (p *GyingPlugin) buildDirectPanResults(searchData *SearchData, seenLinks map[string]struct{}) []model.SearchResult {
+	if searchData == nil {
+		return nil
+	}
+
+	now := time.Now()
+	itemCount := max(len(searchData.L.Title), len(searchData.L.URL))
+	results := make([]model.SearchResult, 0, itemCount)
+
+	for i := 0; i < itemCount; i++ {
+		rawURL := p.safeString(searchData.L.URL, i)
+		typeName := p.safeString(searchData.L.TName, i)
+		linkURL := p.normalizePanURL(rawURL, -1, typeName)
+		linkType := p.determineLinkType(linkURL, -1, typeName)
+		if linkURL == "" || linkType == "others" {
+			continue
+		}
+
+		seenKey := linkType + ":" + strings.ToLower(linkURL)
+		if _, exists := seenLinks[seenKey]; exists {
+			continue
+		}
+		seenLinks[seenKey] = struct{}{}
+
+		title := p.safeString(searchData.L.Title, i)
+		if title == "" {
+			title = linkURL
+		}
+
+		timeText := p.safeString(searchData.L.Time, i)
+		linkTime := p.parseLinkTime(timeText, now)
+		resultTime := linkTime
+		if resultTime.IsZero() {
+			resultTime = p.parseUpdateTime([]string{timeText})
+		}
+
+		contentParts := []string{"网盘搜索"}
+		if typeName != "" {
+			contentParts = append(contentParts, "网盘: "+typeName)
+		}
+
+		results = append(results, model.SearchResult{
+			UniqueID: "gying-pan-" + p.shortHash(linkType+":"+strings.ToLower(linkURL)),
+			Title:    title,
+			Content:  strings.Join(contentParts, " | "),
+			Links: []model.Link{
+				{
+					Type:      linkType,
+					URL:       linkURL,
+					Password:  p.extractPassword(rawURL, p.safeString(searchData.L.PW, i)),
+					Datetime:  linkTime,
+					WorkTitle: title,
+				},
+			},
+			Tags:     []string{"网盘"},
+			Channel:  "",
+			Datetime: resultTime,
+		})
+	}
+
+	return results
+}
+
+func (p *GyingPlugin) fetchDirectBTSearchResults(scraper *cloudscraper.Scraper, keyword string) ([]model.SearchResult, error) {
+	pageLimit := p.searchTabPageLimit("GYING_BT_TAB_PAGES", DefaultSearchTabBTPages, MaxSearchTabPages)
+	if pageLimit <= 0 {
+		return nil, nil
+	}
+
+	allResults := make([]model.SearchResult, 0)
+	seenMagnets := make(map[string]struct{})
+	firstPageItems := 0
+
+	for page := 1; page <= pageLimit; page++ {
+		p.waitBeforeSearchTabPage(page)
+
+		searchData, err := p.fetchSearchData(scraper, keyword, "4", page)
+		if err != nil {
+			if page == 1 {
+				return nil, err
+			}
+			if DebugLog {
+				fmt.Printf("[Gying] 种子页签第 %d 页失败，停止翻页: %v\n", page, err)
+			}
+			break
+		}
+
+		pageResults, err := p.buildDirectBTResults(searchData, scraper, seenMagnets)
+		if err != nil && strings.Contains(err.Error(), "403") {
+			return allResults, err
+		}
+		allResults = append(allResults, pageResults...)
+
+		pageItems := len(searchData.L.I)
+		if DebugLog {
+			if err != nil {
+				fmt.Printf("[Gying] 种子页签第 %d 页部分失败: %v\n", page, err)
+			}
+			fmt.Printf("[Gying] 种子页签第 %d 页: 原始条目=%d, 有效结果=%d\n", page, pageItems, len(pageResults))
+		}
+		if pageItems == 0 {
+			break
+		}
+		if page == 1 {
+			firstPageItems = pageItems
+			if searchData.Page.Pages > 0 && searchData.Page.Pages < pageLimit {
+				pageLimit = searchData.Page.Pages
+			} else if estimatedPages := p.estimateSearchPages(searchData.N, pageItems); estimatedPages > 0 && estimatedPages < pageLimit {
+				pageLimit = estimatedPages
+			}
+		} else if firstPageItems > 0 && pageItems < firstPageItems {
+			break
+		}
+		if searchData.Page.Pages > 0 && page >= searchData.Page.Pages {
+			break
+		}
+	}
+
+	return allResults, nil
+}
+
+func (p *GyingPlugin) buildDirectBTResults(searchData *SearchData, scraper *cloudscraper.Scraper, seenMagnets map[string]struct{}) ([]model.SearchResult, error) {
+	if searchData == nil {
+		return nil, nil
+	}
+
+	type indexedResult struct {
+		index  int
+		result model.SearchResult
+	}
+
+	var wg sync.WaitGroup
+	concurrency := p.searchTabBTConcurrency()
+	semaphore := make(chan struct{}, concurrency)
+	resultChan := make(chan indexedResult, len(searchData.L.I))
+	errChan := make(chan error, 1)
+
+	for i := 0; i < len(searchData.L.I); i++ {
+		resourceID := p.safeString(searchData.L.I, i)
+		resourceType := p.safeString(searchData.L.D, i)
+		if resourceID == "" || resourceType != "bt" {
+			continue
+		}
+
+		wg.Add(1)
+		go func(index int, btID string) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			detail, err := p.fetchBTDetail(btID, scraper)
+			if err != nil {
+				if strings.Contains(err.Error(), "403") {
+					select {
+					case errChan <- err:
+					default:
+					}
+				}
+				if DebugLog {
+					fmt.Printf("[Gying]   BT详情失败: ID=%s, err=%v\n", btID, err)
+				}
+				return
+			}
+
+			result := p.buildBTResult(searchData, detail, index)
+			if result.Title == "" || len(result.Links) == 0 {
+				return
+			}
+			resultChan <- indexedResult{index: index, result: result}
+		}(i, resourceID)
+	}
+
+	wg.Wait()
+	close(resultChan)
+
+	indexedResults := make([]indexedResult, 0, len(resultChan))
+	for item := range resultChan {
+		indexedResults = append(indexedResults, item)
+	}
+	sort.SliceStable(indexedResults, func(i, j int) bool {
+		return indexedResults[i].index < indexedResults[j].index
+	})
+
+	results := make([]model.SearchResult, 0, len(indexedResults))
+	for _, item := range indexedResults {
+		magnetKey := strings.ToLower(item.result.Links[0].URL)
+		if _, exists := seenMagnets[magnetKey]; exists {
+			continue
+		}
+		seenMagnets[magnetKey] = struct{}{}
+		results = append(results, item.result)
+	}
+
+	select {
+	case err := <-errChan:
+		return results, err
+	default:
+	}
+
+	return results, nil
+}
+
+func (p *GyingPlugin) fetchBTDetail(resourceID string, scraper *cloudscraper.Scraper) (*BTDetailData, error) {
+	detailURL := fmt.Sprintf("%s/bt/%s", p.getBaseURL(), url.PathEscape(resourceID))
+
+	if DebugLog {
+		fmt.Printf("[Gying]     fetchBTDetail: %s\n", detailURL)
+	}
+
+	body, statusCode, _, err := p.requestWithChallengeRetry(scraper, http.MethodGet, detailURL, "", "")
+	if err != nil {
+		return nil, err
+	}
+	if statusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("HTTP 403 Forbidden")
+	}
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", statusCode)
+	}
+	if isLoginShell(body) {
+		return nil, fmt.Errorf("HTTP 403 Forbidden")
+	}
+
+	matches := btDetailDataPattern.FindSubmatch(body)
+	if len(matches) < 2 {
+		return nil, fmt.Errorf("未找到BT详情数据")
+	}
+
+	var detail BTDetailData
+	if err := json.Unmarshal(matches[1], &detail); err != nil {
+		return nil, fmt.Errorf("解析BT详情失败: %w", err)
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(detail.Magnet)), "magnet:?xt=urn:btih:") {
+		return nil, fmt.Errorf("BT详情缺少磁力链接")
+	}
+
+	return &detail, nil
+}
+
+func (p *GyingPlugin) buildBTResult(searchData *SearchData, detail *BTDetailData, index int) model.SearchResult {
+	if detail == nil {
+		return model.SearchResult{}
+	}
+
+	title := strings.TrimSpace(detail.Title)
+	if title == "" {
+		title = p.safeString(searchData.L.Title, index)
+	}
+	if title == "" {
+		title = detail.Magnet
+	}
+
+	timeText := p.safeString(searchData.L.Time, index)
+	if timeText == "" {
+		timeText = strings.TrimSpace(detail.T1)
+	}
+	if timeText == "" {
+		timeText = strings.TrimSpace(detail.T2)
+	}
+
+	now := time.Now()
+	linkTime := p.parseLinkTime(timeText, now)
+	resultTime := linkTime
+	if resultTime.IsZero() {
+		resultTime = p.parseUpdateTime([]string{timeText})
+	}
+
+	contentParts := []string{"种子搜索"}
+	if size := p.safeString(searchData.L.Size, index); size != "" {
+		contentParts = append(contentParts, "大小: "+size)
+	} else if detail.S != "" {
+		contentParts = append(contentParts, "大小: "+detail.S)
+	}
+	if seeds := p.safeInt(searchData.L.Seeds, index, -1); seeds >= 0 {
+		contentParts = append(contentParts, fmt.Sprintf("做种: %d", seeds))
+	}
+	if detail.DU != "" {
+		contentParts = append(contentParts, "关联: "+detail.DU)
+	}
+
+	magnetURL := strings.TrimSpace(detail.Magnet)
+	return model.SearchResult{
+		UniqueID: "gying-bt-" + p.shortHash(strings.ToLower(magnetURL)),
+		Title:    title,
+		Content:  strings.Join(contentParts, " | "),
+		Links: []model.Link{
+			{
+				Type:      "magnet",
+				URL:       magnetURL,
+				Password:  "",
+				Datetime:  linkTime,
+				WorkTitle: title,
+			},
+		},
+		Tags:     []string{"种子"},
+		Channel:  "",
+		Datetime: resultTime,
+	}
+}
+
+func (p *GyingPlugin) searchTabPageLimit(envName string, defaultValue, maxValue int) int {
+	return p.envInt(envName, defaultValue, 0, maxValue)
+}
+
+func (p *GyingPlugin) searchTabBTConcurrency() int {
+	return p.envInt("GYING_BT_DETAIL_CONCURRENCY", DefaultSearchTabBTDetail, 1, MaxSearchTabBTDetail)
+}
+
+func (p *GyingPlugin) envInt(name string, defaultValue, minValue, maxValue int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return defaultValue
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return defaultValue
+	}
+	if parsed < minValue {
+		return minValue
+	}
+	if parsed > maxValue {
+		return maxValue
+	}
+	return parsed
+}
+
+func (p *GyingPlugin) estimateSearchPages(totalText string, pageSize int) int {
+	total := p.parseSearchCount(totalText)
+	if total <= 0 || pageSize <= 0 {
+		return 0
+	}
+	return (total + pageSize - 1) / pageSize
+}
+
+func (p *GyingPlugin) parseSearchCount(totalText string) int {
+	totalText = strings.TrimSpace(totalText)
+	if totalText == "" {
+		return 0
+	}
+	if parsed, err := strconv.Atoi(totalText); err == nil {
+		return parsed
+	}
+
+	var digits strings.Builder
+	for _, r := range totalText {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	if digits.Len() == 0 {
+		return 0
+	}
+	parsed, err := strconv.Atoi(digits.String())
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func (p *GyingPlugin) waitBeforeSearchTabPage(page int) {
+	if page <= 1 || SearchTabRequestDelayMillis <= 0 {
+		return
+	}
+	time.Sleep(time.Duration(SearchTabRequestDelayMillis) * time.Millisecond)
 }
 
 // fetchAllDetails 并发获取所有详情
@@ -2987,10 +3698,32 @@ func (p *GyingPlugin) buildLinkWorkTitle(resultTitle, resourceName string) strin
 		return resourceName
 	}
 
+	baseResultKey := p.baseTitleKeyForCompare(resultTitle)
+	if baseResultKey != "" && strings.Contains(resourceKey, baseResultKey) {
+		return resourceName
+	}
+
 	if resultTitle == "" {
 		return resourceName
 	}
 	return resultTitle + " - " + resourceName
+}
+
+func (p *GyingPlugin) baseTitleKeyForCompare(title string) string {
+	title = yearSuffixRegex.ReplaceAllString(title, "")
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+
+	for _, sep := range []string{"：", ":", " - "} {
+		if index := strings.Index(title, sep); index > 0 {
+			title = title[:index]
+			break
+		}
+	}
+
+	return p.normalizeTitleForCompare(title)
 }
 
 func (p *GyingPlugin) normalizeTitleForCompare(title string) string {
@@ -3015,6 +3748,11 @@ func (p *GyingPlugin) normalizeTitleForCompare(title string) string {
 		"/", "",
 	)
 	return replacer.Replace(title)
+}
+
+func (p *GyingPlugin) shortHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 func (p *GyingPlugin) safeString(items []string, index int) string {
