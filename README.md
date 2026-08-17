@@ -815,4 +815,4 @@ curl http://localhost:8888/api/health
 
 ## ⭐ Star 历史
 
-[![Star History Chart](https://api.star-history.com/svg?repos=fish2018/pansou&type=Date)](https://star-history.com/#fish2018/pansou&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=fish2018/pansou&type=Date)](https://star-history.dera.page/#fish2018/pansou&Date)
