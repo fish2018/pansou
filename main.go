@@ -51,6 +51,7 @@ import (
 	_ "pansou/plugin/hdr4k"
 	_ "pansou/plugin/huban"
 	_ "pansou/plugin/hunhepan"
+	_ "pansou/plugin/ikantv"
 	_ "pansou/plugin/javdb"
 	_ "pansou/plugin/jikepan"
 	_ "pansou/plugin/jsnoteclub"
