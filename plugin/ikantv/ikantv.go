@@ -20,7 +20,7 @@ const (
 	defaultReferer = "https://api.naspt.vip/"
 	defaultTimeout = 30 * time.Second
 	defaultLimit   = 50
-	priority       = 2
+	priority       = 3
 )
 
 var allowedPans = map[string]struct{}{
@@ -38,8 +38,7 @@ type IkanTVAsyncPlugin struct {
 	*plugin.BaseAsyncPlugin
 }
 
-// NewIkanTVAsyncPlugin 创建爱看搜索插件。
-// 优先级 2：自有片库、结构化 API；标准网盘源，启用 Service 层过滤。
+// NewIkanTVAsyncPlugin 创建爱看搜索插件
 func NewIkanTVAsyncPlugin() *IkanTVAsyncPlugin {
 	return &IkanTVAsyncPlugin{
 		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin(pluginName, priority),
