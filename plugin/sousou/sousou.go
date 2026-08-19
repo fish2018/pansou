@@ -7,11 +7,16 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
+
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"pansou/util/json"
 )
 
@@ -30,21 +35,22 @@ func init() {
 
 const (
 	// API端点
-	SousouAPI = "https://sousou.pro/api.php"
+	SousouAPI    = "https://sousou.pro/api.php"
+	SousouWebURL = "https://www.panso.vip/search"
 
 	// 默认参数
-	DefaultPerSize = 30
+	DefaultPerSize  = 30
 	DefaultMaxPages = 3
 )
 
 // 支持的网盘类型列表
 var supportedDiskTypes = []string{
-	"QUARK",   // 夸克网盘
-	"BDY",     // 百度网盘
-	"ALY",     // 阿里云盘
-	"XUNLEI",  // 迅雷网盘
-	"UC",      // UC网盘
-	"115",     // 115网盘
+	"QUARK",  // 夸克网盘
+	"BDY",    // 百度网盘
+	"ALY",    // 阿里云盘
+	"XUNLEI", // 迅雷网盘
+	"UC",     // UC网盘
+	"115",    // 115网盘
 }
 
 // SousouAsyncPlugin Sousou搜索异步插件
@@ -77,6 +83,12 @@ func (p *SousouAsyncPlugin) SearchWithResult(keyword string, ext map[string]inte
 func (p *SousouAsyncPlugin) doSearch(client *http.Client, keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
 	debugLog("开始搜索，关键词: %s", keyword)
 
+	// The old API now redirects to panso.vip and returns 403. Prefer the
+	// server-rendered search pages, which expose stable document links.
+	if results, err := p.searchWeb(client, keyword); err == nil && len(results) > 0 {
+		return plugin.FilterResultsByKeyword(results, keyword), nil
+	}
+
 	// 创建结果通道和错误通道
 	resultChan := make(chan []SousouItem, len(supportedDiskTypes))
 	errChan := make(chan error, len(supportedDiskTypes))
@@ -91,14 +103,14 @@ func (p *SousouAsyncPlugin) doSearch(client *http.Client, keyword string, ext ma
 		go func(dt string) {
 			defer wg.Done()
 			debugLog("开始搜索网盘类型: %s", dt)
-			
+
 			items, err := p.searchByType(client, keyword, dt)
 			if err != nil {
 				debugLog("%s 网盘搜索错误: %v", dt, err)
 				errChan <- fmt.Errorf("%s API error: %w", dt, err)
 				return
 			}
-			
+
 			debugLog("%s 网盘返回 %d 条结果", dt, len(items))
 			resultChan <- items
 		}(diskType)
@@ -145,6 +157,210 @@ func (p *SousouAsyncPlugin) doSearch(client *http.Client, keyword string, ext ma
 	debugLog("过滤后剩余 %d 条结果", len(filteredResults))
 
 	return filteredResults, nil
+}
+
+type pansoSearchItem struct {
+	DocURL   string
+	Title    string
+	Content  string
+	DiskType string
+	Datetime time.Time
+	Password string
+}
+
+func (p *SousouAsyncPlugin) searchWeb(client *http.Client, keyword string) ([]model.SearchResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	searchURL := SousouWebURL + "?q=" + url.QueryEscape(strings.TrimSpace(keyword))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create web search request failed: %w", err)
+	}
+	setSousouWebHeaders(req, "https://www.panso.vip/")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("web search request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("web search returned status %d", resp.StatusCode)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("parse web search page failed: %w", err)
+	}
+
+	items := make([]pansoSearchItem, 0, 20)
+	doc.Find("div.search-item").Each(func(_ int, item *goquery.Selection) {
+		anchor := item.Find("a.search-item-title[href]").First()
+		href := strings.TrimSpace(anchor.AttrOr("href", ""))
+		if href == "" {
+			return
+		}
+		items = append(items, pansoSearchItem{
+			DocURL:   absolutePansoURL(href),
+			Title:    strings.TrimSpace(anchor.Text()),
+			Content:  strings.TrimSpace(item.Find(".search-item-info").Text()),
+			DiskType: strings.TrimSpace(item.Find(".search-item-logo").AttrOr("alt", "")),
+			Datetime: parsePansoDatetime(item.Find(".search-item-meta-item").Text()),
+			Password: parsePansoPassword(item),
+		})
+	})
+	if len(items) == 0 {
+		return nil, fmt.Errorf("web search returned no document items")
+	}
+
+	results := make([]model.SearchResult, 0, len(items))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for _, item := range items {
+		item := item
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			result, err := p.fetchPansoDocument(client, item)
+			if err != nil {
+				debugLog("document %s failed: %v", item.DocURL, err)
+				return
+			}
+			mu.Lock()
+			results = append(results, result)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if len(results) == 0 {
+		return nil, fmt.Errorf("web search documents contained no valid links")
+	}
+	return results, nil
+}
+
+func (p *SousouAsyncPlugin) fetchPansoDocument(client *http.Client, item pansoSearchItem) (model.SearchResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, item.DocURL, nil)
+	if err != nil {
+		return model.SearchResult{}, err
+	}
+	setSousouWebHeaders(req, SousouWebURL+"?q=")
+	resp, err := client.Do(req)
+	if err != nil {
+		return model.SearchResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return model.SearchResult{}, fmt.Errorf("document returned status %d", resp.StatusCode)
+	}
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return model.SearchResult{}, err
+	}
+	linkURL := strings.TrimSpace(doc.Find("a.jump-link[href]").First().AttrOr("href", ""))
+	if linkURL == "" {
+		return model.SearchResult{}, fmt.Errorf("document has no share link")
+	}
+	linkType := util.GetLinkType(linkURL)
+	if linkType == "others" || linkType == "" {
+		return model.SearchResult{}, fmt.Errorf("unsupported share link: %s", linkURL)
+	}
+	title := cleanPansoTitle(doc.Find(".resource-box h1").First().Text())
+	if title == "" {
+		title = cleanPansoTitle(item.Title)
+	}
+	datetime := item.Datetime
+	if value := strings.TrimSpace(doc.Find(".description-label").FilterFunction(func(_ int, s *goquery.Selection) bool {
+		return strings.TrimSpace(s.Text()) == "分享时间"
+	}).Next().Text()); value != "" {
+		if parsed, err := time.Parse("2006-01-02", value); err == nil {
+			datetime = parsed
+		}
+	}
+	if datetime.IsZero() {
+		datetime = time.Now()
+	}
+	password := item.Password
+	if password == "" {
+		password = parsePansoPassword(doc.Selection)
+	}
+	docID := item.DocURL
+	if parsed, err := url.Parse(item.DocURL); err == nil {
+		docID = parsed.Path
+	}
+	return model.SearchResult{
+		UniqueID: fmt.Sprintf("sousou-%x", stableHash(docID)),
+		Title:    title,
+		Content:  strings.TrimSpace(item.Content + "\n" + doc.Find(".resource-files").Text()),
+		Datetime: datetime,
+		Links: []model.Link{{
+			URL:       linkURL,
+			Type:      linkType,
+			Password:  password,
+			Datetime:  datetime,
+			WorkTitle: title,
+		}},
+		Channel: "",
+	}, nil
+}
+
+func cleanPansoTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if index := strings.Index(title, " - 网盘搜索"); index >= 0 {
+		title = strings.TrimSpace(title[:index])
+	}
+	return title
+}
+
+func setSousouWebHeaders(req *http.Request, referer string) {
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Referer", referer)
+}
+
+func absolutePansoURL(href string) string {
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+		return href
+	}
+	return "https://www.panso.vip/" + strings.TrimLeft(href, "/")
+}
+
+func parsePansoDatetime(text string) time.Time {
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02"} {
+		if match := regexp.MustCompile(`\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}:\d{2})?`).FindString(text); match != "" {
+			if parsed, err := time.Parse(layout, match); err == nil {
+				return parsed
+			}
+		}
+	}
+	return time.Time{}
+}
+
+func parsePansoPassword(selection *goquery.Selection) string {
+	text := strings.TrimSpace(selection.Text())
+	match := regexp.MustCompile(`(?i)(?:提取码|密码|pwd)[:：]?\s*([a-z0-9]{4})`).FindStringSubmatch(text)
+	if len(match) > 1 {
+		return match[1]
+	}
+	if href := selection.Find("a[href*='pwd=']").First().AttrOr("href", ""); href != "" {
+		if parsed, err := url.Parse(href); err == nil {
+			return parsed.Query().Get("pwd")
+		}
+	}
+	return ""
+}
+
+func stableHash(value string) uint32 {
+	var checksum uint32 = 2166136261
+	for i := 0; i < len(value); i++ {
+		checksum ^= uint32(value[i])
+		checksum *= 16777619
+	}
+	return checksum
 }
 
 // searchByType 搜索指定网盘类型
@@ -476,4 +692,3 @@ type SousouItem struct {
 	Weight      int         `json:"weight"`
 	Status      int         `json:"status"`
 }
-

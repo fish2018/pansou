@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -14,14 +16,15 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	jsonutil "pansou/util/json"
 )
 
 const (
 	pluginName      = "lou1"
 	defaultPriority = 1
 
-	baseURL             = "https://www.1lou.me"
-	searchPathFormat    = baseURL + "/search-%s.htm"
+	baseURL             = "http://www.1lou.me"
+	searchAPIPath       = baseURL + "/search/api/search.php"
 	requestTimeout      = 12 * time.Second
 	detailTimeout       = 12 * time.Second
 	maxRequestRetries   = 3
@@ -169,7 +172,11 @@ type searchThread struct {
 }
 
 func (p *Lou1Plugin) fetchSearchResults(client *http.Client, keyword string) ([]searchThread, error) {
-	searchURL := fmt.Sprintf(searchPathFormat, encodeKeyword(keyword))
+	params := url.Values{}
+	params.Set("q", keyword)
+	params.Set("page", "1")
+	params.Set("page_size", fmt.Sprintf("%d", searchLimit))
+	searchURL := searchAPIPath + "?" + params.Encode()
 
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
@@ -190,52 +197,54 @@ func (p *Lou1Plugin) fetchSearchResults(client *http.Client, keyword string) ([]
 		return nil, fmt.Errorf("[%s] 搜索返回状态码: %d", p.Name(), resp.StatusCode)
 	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("[%s] 解析搜索页面失败: %w", p.Name(), err)
+		return nil, fmt.Errorf("[%s] 读取搜索响应失败: %w", p.Name(), err)
 	}
 
-	var threads []searchThread
-	doc.Find("ul.threadlist li.thread").Each(func(_ int, li *goquery.Selection) {
+	var payload lou1SearchResponse
+	if err := jsonutil.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("[%s] 解析搜索 JSON 失败: %w", p.Name(), err)
+	}
+	if !payload.OK {
+		return nil, fmt.Errorf("[%s] 搜索接口返回失败", p.Name())
+	}
+
+	threads := make([]searchThread, 0, minInt(searchLimit, len(payload.Data.Hits)))
+	for _, hit := range payload.Data.Hits {
 		if len(threads) >= searchLimit {
-			return
+			break
 		}
-
-		subject := li.Find(".subject a").First()
-		href, exists := subject.Attr("href")
-		if !exists || strings.TrimSpace(href) == "" {
-			return
+		title := strings.TrimSpace(hit.Subject)
+		threadURL := toAbsoluteURL(hit.ThreadURL)
+		if title == "" || threadURL == "" {
+			continue
 		}
-
-		title := strings.TrimSpace(subject.Text())
-		if title == "" {
-			return
-		}
-		if !strings.Contains(title, "夸克") {
-			return
-		}
-
-		threadURL := toAbsoluteURL(href)
-
-		var tags []string
-		li.Find(".subject a.badge").Each(func(_ int, tagNode *goquery.Selection) {
-			tag := strings.TrimSpace(tagNode.Text())
-			if tag != "" {
-				tags = append(tags, tag)
-			}
-		})
-
-		summary := strings.TrimSpace(li.Find("p.note").Text())
-
 		threads = append(threads, searchThread{
-			Title:   title,
-			URL:     threadURL,
-			Tags:    tags,
-			Summary: summary,
+			Title: title,
+			URL:   threadURL,
 		})
-	})
-
+	}
 	return threads, nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+type lou1SearchResponse struct {
+	OK   bool `json:"ok"`
+	Data struct {
+		Hits []lou1SearchHit `json:"hits"`
+	} `json:"data"`
+}
+
+type lou1SearchHit struct {
+	Subject   string `json:"subject"`
+	ThreadURL string `json:"thread_url"`
 }
 
 type detailResult struct {
@@ -394,6 +403,9 @@ func classifyLink(raw string) (string, string) {
 	if raw == "" {
 		return "", ""
 	}
+	if strings.HasPrefix(raw, "attach-download-") || strings.HasPrefix(raw, "/attach-download-") {
+		return "others", toAbsoluteURL(raw)
+	}
 	for _, pattern := range linkPatterns {
 		if loc := pattern.reg.FindString(raw); loc != "" {
 			return pattern.typ, loc
@@ -514,16 +526,10 @@ func truncateString(text string, length int) string {
 }
 
 func filterQuarkLinks(links []model.Link) []model.Link {
-	if len(links) == 0 {
-		return links
-	}
-	result := links[:0]
-	for _, link := range links {
-		if link.Type == "quark" {
-			result = append(result, link)
-		}
-	}
-	return result
+	// 1LOU now publishes torrent attachments in addition to quark links.
+	// Keep all links that passed classifyLink; unrelated page URLs are never
+	// classified and therefore do not reach this function.
+	return links
 }
 
 func newHTTPClient() *http.Client {

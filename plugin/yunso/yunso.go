@@ -375,6 +375,16 @@ func (p *YunsoAsyncPlugin) mapDiskType(typeCode string, rawURL string) string {
 }
 
 func decryptYunsoURL(value string) (string, error) {
+	value = strings.TrimSpace(html.UnescapeString(value))
+	if value == "" {
+		return "", fmt.Errorf("empty encrypted url")
+	}
+	// Newer responses expose the share URL directly. Keep the legacy
+	// base64/XOR path below for older results.
+	if strings.HasPrefix(strings.ToLower(value), "http://") || strings.HasPrefix(strings.ToLower(value), "https://") {
+		return value, nil
+	}
+
 	decoded, err := decodeYunsoBase64(value)
 	if err != nil {
 		return "", err

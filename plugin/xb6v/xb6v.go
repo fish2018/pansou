@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	BaseURL        = "https://www.66ss.org" // 主域名
-	BackupURL      = "https://www.xb6v.com" // 备用域名
-	SearchPath     = "/e/search/1index.php"  // 搜索端点
+	BaseURL        = "https://www.66ss.org"  // 主域名
+	BackupURL      = "https://www.xb6v.com"  // 备用域名
+	SearchPath     = "/e/search/11index.php" // 搜索端点（当前站点表单入口）
 	UserAgent      = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
 	MaxConcurrency = 50 // 详情页最大并发数
 	MaxResults     = 50 // 最大搜索结果数
@@ -29,10 +29,10 @@ const (
 // Xb6vPlugin 6v电影插件
 type Xb6vPlugin struct {
 	*plugin.BaseAsyncPlugin
-	debugMode    bool
-	detailCache  sync.Map // 缓存详情页结果
-	cacheTTL     time.Duration
-	currentBase  string // 当前使用的域名
+	debugMode   bool
+	detailCache sync.Map // 缓存详情页结果
+	cacheTTL    time.Duration
+	currentBase string // 当前使用的域名
 }
 
 // DetailPageInfo 详情页信息
@@ -45,7 +45,7 @@ type DetailPageInfo struct {
 func NewXb6vPlugin() *Xb6vPlugin {
 	// 检查调试模式
 	debugMode := false // 启用调试
-	
+
 	p := &Xb6vPlugin{
 		// 磁力搜索插件：优先级4，跳过Service层过滤
 		BaseAsyncPlugin: plugin.NewBaseAsyncPluginWithFilter("xb6v", 3, true),
@@ -53,10 +53,10 @@ func NewXb6vPlugin() *Xb6vPlugin {
 		cacheTTL:        30 * time.Minute,
 		currentBase:     BaseURL,
 	}
-	
+
 	// 设置主缓存键
 	p.BaseAsyncPlugin.SetMainCacheKey(p.Name())
-	
+
 	return p
 }
 
@@ -106,7 +106,7 @@ func (p *Xb6vPlugin) setRequestHeaders(req *http.Request, referer string) {
 func (p *Xb6vPlugin) doRequest(client *http.Client, method, url, postData string, referer string) (*http.Response, error) {
 	var req *http.Request
 	var err error
-	
+
 	if method == "POST" && postData != "" {
 		req, err = http.NewRequest("POST", url, strings.NewReader(postData))
 		if err != nil {
@@ -119,13 +119,13 @@ func (p *Xb6vPlugin) doRequest(client *http.Client, method, url, postData string
 			return nil, err
 		}
 	}
-	
+
 	p.setRequestHeaders(req, referer)
-	
+
 	if p.debugMode {
 		log.Printf("[Xb6v] 发送 %s 请求: %s", method, url)
 	}
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		if p.debugMode {
@@ -133,11 +133,11 @@ func (p *Xb6vPlugin) doRequest(client *http.Client, method, url, postData string
 		}
 		return nil, err
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Xb6v] 响应状态: %d", resp.StatusCode)
 	}
-	
+
 	return resp, nil
 }
 
@@ -149,7 +149,7 @@ func (p *Xb6vPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 		// 解码失败，使用原始关键词
 		decodedKeyword = keyword
 	}
-	
+
 	// 优化关键词：如果包含空格，只使用空格前的部分
 	originalKeyword := decodedKeyword
 	if spaceIndex := strings.Index(decodedKeyword, " "); spaceIndex > 0 {
@@ -158,58 +158,58 @@ func (p *Xb6vPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 			log.Printf("[Xb6v] 关键词优化: '%s' -> '%s'", originalKeyword, decodedKeyword)
 		}
 	}
-	
+
 	// 使用处理后的关键词
 	keyword = decodedKeyword
-	
+
 	if p.debugMode {
 		log.Printf("[Xb6v] 开始搜索: %s (原始: %s)", keyword, originalKeyword)
 	}
-	
+
 	// 第一步：POST搜索请求
 	searchURL := p.currentBase + SearchPath
 	postData := fmt.Sprintf("show=title&tempid=1&tbname=article&mid=1&dopost=search&submit=&keyboard=%s", url.QueryEscape(keyword))
-	
+
 	// 创建不自动重定向的客户端
 	noRedirectClient := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	
+
 	resp, err := p.doRequest(noRedirectClient, "POST", searchURL, postData, p.currentBase)
 	if err != nil {
 		return nil, fmt.Errorf("搜索请求失败: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if p.debugMode {
 		log.Printf("[Xb6v] POST响应状态码: %d", resp.StatusCode)
 	}
-	
+
 	// 获取重定向的location
 	location := resp.Header.Get("Location")
 	if p.debugMode {
 		log.Printf("[Xb6v] Location头: '%s'", location)
 	}
-	
+
 	// 如果没有Location头，可能需要从响应体中解析
 	if location == "" {
 		if p.debugMode {
 			log.Printf("[Xb6v] 未找到Location头，尝试解析响应体")
 		}
-		
+
 		// 读取响应体看看是否包含重定向信息
 		bodyReader, err := p.getResponseReader(resp)
 		if err != nil {
 			return nil, fmt.Errorf("读取响应体失败: %w", err)
 		}
-		
+
 		bodyBytes, err := io.ReadAll(bodyReader)
 		if err != nil {
 			return nil, fmt.Errorf("读取响应体失败: %w", err)
 		}
-		
+
 		bodyStr := string(bodyBytes)
 		if p.debugMode {
 			log.Printf("[Xb6v] 响应体长度: %d", len(bodyStr))
@@ -220,7 +220,7 @@ func (p *Xb6vPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 				log.Printf("[Xb6v] 响应体内容: %s", bodyStr)
 			}
 		}
-		
+
 		// 尝试从响应体中提取重定向URL
 		// 可能是JavaScript重定向或meta refresh
 		if strings.Contains(bodyStr, "location.href") || strings.Contains(bodyStr, "window.location") {
@@ -234,7 +234,7 @@ func (p *Xb6vPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 				}
 			}
 		}
-		
+
 		// 尝试查找其他形式的重定向
 		if location == "" {
 			// 查找可能的URL模式，比如包含searchid的链接
@@ -250,7 +250,7 @@ func (p *Xb6vPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 				}
 			}
 		}
-		
+
 		// 如果还是没找到，尝试查找简单的result/?searchid=格式
 		if location == "" {
 			re := regexp.MustCompile(`result/\?searchid=\d+`)
@@ -262,12 +262,12 @@ func (p *Xb6vPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 				}
 			}
 		}
-		
+
 		if location == "" {
 			return nil, fmt.Errorf("未找到搜索结果页面重定向信息")
 		}
 	}
-	
+
 	// 构建完整的搜索结果URL
 	// Location通常是类似 "result/?searchid=39616" 的格式，需要加上 /e/search/ 前缀
 	var resultURL string
@@ -276,79 +276,79 @@ func (p *Xb6vPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 	} else {
 		resultURL = p.currentBase + "/" + strings.TrimPrefix(location, "/")
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Xb6v] 搜索结果页面: %s", resultURL)
 	}
-	
+
 	// 第二步：获取搜索结果页面
 	resp2, err := p.doRequest(client, "GET", resultURL, "", p.currentBase)
 	if err != nil {
 		return nil, fmt.Errorf("获取搜索结果失败: %w", err)
 	}
 	defer resp2.Body.Close()
-	
+
 	if resp2.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("搜索结果响应状态码异常: %d", resp2.StatusCode)
 	}
-	
+
 	// 解析搜索结果页面
 	reader, err := p.getResponseReader(resp2)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	doc, err := goquery.NewDocumentFromReader(reader)
 	if err != nil {
 		return nil, fmt.Errorf("解析搜索结果HTML失败: %w", err)
 	}
-	
+
 	// 提取搜索结果（详情页链接和日期）
 	detailPages := p.extractDetailURLs(doc)
-	
+
 	if p.debugMode {
 		log.Printf("[Xb6v] 找到 %d 个详情页链接", len(detailPages))
 	}
-	
+
 	if len(detailPages) == 0 {
 		return nil, fmt.Errorf("未找到搜索结果")
 	}
-	
+
 	// 限制结果数量
 	if len(detailPages) > MaxResults {
 		detailPages = detailPages[:MaxResults]
 	}
-	
+
 	// 并发获取详情页的磁力链接
 	results := p.fetchMagnetLinksFromDetails(client, detailPages, keyword)
-	
+
 	// 过滤空结果
 	validResults := p.filterValidResults(results)
-	
+
 	if p.debugMode {
 		log.Printf("[Xb6v] 去除无链接结果后剩余 %d 个结果", len(validResults))
 	}
-	
+
 	// 插件层关键词过滤（必须执行，因为跳过了Service层过滤）
 	keywordFilteredResults := plugin.FilterResultsByKeyword(validResults, keyword)
-	
+
 	if p.debugMode {
 		log.Printf("[Xb6v] 关键词过滤后最终返回 %d 个结果", len(keywordFilteredResults))
 	}
-	
+
 	return keywordFilteredResults, nil
 }
 
 // getResponseReader 获取响应读取器（处理gzip压缩）
 func (p *Xb6vPlugin) getResponseReader(resp *http.Response) (io.Reader, error) {
 	var reader io.Reader = resp.Body
-	
+
 	// 检查Content-Encoding
 	contentEncoding := resp.Header.Get("Content-Encoding")
 	if p.debugMode {
 		log.Printf("[Xb6v] Content-Encoding: %s", contentEncoding)
 	}
-	
+
 	// 如果是gzip压缩，手动解压
 	if contentEncoding == "gzip" {
 		gzReader, err := gzip.NewReader(resp.Body)
@@ -357,7 +357,7 @@ func (p *Xb6vPlugin) getResponseReader(resp *http.Response) (io.Reader, error) {
 		}
 		reader = gzReader
 	}
-	
+
 	return reader, nil
 }
 
@@ -365,7 +365,7 @@ func (p *Xb6vPlugin) getResponseReader(resp *http.Response) (io.Reader, error) {
 func (p *Xb6vPlugin) extractDetailURLs(doc *goquery.Document) []DetailPageInfo {
 	var detailPages []DetailPageInfo
 	urlMap := make(map[string]bool) // 去重
-	
+
 	// 只从搜索结果区域提取链接，搜索结果在 ul#post_container 中
 	doc.Find("ul#post_container li.post").Each(func(i int, li *goquery.Selection) {
 		// 提取详情页链接
@@ -373,16 +373,16 @@ func (p *Xb6vPlugin) extractDetailURLs(doc *goquery.Document) []DetailPageInfo {
 		if linkEl.Length() == 0 {
 			return
 		}
-		
+
 		href, exists := linkEl.Attr("href")
 		if !exists || href == "" {
 			return
 		}
-		
+
 		if p.debugMode {
 			log.Printf("[Xb6v] 找到搜索结果链接: %s", href)
 		}
-		
+
 		// 检查链接是否符合内容页面格式（分类/子分类/数字.html）
 		if !p.isValidContentURL(href) {
 			if p.debugMode {
@@ -390,7 +390,7 @@ func (p *Xb6vPlugin) extractDetailURLs(doc *goquery.Document) []DetailPageInfo {
 			}
 			return
 		}
-		
+
 		// 构建完整URL
 		var fullURL string
 		if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
@@ -398,16 +398,16 @@ func (p *Xb6vPlugin) extractDetailURLs(doc *goquery.Document) []DetailPageInfo {
 		} else {
 			fullURL = p.currentBase + "/" + strings.TrimPrefix(href, "/")
 		}
-		
+
 		// 去重检查
 		if urlMap[fullURL] {
 			return
 		}
-		
+
 		// 提取发布日期
 		dateText := strings.TrimSpace(li.Find(".info .info_date").Text())
 		var publishDate time.Time
-		
+
 		if dateText != "" {
 			// 解析日期，格式通常是 "2025-08-17"
 			if parsedDate, err := time.Parse("2006-01-02", dateText); err == nil {
@@ -424,22 +424,22 @@ func (p *Xb6vPlugin) extractDetailURLs(doc *goquery.Document) []DetailPageInfo {
 			}
 			publishDate = time.Now()
 		}
-		
+
 		urlMap[fullURL] = true
 		detailPages = append(detailPages, DetailPageInfo{
 			URL:      fullURL,
 			DateTime: publishDate,
 		})
-		
+
 		if p.debugMode {
 			log.Printf("[Xb6v] 添加有效链接: %s, 日期: %s", fullURL, publishDate.Format("2006-01-02"))
 		}
 	})
-	
+
 	if p.debugMode {
 		log.Printf("[Xb6v] 提取到 %d 个有效详情页链接", len(detailPages))
 	}
-	
+
 	return detailPages
 }
 
@@ -449,11 +449,11 @@ func (p *Xb6vPlugin) isInSidebar(s *goquery.Selection) bool {
 	parent := s.Parent()
 	for i := 0; i < 5 && parent.Length() > 0; i++ { // 向上查找5层
 		class, _ := parent.Attr("class")
-		if strings.Contains(class, "widget") || 
-		   strings.Contains(class, "sidebar") ||
-		   strings.Contains(class, "box row") ||
-		   strings.Contains(class, "related") ||
-		   strings.Contains(class, "tagcloud") {
+		if strings.Contains(class, "widget") ||
+			strings.Contains(class, "sidebar") ||
+			strings.Contains(class, "box row") ||
+			strings.Contains(class, "related") ||
+			strings.Contains(class, "tagcloud") {
 			return true
 		}
 		parent = parent.Parent()
@@ -469,19 +469,19 @@ func (p *Xb6vPlugin) isValidContentURL(href string) bool {
 	if len(parts) < 2 {
 		return false
 	}
-	
+
 	// 最后一部分应该是数字.html格式
 	lastPart := parts[len(parts)-1]
 	if !strings.HasSuffix(lastPart, ".html") {
 		return false
 	}
-	
+
 	// 提取数字部分
 	nameWithoutExt := strings.TrimSuffix(lastPart, ".html")
 	if len(nameWithoutExt) == 0 {
 		return false
 	}
-	
+
 	// 检查是否包含数字（内容ID）
 	hasNumber := regexp.MustCompile(`\d+`).MatchString(nameWithoutExt)
 	return hasNumber
@@ -497,19 +497,19 @@ func (p *Xb6vPlugin) cleanTitle(title string) string {
 		"新版6V",
 		"6V电影",
 	}
-	
+
 	cleaned := title
 	for _, cleaner := range cleaners {
 		// 移除前缀（包括可能的空格）
 		if strings.HasPrefix(cleaned, cleaner) {
 			cleaned = strings.TrimLeft(cleaned[len(cleaner):], " \t　") // 包括中文空格
 		}
-		
+
 		// 移除后缀（包括可能的空格）
 		if strings.HasSuffix(cleaned, cleaner) {
 			cleaned = strings.TrimRight(cleaned[:len(cleaned)-len(cleaner)], " \t　") // 包括中文空格
 		}
-		
+
 		// 移除中间的网站名称（用分隔符分隔）
 		parts := strings.Split(cleaned, cleaner)
 		if len(parts) > 1 {
@@ -525,17 +525,17 @@ func (p *Xb6vPlugin) cleanTitle(title string) string {
 			}
 		}
 	}
-	
+
 	// 清理多余的空格和特殊字符
 	cleaned = strings.TrimSpace(cleaned)
 	// 移除多个连续空格
 	re := regexp.MustCompile(`\s+`)
 	cleaned = re.ReplaceAllString(cleaned, " ")
-	
+
 	if cleaned == "" {
 		return "未知标题"
 	}
-	
+
 	return cleaned
 }
 
@@ -544,34 +544,34 @@ func (p *Xb6vPlugin) fetchMagnetLinksFromDetails(client *http.Client, detailPage
 	var results []model.SearchResult
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	
+
 	// 使用信号量控制并发数
 	semaphore := make(chan struct{}, MaxConcurrency)
-	
+
 	for i, detailPage := range detailPages {
 		wg.Add(1)
 		go func(idx int, pageInfo DetailPageInfo) {
 			defer wg.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			
+
 			// 添加延迟避免请求过频
 			time.Sleep(time.Duration(idx*100) * time.Millisecond)
-			
+
 			pageResults := p.fetchDetailPageMagnetLinks(client, pageInfo.URL, pageInfo.DateTime)
 			if len(pageResults) > 0 {
 				mu.Lock()
 				results = append(results, pageResults...)
 				mu.Unlock()
 			}
-			
+
 			if p.debugMode {
-				log.Printf("[Xb6v] 详情页 %d/%d 处理完成，获取到 %d 个结果 (日期: %s)", 
+				log.Printf("[Xb6v] 详情页 %d/%d 处理完成，获取到 %d 个结果 (日期: %s)",
 					idx+1, len(detailPages), len(pageResults), pageInfo.DateTime.Format("2006-01-02"))
 			}
 		}(i, detailPage)
 	}
-	
+
 	wg.Wait()
 	return results
 }
@@ -587,7 +587,7 @@ func (p *Xb6vPlugin) fetchDetailPageMagnetLinks(client *http.Client, detailURL s
 			return results
 		}
 	}
-	
+
 	// 请求详情页
 	resp, err := p.doRequest(client, "GET", detailURL, "", p.currentBase)
 	if err != nil {
@@ -597,20 +597,20 @@ func (p *Xb6vPlugin) fetchDetailPageMagnetLinks(client *http.Client, detailURL s
 		return nil
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		if p.debugMode {
 			log.Printf("[Xb6v] 详情页响应状态码异常: %d", resp.StatusCode)
 		}
 		return nil
 	}
-	
+
 	// 解析HTML
 	reader, err := p.getResponseReader(resp)
 	if err != nil {
 		return nil
 	}
-	
+
 	doc, err := goquery.NewDocumentFromReader(reader)
 	if err != nil {
 		if p.debugMode {
@@ -618,65 +618,65 @@ func (p *Xb6vPlugin) fetchDetailPageMagnetLinks(client *http.Client, detailURL s
 		}
 		return nil
 	}
-	
+
 	// 提取页面信息
 	title := strings.TrimSpace(doc.Find("h1").Text())
 	if title == "" {
 		title = "未知标题"
 	}
-	
+
 	// 清理title，移除网站名称
 	title = p.cleanTitle(title)
-	
+
 	// 提取分类信息
 	category := strings.TrimSpace(doc.Find(".info_category a").Text())
-	
+
 	// 提取磁力链接
 	magnetLinks, linkInfos := p.extractMagnetLinks(doc, title)
-	
+
 	if len(magnetLinks) == 0 {
 		if p.debugMode {
 			log.Printf("[Xb6v] 详情页无磁力链接: %s", detailURL)
 		}
 		return nil
 	}
-	
+
 	// 生成多个SearchResult，每个磁力链接一个
 	var results []model.SearchResult
 	for i, linkInfo := range linkInfos {
 		// 生成唯一的资源ID
 		resourceID := fmt.Sprintf("%s-%d", p.extractResourceID(detailURL), i)
-		
+
 		// 构建"主标题-子标题"格式的标题
 		resultTitle := fmt.Sprintf("%s-%s", title, linkInfo.SubTitle)
-		
+
 		result := model.SearchResult{
 			Title:     resultTitle,
 			Content:   fmt.Sprintf("分类：%s\n磁力链接：%s", category, linkInfo.SubTitle),
 			Channel:   "", // 插件搜索结果必须为空字符串
 			MessageID: fmt.Sprintf("%s-%s", p.Name(), resourceID),
 			UniqueID:  fmt.Sprintf("%s-%s", p.Name(), resourceID),
-			Datetime:  publishDate, // 使用从搜索结果页面提取的真实发布日期
+			Datetime:  publishDate,                  // 使用从搜索结果页面提取的真实发布日期
 			Links:     []model.Link{magnetLinks[i]}, // 每个结果只包含一个链接
 			Tags:      []string{category},
 		}
-		
+
 		results = append(results, result)
 	}
-	
+
 	// 缓存所有结果（使用主标题作为键）
 	p.detailCache.Store(detailURL, results)
-	
+
 	// 设置缓存过期
 	go func() {
 		time.Sleep(p.cacheTTL)
 		p.detailCache.Delete(detailURL)
 	}()
-	
+
 	if p.debugMode {
 		log.Printf("[Xb6v] 提取到磁力链接: %s, 链接数: %d", title, len(magnetLinks))
 	}
-	
+
 	return results
 }
 
@@ -691,7 +691,7 @@ func (p *Xb6vPlugin) extractMagnetLinks(doc *goquery.Document, mainTitle string)
 	var links []model.Link
 	var linkInfos []MagnetLinkInfo
 	linkMap := make(map[string]bool) // 去重
-	
+
 	// 查找包含"磁力："的表格单元格
 	doc.Find("td").Each(func(i int, s *goquery.Selection) {
 		text := s.Text()
@@ -702,36 +702,36 @@ func (p *Xb6vPlugin) extractMagnetLinks(doc *goquery.Document, mainTitle string)
 				if !exists || href == "" {
 					return
 				}
-				
+
 				// 去重
 				if linkMap[href] {
 					return
 				}
 				linkMap[href] = true
-				
+
 				// 获取链接子标题
 				subTitle := strings.TrimSpace(a.Text())
 				if subTitle == "" {
 					subTitle = "磁力链接"
 				}
-				
+
 				links = append(links, model.Link{
 					URL:  href,
 					Type: "magnet",
 				})
-				
+
 				linkInfos = append(linkInfos, MagnetLinkInfo{
 					URL:      href,
 					SubTitle: subTitle,
 				})
-				
+
 				if p.debugMode {
 					log.Printf("[Xb6v] 提取磁力链接: %s - %s", mainTitle, subTitle)
 				}
 			})
 		}
 	})
-	
+
 	// 如果没有在表格中找到，尝试在整个页面查找
 	if len(links) == 0 {
 		doc.Find("a[href^='magnet:']").Each(func(i int, s *goquery.Selection) {
@@ -739,34 +739,34 @@ func (p *Xb6vPlugin) extractMagnetLinks(doc *goquery.Document, mainTitle string)
 			if !exists || href == "" {
 				return
 			}
-			
+
 			// 去重
 			if linkMap[href] {
 				return
 			}
 			linkMap[href] = true
-			
+
 			subTitle := strings.TrimSpace(s.Text())
 			if subTitle == "" {
 				subTitle = "磁力链接"
 			}
-			
+
 			links = append(links, model.Link{
 				URL:  href,
 				Type: "magnet",
 			})
-			
+
 			linkInfos = append(linkInfos, MagnetLinkInfo{
 				URL:      href,
 				SubTitle: subTitle,
 			})
-			
+
 			if p.debugMode {
 				log.Printf("[Xb6v] 提取磁力链接: %s - %s", mainTitle, subTitle)
 			}
 		})
 	}
-	
+
 	return links, linkInfos
 }
 
@@ -778,7 +778,7 @@ func (p *Xb6vPlugin) extractResourceID(detailURL string) string {
 	if len(matches) > 1 {
 		return matches[1]
 	}
-	
+
 	// 如果提取失败，使用时间戳
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
@@ -786,7 +786,7 @@ func (p *Xb6vPlugin) extractResourceID(detailURL string) string {
 // filterValidResults 过滤有效结果（去掉没有磁力链接的）
 func (p *Xb6vPlugin) filterValidResults(results []model.SearchResult) []model.SearchResult {
 	var validResults []model.SearchResult
-	
+
 	for _, result := range results {
 		if len(result.Links) > 0 {
 			validResults = append(validResults, result)
@@ -794,7 +794,7 @@ func (p *Xb6vPlugin) filterValidResults(results []model.SearchResult) []model.Se
 			log.Printf("[Xb6v] 忽略无磁力链接结果: %s", result.Title)
 		}
 	}
-	
+
 	return validResults
 }
 
