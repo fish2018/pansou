@@ -26,6 +26,7 @@ import (
 	// 以下是插件的空导入，用于触发各插件的init函数，实现自动注册
 	// 添加新插件时，只需在此处添加对应的导入语句即可
 	_ "pansou/plugin/duoduo"
+	_ "pansou/plugin/dy4k"
 	_ "pansou/plugin/dyyjpro"
 	_ "pansou/plugin/feikuai"
 	_ "pansou/plugin/gaoqing888"
