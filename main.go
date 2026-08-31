@@ -48,6 +48,7 @@ import (
 	_ "pansou/plugin/qupanshe"
 	_ "pansou/plugin/sousou"
 	_ "pansou/plugin/thepiratebay"
+	_ "pansou/plugin/ting77"
 	_ "pansou/plugin/wanou"
 	_ "pansou/plugin/weibo"
 	_ "pansou/plugin/xb6v"
