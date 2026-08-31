@@ -34,6 +34,7 @@ import (
 	_ "pansou/plugin/ikantv"
 	_ "pansou/plugin/jutoushe"
 	_ "pansou/plugin/kkv"
+	_ "pansou/plugin/libvio"
 	_ "pansou/plugin/lingjisp"
 	_ "pansou/plugin/lou1"
 	_ "pansou/plugin/melost"
