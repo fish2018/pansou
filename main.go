@@ -54,6 +54,7 @@ import (
 	_ "pansou/plugin/wanou"
 	_ "pansou/plugin/weibo"
 	_ "pansou/plugin/xb6v"
+	_ "pansou/plugin/xiaoyu"
 	_ "pansou/plugin/xiaozhang"
 	_ "pansou/plugin/yunso"
 	_ "pansou/plugin/zxzj"
