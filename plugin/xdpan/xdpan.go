@@ -3,6 +3,7 @@ package xdpan
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -16,10 +17,11 @@ import (
 )
 
 const (
-	BaseURL        = "https://xiongdipan.com"
+	BaseURL        = "https://aipanso.com"
 	UserAgent      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 	MaxConcurrency = 10 // 详情页最大并发数
 	MaxRetries     = 3
+	maxPageSize    = 3 << 20
 )
 
 var (
@@ -31,6 +33,7 @@ type XdpanPlugin struct {
 	*plugin.BaseAsyncPlugin
 	detailCache sync.Map // 详情页缓存
 	cacheTTL    time.Duration
+	baseURL     string
 }
 
 // NewXdpanPlugin 创建兄弟盘插件实例
@@ -38,6 +41,7 @@ func NewXdpanPlugin() *XdpanPlugin {
 	return &XdpanPlugin{
 		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin("xdpan", 3), // 优先级3 = 普通质量数据源
 		cacheTTL:        60 * time.Minute,
+		baseURL:         BaseURL,
 	}
 }
 
@@ -75,6 +79,7 @@ func (p *XdpanPlugin) searchImpl(client *http.Client, keyword string, ext map[st
 
 	// Step 2: 并发获取详情页信息（获取真实的百度网盘链接）
 	p.enrichWithDetailInfo(client, searchResults)
+	searchResults = filterResultsWithLinks(searchResults)
 
 	// Step 3: 关键词过滤
 	filteredResults := plugin.FilterResultsByKeyword(searchResults, keyword)
@@ -88,7 +93,7 @@ func (p *XdpanPlugin) searchImpl(client *http.Client, keyword string, ext map[st
 // fetchSearchResults 获取搜索结果
 func (p *XdpanPlugin) fetchSearchResults(client *http.Client, keyword string) ([]model.SearchResult, error) {
 	// 构建搜索URL（只获取第一页）
-	searchURL := fmt.Sprintf("%s/search?page=1&k=%s", BaseURL, url.QueryEscape(keyword))
+	searchURL := fmt.Sprintf("%s/search?page=1&k=%s&p=baidu", strings.TrimRight(p.baseURL, "/"), url.QueryEscape(keyword))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -115,12 +120,16 @@ func (p *XdpanPlugin) fetchSearchResults(client *http.Client, keyword string) ([
 	}
 
 	// 解析HTML
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxPageSize))
 	if err != nil {
 		return nil, fmt.Errorf("解析HTML失败: %w", err)
 	}
 
-	return p.extractSearchResults(doc), nil
+	results := p.extractSearchResults(doc)
+	if len(results) == 0 && doc.Find("title").First().Text() == "Just a moment..." {
+		return nil, fmt.Errorf("站点触发 Cloudflare 浏览器验证")
+	}
+	return results, nil
 }
 
 // extractSearchResults 从搜索页面提取结果
@@ -158,7 +167,7 @@ func (p *XdpanPlugin) parseSearchResult(s *goquery.Selection) model.SearchResult
 	detailPath, _ := detailLink.Attr("href")
 	var detailURL string
 	if detailPath != "" {
-		detailURL = BaseURL + detailPath
+		detailURL = strings.TrimRight(p.baseURL, "/") + detailPath
 	}
 
 	// 提取资源ID
@@ -201,9 +210,12 @@ func (p *XdpanPlugin) parseSearchResult(s *goquery.Selection) model.SearchResult
 		shareTime = matches[1]
 	}
 
-	formatRegex := regexp.MustCompile(`格式:\s*<b>([^<]+)</b>`)
-	if matches := formatRegex.FindStringSubmatch(bottomText); len(matches) > 1 {
-		fileType = matches[1]
+	fileType = strings.TrimSpace(s.Find("template b").First().Text())
+	if fileType == "" {
+		formatRegex := regexp.MustCompile(`格式:\s*([^\s]+)`)
+		if matches := formatRegex.FindStringSubmatch(bottomText); len(matches) > 1 {
+			fileType = matches[1]
+		}
 	}
 
 	// 解析时间
@@ -252,6 +264,11 @@ func (p *XdpanPlugin) enrichWithDetailInfo(client *http.Client, results []model.
 			if detailURL != "" {
 				links := p.fetchDetailPageLinks(client, detailURL)
 				if len(links) > 0 {
+					for linkIndex := range links {
+						if links[linkIndex].WorkTitle == "" {
+							links[linkIndex].WorkTitle = results[index].Title
+						}
+					}
 					results[index].Links = links
 					if DebugLog {
 						fmt.Printf("[xdpan] 获取详情页链接成功: %s, 链接数: %d\n", detailURL, len(links))
@@ -289,7 +306,7 @@ func (p *XdpanPlugin) fetchDetailPageLinks(client *http.Client, detailURL string
 
 	p.setRequestHeaders(req)
 
-	resp, err := client.Do(req)
+	resp, err := p.doRequestWithRetry(req, client)
 	if err != nil {
 		return []model.Link{}
 	}
@@ -299,7 +316,7 @@ func (p *XdpanPlugin) fetchDetailPageLinks(client *http.Client, detailURL string
 		return []model.Link{}
 	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxPageSize))
 	if err != nil {
 		return []model.Link{}
 	}
@@ -331,14 +348,19 @@ func (p *XdpanPlugin) extractDetailPageLinks(doc *goquery.Document) []model.Link
 	// 从JavaScript代码中提取百度网盘链接
 	doc.Find("script").Each(func(i int, s *goquery.Selection) {
 		scriptContent := s.Text()
-		
-		// 查找onDownload函数中的window.open链接
-		re := regexp.MustCompile(`window\.open\("([^"]*pan\.baidu\.com[^"]*)"`)
-		matches := re.FindStringSubmatch(scriptContent)
-		
-		if len(matches) > 1 {
+
+		// 兼容 window.open 和 location.href 两种详情页跳转写法。
+		patterns := []*regexp.Regexp{
+			regexp.MustCompile(`window\.open\(\s*["']([^"']*pan\.baidu\.com[^"']*)["']`),
+			regexp.MustCompile(`(?:window\.)?location\.href\s*=\s*["']([^"']*pan\.baidu\.com[^"']*)["']`),
+		}
+		for _, pattern := range patterns {
+			matches := pattern.FindStringSubmatch(scriptContent)
+			if len(matches) <= 1 {
+				continue
+			}
 			baiduURL := matches[1]
-			
+
 			// 如果链接中没有密码参数，但我们从页面中提取到了密码，则添加密码参数
 			if !strings.Contains(baiduURL, "pwd=") && password != "" {
 				separator := "?"
@@ -347,16 +369,17 @@ func (p *XdpanPlugin) extractDetailPageLinks(doc *goquery.Document) []model.Link
 				}
 				baiduURL = fmt.Sprintf("%s%spwd=%s", baiduURL, separator, password)
 			}
-			
+
 			links = append(links, model.Link{
 				URL:      baiduURL,
 				Type:     "baidu",
 				Password: password,
 			})
-			
+
 			if DebugLog {
 				fmt.Printf("[xdpan] 提取到百度网盘链接: %s, 密码: %s\n", baiduURL, password)
 			}
+			break
 		}
 	})
 
@@ -418,23 +441,30 @@ func (p *XdpanPlugin) doRequestWithRetry(req *http.Request, client *http.Client)
 		reqClone := req.Clone(req.Context())
 
 		resp, err := client.Do(reqClone)
-		if err == nil && resp.StatusCode == 200 {
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if strings.EqualFold(resp.Header.Get("cf-mitigated"), "challenge") {
+			resp.Body.Close()
+			return nil, fmt.Errorf("站点 %s 已迁移并启用 Cloudflare 浏览器验证，当前服务端请求无法通过", p.baseURL)
+		}
+		if resp.StatusCode == http.StatusOK {
 			return resp, nil
 		}
-
-		if resp != nil {
-			resp.Body.Close()
-		}
-		lastErr = err
+		lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+		resp.Body.Close()
 	}
-
+	if lastErr == nil {
+		lastErr = fmt.Errorf("未知请求错误")
+	}
 	return nil, fmt.Errorf("重试 %d 次后仍然失败: %w", MaxRetries, lastErr)
 }
 
 // setRequestHeaders 设置请求头
 func (p *XdpanPlugin) setRequestHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Referer", BaseURL+"/")
+	req.Header.Set("Referer", strings.TrimRight(p.baseURL, "/")+"/?p=baidu")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Connection", "keep-alive")
@@ -445,6 +475,16 @@ func (p *XdpanPlugin) setRequestHeaders(req *http.Request) {
 type cacheItem struct {
 	links     []model.Link
 	timestamp time.Time
+}
+
+func filterResultsWithLinks(results []model.SearchResult) []model.SearchResult {
+	filtered := make([]model.SearchResult, 0, len(results))
+	for _, result := range results {
+		if len(result.Links) > 0 {
+			filtered = append(filtered, result)
+		}
+	}
+	return filtered
 }
 
 func init() {

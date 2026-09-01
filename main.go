@@ -31,6 +31,7 @@ import (
 	_ "pansou/plugin/feikuai"
 	_ "pansou/plugin/gaoqing888"
 	_ "pansou/plugin/gying"
+	_ "pansou/plugin/haitunsou"
 	_ "pansou/plugin/hunhepan"
 	_ "pansou/plugin/ikantv"
 	_ "pansou/plugin/jutoushe"
@@ -54,9 +55,13 @@ import (
 	_ "pansou/plugin/wanou"
 	_ "pansou/plugin/weibo"
 	_ "pansou/plugin/xb6v"
+	_ "pansou/plugin/xdpan"
+	_ "pansou/plugin/xiaokupan"
 	_ "pansou/plugin/xiaoyu"
 	_ "pansou/plugin/xiaozhang"
+	_ "pansou/plugin/yingso"
 	_ "pansou/plugin/yunso"
+	_ "pansou/plugin/zlxapp"
 	_ "pansou/plugin/zxzj"
 )
 
