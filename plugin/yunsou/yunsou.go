@@ -3,108 +3,57 @@ package yunsou
 import (
 	"context"
 	"fmt"
-	"io"
+	"html"
 	"net/http"
 	"net/url"
-	"pansou/model"
-	"pansou/plugin"
-	"pansou/util/json"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/PuerkitoBio/goquery"
+
+	"pansou/model"
+	"pansou/plugin"
 )
 
-// 预编译的正则表达式
-var (
-	// 提取JSON数据的正则表达式
-	jsonDataRegex = regexp.MustCompile(`var jsonData = '(.+?)';`)
-	
-	// 提取pwd参数的正则表达式
-	pwdParamRegex = regexp.MustCompile(`[?&]pwd=([0-9a-zA-Z]+)`)
-	
-	// 控制字符清理正则
-	controlCharsRegex = regexp.MustCompile(`[\x00-\x1F\x7F]`)
-)
-
-// 常量定义
 const (
-	// 插件名称
-	pluginName = "yunsou"
-	
-	// 搜索URL模板
-	searchURLTemplate = "https://yunsou.xyz/s/%s.html"
-	
-	// 默认优先级
-	defaultPriority = 2
-	
-	// 默认超时时间
-	defaultTimeout = 30 * time.Second
-	
-	// 最大重试次数
-	maxRetries = 3
-	
-	// 时间格式
-	timeLayout = "2006-01-02"
+	pluginName        = "yunsou"
+	searchURLTemplate = "https://wpys.cc/s/%s.html"
+	defaultPriority   = 2
+	defaultTimeout    = 30 * time.Second
+	maxRetries        = 3
+	maxResults        = 100
+	maxPages          = 10
+	timeLayout        = "2006-01-02"
 )
 
-// YunsouAsyncPlugin 是云搜影视网站的异步搜索插件实现
+var (
+	// 分享链接由 onclick="copyText(...,'url','pwd')" 提供。
+	copyTextRegex = regexp.MustCompile(`copyText\([^,]+,\s*'[^']*',\s*'([^']+)',\s*'([^']*)'`)
+	pwdParamRegex = regexp.MustCompile(`[?&]pwd=([0-9a-zA-Z]+)`)
+)
+
+// YunsouAsyncPlugin 是云搜（现无朋盘搜）异步搜索插件。
 type YunsouAsyncPlugin struct {
 	*plugin.BaseAsyncPlugin
 	optimizedClient *http.Client
 }
 
-// YunsouCategory 分类信息
-type YunsouCategory struct {
-	SourceCategoryID int    `json:"source_category_id"`
-	Name             string `json:"name"`
-}
+func init() { plugin.RegisterGlobalPlugin(NewYunsouAsyncPlugin()) }
 
-// YunsouItem 单个搜索结果项
-type YunsouItem struct {
-	ID               int             `json:"id"`
-	SourceCategoryID int             `json:"source_category_id"`
-	Title            string          `json:"title"`
-	IsType           int             `json:"is_type"`        // 0=夸克, 1=阿里, 2=百度, 3=UC, 4=迅雷
-	Code             *string         `json:"code"`           // 提取码，可能为null
-	URL              string          `json:"url"`
-	IsTime           int             `json:"is_time"`
-	Name             string          `json:"name"`
-	Times            string          `json:"times"`          // 发布时间 "2025-07-27"
-	Category         YunsouCategory  `json:"category"`
-}
-
-// 确保YunsouAsyncPlugin实现了AsyncSearchPlugin接口
-var _ plugin.AsyncSearchPlugin = (*YunsouAsyncPlugin)(nil)
-
-// init 在包初始化时注册插件
-func init() {
-	plugin.RegisterGlobalPlugin(NewYunsouAsyncPlugin())
-}
-
-// createOptimizedHTTPClient 创建优化的HTTP客户端
-func createOptimizedHTTPClient() *http.Client {
+func NewYunsouAsyncPlugin() *YunsouAsyncPlugin {
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		MaxConnsPerHost:     50,
 		IdleConnTimeout:     90 * time.Second,
-		DisableKeepAlives:   false,
 	}
-	return &http.Client{
-		Transport: transport,
-		Timeout:   defaultTimeout,
-	}
-}
-
-// NewYunsouAsyncPlugin 创建一个新的云搜影视异步插件实例
-func NewYunsouAsyncPlugin() *YunsouAsyncPlugin {
 	return &YunsouAsyncPlugin{
 		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin(pluginName, defaultPriority),
-		optimizedClient: createOptimizedHTTPClient(),
+		optimizedClient: &http.Client{Transport: transport, Timeout: defaultTimeout},
 	}
 }
 
-// Search 执行搜索并返回结果（兼容性方法）
 func (p *YunsouAsyncPlugin) Search(keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
 	result, err := p.SearchWithResult(keyword, ext)
 	if err != nil {
@@ -113,201 +62,191 @@ func (p *YunsouAsyncPlugin) Search(keyword string, ext map[string]interface{}) (
 	return result.Results, nil
 }
 
-// SearchWithResult 执行搜索并返回包含IsFinal标记的结果
 func (p *YunsouAsyncPlugin) SearchWithResult(keyword string, ext map[string]interface{}) (model.PluginSearchResult, error) {
 	return p.AsyncSearchWithResult(keyword, p.searchImpl, p.MainCacheKey, ext)
 }
 
-// searchImpl 实现具体的搜索逻辑
-func (p *YunsouAsyncPlugin) searchImpl(client *http.Client, keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
-	// 1. 构建搜索URL
-	searchURL := fmt.Sprintf(searchURLTemplate, url.QueryEscape(keyword))
-	
-	// 2. 创建带超时的上下文
+func (p *YunsouAsyncPlugin) searchImpl(client *http.Client, keyword string, _ map[string]interface{}) ([]model.SearchResult, error) {
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return []model.SearchResult{}, nil
+	}
+	if p.optimizedClient != nil {
+		client = p.optimizedClient
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancel()
-	
-	// 3. 创建请求
-	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
+	doc, err := p.fetchPage(ctx, client, keyword, 1)
 	if err != nil {
-		return nil, fmt.Errorf("[%s] 创建请求失败: %w", p.Name(), err)
+		return nil, err
 	}
-	
-	// 4. 设置完整的请求头（避免反爬虫）
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Upgrade-Insecure-Requests", "1")
-	req.Header.Set("Cache-Control", "max-age=0")
-	req.Header.Set("Referer", "https://yunsou.xyz/")
-	
-	// 5. 发送请求（带重试机制）
-	resp, err := p.doRequestWithRetry(req, client)
-	if err != nil {
-		return nil, fmt.Errorf("[%s] 搜索请求失败: %w", p.Name(), err)
+	results := p.parseSearchResults(doc)
+	total := 0
+	if rawTotal, ok := doc.Find("el-pagination").First().Attr(":total"); ok {
+		fmt.Sscanf(rawTotal, "%d", &total)
 	}
-	defer resp.Body.Close()
-	
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("[%s] 搜索请求返回状态码: %d", p.Name(), resp.StatusCode)
+	totalPages := (total + 9) / 10
+	if totalPages < 1 {
+		totalPages = 1
 	}
-	
-	// 6. 读取响应内容
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
+	if totalPages > maxPages {
+		totalPages = maxPages
 	}
-	
-	htmlContent := string(bodyBytes)
-	
-	// 7. 提取JSON数据
-	jsonStr, err := p.extractJSONData(htmlContent)
-	if err != nil {
-		return nil, fmt.Errorf("[%s] 提取JSON数据失败: %w", p.Name(), err)
-	}
-	
-	// 8. 解析JSON数据
-	var items []YunsouItem
-	if err := json.Unmarshal([]byte(jsonStr), &items); err != nil {
-		return nil, fmt.Errorf("[%s] 解析JSON失败: %w", p.Name(), err)
-	}
-	
-	// 9. 转换为标准格式
-	results := make([]model.SearchResult, 0, len(items))
-	for _, item := range items {
-		result := p.convertToSearchResult(item)
-		if result.UniqueID != "" && len(result.Links) > 0 {
-			results = append(results, result)
+	for page := 2; page <= totalPages && len(results) < maxResults; page++ {
+		pageDoc, pageErr := p.fetchPage(ctx, client, keyword, page)
+		if pageErr != nil {
+			continue
 		}
+		results = append(results, p.parseSearchResults(pageDoc)...)
 	}
-	
-	// 10. 关键词过滤
+	if len(results) > maxResults {
+		results = results[:maxResults]
+	}
 	return plugin.FilterResultsByKeyword(results, keyword), nil
 }
 
-// extractJSONData 从HTML中提取JSON数据
-func (p *YunsouAsyncPlugin) extractJSONData(htmlContent string) (string, error) {
-	// 查找 var jsonData = '...'
-	matches := jsonDataRegex.FindStringSubmatch(htmlContent)
-	if len(matches) < 2 {
-		return "", fmt.Errorf("未找到JSON数据")
+func (p *YunsouAsyncPlugin) fetchPage(ctx context.Context, client *http.Client, keyword string, page int) (*goquery.Document, error) {
+	pathKeyword := url.PathEscape(keyword)
+	path := pathKeyword
+	if page > 1 {
+		path = fmt.Sprintf("%s-%d", pathKeyword, page)
 	}
-	
-	jsonStr := matches[1]
-	
-	// 清理控制字符
-	jsonStr = controlCharsRegex.ReplaceAllString(jsonStr, "")
-	
-	// 处理转义字符
-	jsonStr = strings.ReplaceAll(jsonStr, `\/`, `/`)
-	
-	return jsonStr, nil
+	requestURL := fmt.Sprintf(searchURLTemplate, path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("[%s] 创建第%d页请求失败: %w", p.Name(), page, err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Referer", "https://wpys.cc/")
+	resp, err := p.doRequestWithRetry(req, client)
+	if err != nil {
+		return nil, fmt.Errorf("[%s] 第%d页搜索请求失败: %w", p.Name(), page, err)
+	}
+	defer resp.Body.Close()
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("[%s] 解析第%d页失败: %w", p.Name(), page, err)
+	}
+	return doc, nil
 }
 
-// convertToSearchResult 将YunsouItem转换为SearchResult
-func (p *YunsouAsyncPlugin) convertToSearchResult(item YunsouItem) model.SearchResult {
-	result := model.SearchResult{
-		UniqueID: fmt.Sprintf("%s-%d", p.Name(), item.ID),
-		Title:    item.Title,
-		Channel:  "", // 插件搜索结果必须为空字符串
-	}
-	
-	// 解析时间
-	if item.Times != "" {
-		if parsedTime, err := time.Parse(timeLayout, item.Times); err == nil {
-			result.Datetime = parsedTime
+func (p *YunsouAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(1<<(attempt-1)) * 200 * time.Millisecond)
+		}
+		resp, err := client.Do(req.Clone(req.Context()))
+		if err == nil && resp.StatusCode == http.StatusOK {
+			return resp, nil
+		}
+		if resp != nil {
+			lastErr = fmt.Errorf("状态码 %d", resp.StatusCode)
+			resp.Body.Close()
 		} else {
-			result.Datetime = time.Now()
+			lastErr = err
 		}
-	} else {
-		result.Datetime = time.Now()
 	}
-	
-	// 构建内容描述
-	var contentParts []string
-	if item.Category.Name != "" {
-		contentParts = append(contentParts, "【"+item.Category.Name+"】")
-	}
-	result.Content = strings.Join(contentParts, " ")
-	
-	// 添加分类标签
-	if item.Category.Name != "" {
-		result.Tags = []string{item.Category.Name}
-	}
-	
-	// 构建网盘链接
-	if item.URL != "" {
-		link := model.Link{
-			Type: p.convertNetDiskType(item.IsType),
-			URL:  item.URL,
-		}
-		
-		// 处理提取码
-		if item.Code != nil && *item.Code != "" {
-			link.Password = *item.Code
-		} else if strings.Contains(item.URL, "?pwd=") {
-			link.Password = p.extractPwdFromURL(item.URL)
-		}
-		
-		result.Links = []model.Link{link}
-	}
-	
-	return result
+	return nil, fmt.Errorf("重试 %d 次后仍然失败: %w", maxRetries, lastErr)
 }
 
-// convertNetDiskType 将is_type转换为网盘类型标识
-func (p *YunsouAsyncPlugin) convertNetDiskType(isType int) string {
-	switch isType {
-	case 0:
-		return "quark" // 夸克网盘
-	case 1:
-		return "aliyun" // 阿里云盘
-	case 2:
-		return "baidu" // 百度网盘
-	case 3:
-		return "uc" // UC网盘
-	case 4:
-		return "xunlei" // 迅雷网盘
-	default:
-		return "others"
-	}
+func (p *YunsouAsyncPlugin) parseSearchResults(doc *goquery.Document) []model.SearchResult {
+	results := make([]model.SearchResult, 0)
+	doc.Find(".list .item").Each(func(_ int, item *goquery.Selection) {
+		if len(results) >= maxResults {
+			return
+		}
+		title, _ := item.Attr("data-title")
+		if title == "" {
+			title = item.Find(".title").First().Text()
+		}
+		title = cleanText(html.UnescapeString(title))
+		if title == "" {
+			return
+		}
+
+		shareURL, password := "", ""
+		item.Find("*").EachWithBreak(func(_ int, button *goquery.Selection) bool {
+			onclick, _ := button.Attr("onclick")
+			if onclick == "" {
+				// Vue 绑定在 HTML 中保留为 @click.stop 属性。
+				onclick, _ = button.Attr("@click.stop")
+			}
+			if onclick == "" {
+				return true
+			}
+			match := copyTextRegex.FindStringSubmatch(html.UnescapeString(onclick))
+			if len(match) >= 3 {
+				shareURL = strings.TrimSpace(match[1])
+				password = strings.TrimSpace(match[2])
+			}
+			return shareURL == ""
+		})
+		if shareURL == "" {
+			return
+		}
+		if password == "" {
+			password = extractPassword(shareURL)
+		}
+
+		result := model.SearchResult{
+			MessageID: fmt.Sprintf("%s-%s", p.Name(), url.QueryEscape(shareURL)),
+			UniqueID:  fmt.Sprintf("%s-%s", p.Name(), url.QueryEscape(shareURL)),
+			Title:     title,
+			Channel:   "",
+			Datetime:  parseDate(item.Find(".type.time").First().Text()),
+			Links: []model.Link{{
+				Type:     diskType(shareURL),
+				URL:      shareURL,
+				Password: password,
+			}},
+		}
+		if source := cleanText(item.Find(".type").First().Text()); source != "" {
+			result.Content = source
+		}
+		results = append(results, result)
+	})
+	return results
 }
 
-// extractPwdFromURL 从URL中提取pwd参数
-func (p *YunsouAsyncPlugin) extractPwdFromURL(urlStr string) string {
-	matches := pwdParamRegex.FindStringSubmatch(urlStr)
-	if len(matches) >= 2 {
-		return matches[1]
+func cleanText(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+}
+
+func parseDate(value string) time.Time {
+	if date, err := time.Parse(timeLayout, strings.TrimSpace(value)); err == nil {
+		return date
+	}
+	return time.Now()
+}
+
+func extractPassword(rawURL string) string {
+	match := pwdParamRegex.FindStringSubmatch(rawURL)
+	if len(match) > 1 {
+		return match[1]
 	}
 	return ""
 }
 
-// doRequestWithRetry 带重试机制的HTTP请求
-func (p *YunsouAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
-	var lastErr error
-	
-	for i := 0; i < maxRetries; i++ {
-		if i > 0 {
-			// 指数退避重试
-			backoff := time.Duration(1<<uint(i-1)) * 200 * time.Millisecond
-			time.Sleep(backoff)
-		}
-		
-		// 克隆请求避免并发问题
-		reqClone := req.Clone(req.Context())
-		
-		resp, err := client.Do(reqClone)
-		if err == nil && resp.StatusCode == 200 {
-			return resp, nil
-		}
-		
-		if resp != nil {
-			resp.Body.Close()
-		}
-		lastErr = err
+func diskType(rawURL string) string {
+	switch {
+	case strings.Contains(rawURL, "pan.quark.cn"):
+		return "quark"
+	case strings.Contains(rawURL, "pan.baidu.com"):
+		return "baidu"
+	case strings.Contains(rawURL, "pan.xunlei.com"):
+		return "xunlei"
+	case strings.Contains(rawURL, "aliyundrive.com"), strings.Contains(rawURL, "alipan.com"):
+		return "aliyun"
+	case strings.Contains(rawURL, "drive.uc.cn"):
+		return "uc"
+	default:
+		return "others"
 	}
-	
-	return nil, fmt.Errorf("重试 %d 次后仍然失败: %w", maxRetries, lastErr)
 }
-

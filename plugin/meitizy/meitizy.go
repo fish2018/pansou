@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -15,22 +16,24 @@ import (
 )
 
 const (
-	PluginName      = "meitizy"
-	DisplayName     = "美体资源"
-	Description     = "美体资源 - 影视资源网盘链接搜索"
-	BaseURL         = "https://video.451024.xyz"
-	SearchPath      = "/api/search"
-	UserAgent       = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
-	MaxResults      = 100
-	RequestTimeout  = 30 * time.Second
-	MaxPageSize     = 1000 // API支持的最大size参数
-	
+	PluginName  = "meitizy"
+	DisplayName = "美体资源"
+	Description = "美体资源 - 影视资源网盘链接搜索"
+	// The frontend and API are hosted on separate domains since the 2026 migration.
+	BaseURL        = "https://apis.451024.xyz"
+	FrontendURL    = "https://video.451024.xyz"
+	SearchPath     = "/api/media/search"
+	UserAgent      = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+	MaxResults     = 100
+	RequestTimeout = 30 * time.Second
+	MaxPageSize    = 10 // 新版 API 仅接受网页使用的 size=10
+
 	// HTTP连接池配置（性能优化）
-	MaxIdleConns        = 100
-	MaxIdleConnsPerHost = 30
-	MaxConnsPerHost     = 50
-	IdleConnTimeout     = 90 * time.Second
-	TLSHandshakeTimeout = 10 * time.Second
+	MaxIdleConns          = 100
+	MaxIdleConnsPerHost   = 30
+	MaxConnsPerHost       = 50
+	IdleConnTimeout       = 90 * time.Second
+	TLSHandshakeTimeout   = 10 * time.Second
 	ExpectContinueTimeout = 1 * time.Second
 )
 
@@ -162,7 +165,8 @@ func (p *MeitizyPlugin) searchImpl(client *http.Client, keyword string, ext map[
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Referer", BaseURL+"/")
+	req.Header.Set("Origin", FrontendURL)
+	req.Header.Set("Referer", FrontendURL+"/")
 
 	// 使用优化的客户端发送请求（带重试）
 	resp, err := p.doRequestWithRetry(req, p.optimizedClient)
@@ -201,8 +205,13 @@ func (p *MeitizyPlugin) convertToSearchResults(items []apiItem) []model.SearchRe
 	results := make([]model.SearchResult, 0, len(items))
 
 	for _, item := range items {
-		// 跳过无效链接
-		if item.Link == "" {
+		// Skip malformed or empty links returned by the API.
+		linkURL := strings.TrimSpace(item.Link)
+		if linkURL == "" {
+			continue
+		}
+		parsedURL, err := url.Parse(linkURL)
+		if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
 			continue
 		}
 
@@ -219,15 +228,15 @@ func (p *MeitizyPlugin) convertToSearchResults(items []apiItem) []model.SearchRe
 		linkType := p.mapLinkType(item.LinkType)
 		// 如果无法从link_type识别，尝试从URL中识别
 		if linkType == "others" {
-			linkType = p.determineCloudTypeFromURL(item.Link)
+			linkType = p.determineCloudTypeFromURL(linkURL)
 		}
 
 		// 构建链接
 		links := []model.Link{
 			{
 				Type:     linkType,
-				URL:      item.Link,
-				Password: "", // API未提供密码信息
+				URL:      linkURL,
+				Password: passwordFromURL(parsedURL),
 			},
 		}
 
@@ -251,6 +260,15 @@ func (p *MeitizyPlugin) convertToSearchResults(items []apiItem) []model.SearchRe
 	}
 
 	return results
+}
+
+func passwordFromURL(linkURL *url.URL) string {
+	for _, key := range []string{"pwd", "password", "passcode", "code"} {
+		if value := strings.TrimSpace(linkURL.Query().Get(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // mapLinkType 映射API返回的link_type到系统网盘类型
@@ -324,11 +342,11 @@ func (p *MeitizyPlugin) parseTime(timeStr string) time.Time {
 
 	// 尝试多种时间格式
 	timeFormats := []string{
-		time.RFC3339,                    // 2006-01-02T15:04:05Z07:00
-		"2006-01-02T15:04:05.000Z",     // 2025-11-25T22:59:53.000Z
-		"2006-01-02T15:04:05Z",         // 2006-01-02T15:04:05Z
-		"2006-01-02 15:04:05",         // 2006-01-02 15:04:05
-		"2006-01-02",                   // 2006-01-02
+		time.RFC3339,               // 2006-01-02T15:04:05Z07:00
+		"2006-01-02T15:04:05.000Z", // 2025-11-25T22:59:53.000Z
+		"2006-01-02T15:04:05Z",     // 2006-01-02T15:04:05Z
+		"2006-01-02 15:04:05",      // 2006-01-02 15:04:05
+		"2006-01-02",               // 2006-01-02
 	}
 
 	for _, format := range timeFormats {
@@ -371,11 +389,15 @@ func (p *MeitizyPlugin) doRequestWithRetry(req *http.Request, client *http.Clien
 		}
 
 		if resp != nil {
+			if err == nil {
+				lastErr = fmt.Errorf("unexpected HTTP status: %s", resp.Status)
+			}
 			resp.Body.Close()
 		}
-		lastErr = err
+		if err != nil {
+			lastErr = err
+		}
 	}
 
 	return nil, fmt.Errorf("[%s] 重试 %d 次后仍然失败: %w", p.Name(), maxRetries, lastErr)
 }
-

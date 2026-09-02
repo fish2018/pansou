@@ -2,27 +2,30 @@
 
 ## 网站概述
 - **网站名称**: 美体资源
-- **API域名**: https://video.451024.xyz
+- **前端域名**: https://video.451024.xyz
+- **API域名**: https://apis.451024.xyz
 - **类型**: JSON API接口，提供影视资源网盘链接搜索
 - **接口类型**: RESTful API
 
 ## API流程概述
 
 ### 搜索接口
-- **请求URL**: `https://video.451024.xyz/api/search`
+- **请求URL**: `https://apis.451024.xyz/api/media/search`
 - **请求方法**: POST
 - **请求头**: 
   - `Content-Type: application/json`
   - `User-Agent`: 标准浏览器User-Agent
+  - `Origin`: `https://video.451024.xyz`
+  - `Referer`: `https://video.451024.xyz/`
 - **请求体**: JSON格式
   ```json
   {
     "title": "遮天",
     "page": 1,
-    "size": 1000
+    "size": 10
   }
   ```
-- **特点**: 直接返回JSON数据，无需解析HTML
+- **特点**: 前后端分离后由 `apis.451024.xyz` 提供 JSON 数据，需保留网页来源请求头，无需解析 HTML。
 
 ## 请求参数说明
 
@@ -31,7 +34,7 @@
 |------|------|------|------|------|
 | `title` | string | 是 | 搜索关键词 | "遮天" |
 | `page` | int | 是 | 页码，从1开始 | 1 |
-| `size` | int | 是 | 每页返回数量，最大1000 | 1000 |
+| `size` | int | 是 | 每页返回数量，新版接口固定为 10 | 10 |
 
 ## 响应结构
 
@@ -92,7 +95,7 @@
 - 设置Content-Type为application/json
 - 请求体为JSON格式
 - page参数从1开始
-- size建议设置为1000（最大返回数量）
+- size使用 10；更大的值会返回 400。
 
 ### 2. 响应解析
 - 解析JSON响应
@@ -155,4 +158,3 @@
 - 关键词过滤（标题匹配）
 - 结果去重
 - 合理的并发控制
-

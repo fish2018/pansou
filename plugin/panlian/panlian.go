@@ -11,8 +11,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -49,21 +49,29 @@ var (
 	errLoginRequired = errors.New("login required")
 
 	panOrder = map[string]int{
-		"quark":  0,
-		"uc":     1,
-		"baidu":  2,
-		"xunlei": 3,
-		"123":    4,
-		"tianyi": 5,
-		"115":    6,
-		"aliyun": 7,
-		"mobile": 8,
-		"magnet": 9,
-		"others": 10,
+		"quark":   0,
+		"uc":      1,
+		"baidu":   2,
+		"xunlei":  3,
+		"123":     4,
+		"tianyi":  5,
+		"115":     6,
+		"aliyun":  7,
+		"guangya": 8,
+		"mobile":  9,
+		"pikpak":  10,
+		"magnet":  11,
+		"others":  12,
 	}
 
 	extractCodeNoiseRegex = regexp.MustCompile(`(?i)([?？]?\s*(提取码|访问码|密码)[:：]\s*[a-z0-9]{4,8})+$`)
 	htmlTagRegex          = regexp.MustCompile(`<[^>]+>`)
+	pan123ShareHostRegex  = regexp.MustCompile(`(?i)(^|\.)share\.(?:123684\.com|123865\.com|123912\.com|123pan\.com|123pan\.cn|123592\.com)$`)
+	panTokenURLRegexes    = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)id=["']jumpBtn["'][^>]*href=["']([^"']+)["']`),
+		regexp.MustCompile(`(?i)href=["']([^"']+)["'][^>]*id=["']jumpBtn["']`),
+		regexp.MustCompile(`(?i)(?:targetUrl|window\.location\.href|location\.href)\s*=\s*["']([^"']+)["']`),
+	}
 )
 
 const htmlTemplate = `<!DOCTYPE html>
@@ -468,10 +476,19 @@ type PanGroup struct {
 type PanLinkItem struct {
 	Title    string `json:"title"`
 	URL      string `json:"url"`
+	Token    string `json:"token"`
 	Password string `json:"password"`
 	Type     string `json:"type"`
 	Time     string `json:"time"`
 	Source   string `json:"source"`
+	ID       string `json:"id"`
+	UserTier string `json:"user_tier"`
+}
+
+type resolveTokenResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	URL     string `json:"url"`
 }
 
 var (
@@ -826,7 +843,157 @@ func (p *PanlianPlugin) fetchPanLinks(client *http.Client, cookie string, keywor
 	if !resp.Success {
 		return nil, fmt.Errorf("盘链网盘接口异常: %s", resp.Message)
 	}
+	p.resolvePanLinkTokens(client, cookie, resp.Data)
 	return &resp, nil
+}
+
+func (p *PanlianPlugin) resolvePanLinkTokens(client *http.Client, cookie string, groups map[string]PanGroup) {
+	type tokenJob struct {
+		groupKey string
+		index    int
+		token    string
+	}
+	type tokenResult struct {
+		groupKey string
+		index    int
+		url      string
+	}
+
+	jobs := make([]tokenJob, 0)
+	for groupKey, group := range groups {
+		for index, item := range group.Links {
+			candidate := strings.TrimSpace(item.URL)
+			if !isRealPanURL(candidate) {
+				candidate = strings.TrimSpace(item.Token)
+			}
+			if candidate != "" && !isRealPanURL(candidate) {
+				jobs = append(jobs, tokenJob{groupKey: groupKey, index: index, token: candidate})
+			}
+		}
+	}
+	if len(jobs) == 0 {
+		return
+	}
+
+	resultCh := make(chan tokenResult, len(jobs))
+	sem := make(chan struct{}, MaxConcurrentJobs)
+	var wg sync.WaitGroup
+	for _, job := range jobs {
+		job := job
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			resolvedURL, err := p.resolvePanToken(client, cookie, job.token)
+			if err == nil && isRealPanURL(resolvedURL) {
+				resultCh <- tokenResult{groupKey: job.groupKey, index: job.index, url: resolvedURL}
+			}
+		}()
+	}
+	wg.Wait()
+	close(resultCh)
+
+	for result := range resultCh {
+		group, ok := groups[result.groupKey]
+		if !ok || result.index < 0 || result.index >= len(group.Links) {
+			continue
+		}
+		group.Links[result.index].URL = result.url
+		groups[result.groupKey] = group
+	}
+}
+
+func (p *PanlianPlugin) resolvePanToken(client *http.Client, cookie string, token string) (string, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", fmt.Errorf("盘链 token 为空")
+	}
+	if isRealPanURL(token) {
+		return token, nil
+	}
+	if client == nil {
+		client = p.GetClient()
+	}
+	if client == nil {
+		client = &http.Client{Timeout: RequestTimeout}
+	}
+
+	payload, err := json.Marshal(map[string]string{"token": token})
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, DefaultBaseURL+"/api/resolve_token.php", bytes.NewReader(payload))
+	if err == nil {
+		p.setPanlianHeaders(req, cookie, DefaultBaseURL+"/pages/video.php")
+		req.Header.Set("Content-Type", "application/json")
+		resp, doErr := client.Do(req)
+		if doErr == nil {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			if readErr == nil && resp.StatusCode == http.StatusOK {
+				var resolved resolveTokenResponse
+				if json.Unmarshal(body, &resolved) == nil && resolved.Success && isRealPanURL(resolved.URL) {
+					cancel()
+					return strings.TrimSpace(resolved.URL), nil
+				}
+			}
+		}
+	}
+	cancel()
+
+	goURL := DefaultBaseURL + "/api/go.php?t=" + url.QueryEscape(token)
+	ctx, cancel = context.WithTimeout(context.Background(), RequestTimeout)
+	defer cancel()
+	req, err = http.NewRequestWithContext(ctx, http.MethodGet, goURL, nil)
+	if err != nil {
+		return "", err
+	}
+	p.setPanlianHeaders(req, cookie, DefaultBaseURL+"/pages/video.php")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	redirectClient := *client
+	redirectClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := redirectClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if location := strings.TrimSpace(resp.Header.Get("Location")); isRealPanURL(location) {
+		return decodePanURL(location), nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	for _, pattern := range panTokenURLRegexes {
+		match := pattern.FindSubmatch(body)
+		if len(match) > 1 {
+			resolvedURL := decodePanURL(string(match[1]))
+			if isRealPanURL(resolvedURL) {
+				return resolvedURL, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("盘链 token 未解析出真实链接")
+}
+
+func decodePanURL(value string) string {
+	value = html.UnescapeString(strings.TrimSpace(value))
+	return strings.ReplaceAll(value, `\/`, `/`)
+}
+
+func (p *PanlianPlugin) setPanlianHeaders(req *http.Request, cookie string, referer string) {
+	req.Header.Set("User-Agent", browserUserAgent())
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-Language", "zh-TW,zh;q=0.9,zh-CN;q=0.8,en;q=0.7")
+	req.Header.Set("Origin", DefaultBaseURL)
+	req.Header.Set("Referer", referer)
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
 }
 
 func (p *PanlianPlugin) doJSONGET(client *http.Client, cookie string, path string, values url.Values, out interface{}) error {
@@ -891,22 +1058,24 @@ func (p *PanlianPlugin) doJSONGET(client *http.Client, cookie string, path strin
 }
 
 func (p *PanlianPlugin) doLogin(username string, password string, remember bool) (string, *LoginResponse, error) {
+	username = strings.TrimSpace(username)
+	if username == "" || password == "" {
+		return "", nil, fmt.Errorf("账号和密码不能为空")
+	}
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{
 		Timeout: RequestTimeout,
 		Jar:     jar,
 	}
 
-	loginPageURL := DefaultBaseURL + "/pages/login.php"
+	// 站点登录只认预先由公开接口建立的 PHPSESSID。
 	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loginPageURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, DefaultBaseURL+"/api/get_types.php", nil)
 	if err != nil {
 		cancel()
 		return "", nil, err
 	}
-	req.Header.Set("User-Agent", browserUserAgent())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-TW,zh;q=0.9,zh-CN;q=0.8,en;q=0.7")
+	p.setPanlianHeaders(req, "", DefaultBaseURL+"/all-videos.php")
 	resp, err := client.Do(req)
 	if err != nil {
 		cancel()
@@ -916,33 +1085,26 @@ func (p *PanlianPlugin) doLogin(username string, password string, remember bool)
 	resp.Body.Close()
 	cancel()
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("获取登录页失败: HTTP %d", resp.StatusCode)
+		return "", nil, fmt.Errorf("获取预登录会话失败: HTTP %d", resp.StatusCode)
 	}
+	baseURL, _ := url.Parse(DefaultBaseURL)
+	preCookie := cookiesToString(jar.Cookies(baseURL))
 
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	_ = writer.WriteField("username", strings.TrimSpace(username))
-	_ = writer.WriteField("password", password)
+	form := url.Values{}
+	form.Set("username", username)
+	form.Set("password", password)
 	if remember {
-		_ = writer.WriteField("remember", "on")
-	}
-	if err := writer.Close(); err != nil {
-		return "", nil, err
+		form.Set("remember", "on")
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), RequestTimeout)
-	req, err = http.NewRequestWithContext(ctx, http.MethodPost, DefaultBaseURL+"/api/login.php", &body)
+	req, err = http.NewRequestWithContext(ctx, http.MethodPost, DefaultBaseURL+"/api/login.php", strings.NewReader(form.Encode()))
 	if err != nil {
 		cancel()
 		return "", nil, err
 	}
-	req.Header.Set("User-Agent", browserUserAgent())
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "zh-TW,zh;q=0.9,zh-CN;q=0.8,en;q=0.7")
-	req.Header.Set("Origin", DefaultBaseURL)
-	req.Header.Set("Referer", loginPageURL)
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	p.setPanlianHeaders(req, preCookie, DefaultBaseURL+"/pages/login.php")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 
 	resp, err = client.Do(req)
 	if err != nil {
@@ -968,7 +1130,6 @@ func (p *PanlianPlugin) doLogin(username string, password string, remember bool)
 		return "", nil, errors.New(strings.TrimSpace(loginResp.Message))
 	}
 
-	baseURL, _ := url.Parse(DefaultBaseURL)
 	cookieString := cookiesToString(jar.Cookies(baseURL))
 	if cookieString == "" {
 		return "", nil, fmt.Errorf("登录成功但未获取到有效 Cookie")
@@ -1354,7 +1515,7 @@ func normalizePanLinks(groupKey string, group PanGroup) []PanLinkItem {
 	for _, link := range group.Links {
 		linkType := normalizeLinkType(firstNonEmpty(link.Type, groupKey), link.URL)
 		linkURL := normalizePanURL(link.URL, link.Password, linkType)
-		if linkURL == "" {
+		if !isRealPanURL(linkURL) {
 			continue
 		}
 
@@ -1367,10 +1528,13 @@ func normalizePanLinks(groupKey string, group PanGroup) []PanLinkItem {
 		items = append(items, PanLinkItem{
 			Title:    strings.TrimSpace(link.Title),
 			URL:      linkURL,
+			Token:    strings.TrimSpace(link.Token),
 			Password: strings.TrimSpace(link.Password),
 			Type:     linkType,
 			Time:     strings.TrimSpace(link.Time),
 			Source:   strings.TrimSpace(link.Source),
+			ID:       strings.TrimSpace(link.ID),
+			UserTier: strings.TrimSpace(link.UserTier),
 		})
 	}
 
@@ -1393,16 +1557,20 @@ func normalizePanTypeName(value string) string {
 		return "quark"
 	case "uc", "uc网盘":
 		return "uc"
-	case "123", "123网盘":
+	case "123", "123网盘", "123pan", "a123":
 		return "123"
-	case "天翼", "天翼云盘":
+	case "天翼", "天翼云盘", "a189":
 		return "tianyi"
-	case "115", "115网盘":
+	case "115", "115网盘", "a115":
 		return "115"
-	case "阿里", "阿里云盘", "aliyun":
+	case "阿里", "阿里云盘", "aliyun", "阿里云", "ali":
 		return "aliyun"
-	case "中国移动云盘", "移动云盘":
+	case "光鸭", "光鸭网盘", "guangya", "guangyapan", "gy":
+		return "guangya"
+	case "中国移动云盘", "移动云盘", "mobile", "a139":
 		return "mobile"
+	case "pikpak", "pikpak网盘":
+		return "pikpak"
 	case "磁力", "磁链":
 		return "magnet"
 	default:
@@ -1450,13 +1618,57 @@ func normalizeLinkType(rawType string, rawURL string) string {
 		return "123"
 	case strings.Contains(urlLower, "caiyun.139.com"), strings.Contains(urlLower, "yun.139.com"):
 		return "mobile"
+	case strings.Contains(urlLower, "guangyapan"):
+		return "guangya"
+	case strings.Contains(urlLower, "mypikpak.com"), strings.Contains(urlLower, "mypikpak.net"), strings.Contains(urlLower, "pikpakdrive.com"):
+		return "pikpak"
 	default:
 		return "others"
 	}
 }
 
-func normalizePanURL(rawURL string, password string, linkType string) string {
+func isRealPanURL(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(value), "http://") ||
+		strings.HasPrefix(strings.ToLower(value), "https://") ||
+		strings.HasPrefix(strings.ToLower(value), "magnet:") ||
+		strings.HasPrefix(strings.ToLower(value), "ed2k:") ||
+		strings.HasPrefix(strings.ToLower(value), "thunder:")
+}
+
+func normalizePanShareURL(rawURL string, linkType string) string {
 	clean := strings.TrimSpace(rawURL)
+	if clean == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(clean)
+	if err != nil || parsed.Hostname() == "" {
+		return clean
+	}
+	hostname := strings.ToLower(parsed.Hostname())
+	shareHost := pan123ShareHostRegex.MatchString(hostname)
+	pathParts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if (normalizePanTypeName(linkType) == "123" || shareHost) && shareHost && len(pathParts) == 2 && strings.EqualFold(pathParts[0], "123pan") && pathParts[1] != "" {
+		normalized := &url.URL{Scheme: "https", Host: "123865.com", Path: "/s/" + pathParts[1]}
+		query := normalized.Query()
+		for _, key := range []string{"pwd", "pass", "password", "code"} {
+			if value := parsed.Query().Get(key); value != "" {
+				query.Set("pwd", value)
+				break
+			}
+		}
+		normalized.RawQuery = query.Encode()
+		return normalized.String()
+	}
+	return clean
+}
+
+func normalizePanURL(rawURL string, password string, linkType string) string {
+	clean := normalizePanShareURL(strings.TrimSpace(rawURL), linkType)
 	clean = strings.TrimRight(clean, "#")
 	clean = extractCodeNoiseRegex.ReplaceAllString(clean, "")
 	clean = strings.TrimSpace(clean)
