@@ -1377,11 +1377,9 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 			plugin.SetMainCacheKey(cacheKey)
 			plugin.SetCurrentKeyword(keyword)
 
-			// 调用异步插件的AsyncSearch方法
-			results, err := plugin.AsyncSearch(keyword, func(client *http.Client, kw string, extParams map[string]interface{}) ([]model.SearchResult, error) {
-				// 使用插件的Search方法作为搜索函数
-				return plugin.Search(kw, extParams)
-			}, cacheKey, ext)
+			// 插件的Search方法已经负责异步调度、插件缓存和后台刷新。
+			// 这里直接调用，避免再包一层AsyncSearch导致嵌套等待和重复超时。
+			results, err := plugin.Search(keyword, ext)
 
 			if err != nil {
 				return nil

@@ -1,15 +1,15 @@
 package huban
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
-	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"pansou/model"
@@ -39,6 +39,12 @@ const (
 	// 调试日志开关
 	DebugLog = false
 )
+
+var sourceURLs = []string{
+	"http://121.205.88.174:16969",
+	"http://38.76.197.172:16969",
+	"http://xhban.xyz:20720",
+}
 
 // 性能统计（原子操作）
 var (
@@ -74,28 +80,28 @@ func init() {
 // 预编译的正则表达式
 var (
 	// 密码提取正则表达式
-	passwordRegex = regexp.MustCompile(`\?pwd=([0-9a-zA-Z]+)`)
+	passwordRegex    = regexp.MustCompile(`\?pwd=([0-9a-zA-Z]+)`)
 	password115Regex = regexp.MustCompile(`password=([0-9a-zA-Z]+)`)
 
 	// 详情页ID提取正则表达式
 	detailIDRegex = regexp.MustCompile(`/id/(\d+)`)
-	
+
 	// 常见网盘链接的正则表达式（支持16种类型）
-	quarkLinkRegex     = regexp.MustCompile(`https?://pan\.quark\.cn/s/[0-9a-zA-Z]+`)
-	ucLinkRegex        = regexp.MustCompile(`https?://drive\.uc\.cn/s/[0-9a-zA-Z]+(\?[^"'\s]*)?`)
-	baiduLinkRegex     = regexp.MustCompile(`https?://pan\.baidu\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
-	aliyunLinkRegex    = regexp.MustCompile(`https?://(www\.)?(aliyundrive\.com|alipan\.com)/s/[0-9a-zA-Z]+`)
-	xunleiLinkRegex    = regexp.MustCompile(`https?://pan\.xunlei\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
-	tianyiLinkRegex    = regexp.MustCompile(`https?://cloud\.189\.cn/t/[0-9a-zA-Z]+`)
-	link115Regex       = regexp.MustCompile(`https?://(115\.com|115cdn\.com)/s/[0-9a-zA-Z]+`)
-	mobileLinkRegex    = regexp.MustCompile(`https?://caiyun\.feixin\.10086\.cn/[0-9a-zA-Z]+`)
-	weiyunLinkRegex    = regexp.MustCompile(`https?://share\.weiyun\.com/[0-9a-zA-Z]+`)
-	lanzouLinkRegex    = regexp.MustCompile(`https?://(www\.)?(lanzou[uixys]*|lan[zs]o[ux])\.(com|net|org)/[0-9a-zA-Z]+`)
+	quarkLinkRegex      = regexp.MustCompile(`https?://pan\.quark\.cn/s/[0-9a-zA-Z]+`)
+	ucLinkRegex         = regexp.MustCompile(`https?://drive\.uc\.cn/s/[0-9a-zA-Z]+(\?[^"'\s]*)?`)
+	baiduLinkRegex      = regexp.MustCompile(`https?://pan\.baidu\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
+	aliyunLinkRegex     = regexp.MustCompile(`https?://(www\.)?(aliyundrive\.com|alipan\.com)/s/[0-9a-zA-Z]+`)
+	xunleiLinkRegex     = regexp.MustCompile(`https?://pan\.xunlei\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
+	tianyiLinkRegex     = regexp.MustCompile(`https?://cloud\.189\.cn/t/[0-9a-zA-Z]+`)
+	link115Regex        = regexp.MustCompile(`https?://(115\.com|115cdn\.com)/s/[0-9a-zA-Z]+`)
+	mobileLinkRegex     = regexp.MustCompile(`https?://caiyun\.feixin\.10086\.cn/[0-9a-zA-Z]+`)
+	weiyunLinkRegex     = regexp.MustCompile(`https?://share\.weiyun\.com/[0-9a-zA-Z]+`)
+	lanzouLinkRegex     = regexp.MustCompile(`https?://(www\.)?(lanzou[uixys]*|lan[zs]o[ux])\.(com|net|org)/[0-9a-zA-Z]+`)
 	jianguoyunLinkRegex = regexp.MustCompile(`https?://(www\.)?jianguoyun\.com/p/[0-9a-zA-Z]+`)
-	link123Regex       = regexp.MustCompile(`https?://(123pan\.com|www\.123912\.com|www\.123865\.com|www\.123684\.com)/s/[0-9a-zA-Z]+`)
-	pikpakLinkRegex    = regexp.MustCompile(`https?://mypikpak\.com/s/[0-9a-zA-Z]+`)
-	magnetLinkRegex    = regexp.MustCompile(`magnet:\?xt=urn:btih:[0-9a-fA-F]{40}`)
-	ed2kLinkRegex      = regexp.MustCompile(`ed2k://\|file\|.+\|\d+\|[0-9a-fA-F]{32}\|/`)
+	link123Regex        = regexp.MustCompile(`https?://(123pan\.com|www\.123912\.com|www\.123865\.com|www\.123684\.com)/s/[0-9a-zA-Z]+`)
+	pikpakLinkRegex     = regexp.MustCompile(`https?://mypikpak\.com/s/[0-9a-zA-Z]+`)
+	magnetLinkRegex     = regexp.MustCompile(`magnet:\?xt=urn:btih:[0-9a-fA-F]{40}`)
+	ed2kLinkRegex       = regexp.MustCompile(`ed2k://\|file\|.+\|\d+\|[0-9a-fA-F]{32}\|/`)
 )
 
 // HubanAsyncPlugin Huban异步插件
@@ -136,7 +142,7 @@ func (p *HubanAsyncPlugin) Search(keyword string, ext map[string]interface{}) ([
 		if refererVal, ok := ext["referer"].(string); ok {
 			referer = refererVal
 		}
-		
+
 		// 检查referer是否在允许列表中
 		allowed := false
 		for _, allowedReferer := range AllowedReferers {
@@ -148,7 +154,7 @@ func (p *HubanAsyncPlugin) Search(keyword string, ext map[string]interface{}) ([
 				break
 			}
 		}
-		
+
 		if !allowed {
 			if DebugLog {
 				fmt.Printf("[%s] 拒绝来自 %s 的请求\n", p.Name(), referer)
@@ -156,7 +162,7 @@ func (p *HubanAsyncPlugin) Search(keyword string, ext map[string]interface{}) ([
 			return nil, fmt.Errorf("[%s] 请求来源不被允许", p.Name())
 		}
 	}
-	
+
 	result, err := p.SearchWithResult(keyword, ext)
 	if err != nil {
 		return nil, err
@@ -184,8 +190,56 @@ func (p *HubanAsyncPlugin) searchImpl(client *http.Client, keyword string, ext m
 		client = p.optimizedClient
 	}
 
-	// 1. 构建搜索URL
-	searchURL := fmt.Sprintf("http://103.45.162.207:20720/index.php/vod/search/wd/%s.html", url.QueryEscape(keyword))
+	var results []model.SearchResult
+	var selectedBase string
+	var emptyBase string
+	var lastErr error
+	type sourceResult struct {
+		base    string
+		results []model.SearchResult
+		err     error
+	}
+	resultCh := make(chan sourceResult, len(sourceURLs))
+	for _, baseURL := range sourceURLs {
+		go func(base string) {
+			candidate, err := p.searchAtBase(client, keyword, base)
+			resultCh <- sourceResult{base: base, results: candidate, err: err}
+		}(baseURL)
+	}
+	for range sourceURLs {
+		candidate := <-resultCh
+		if candidate.err != nil {
+			lastErr = candidate.err
+			continue
+		}
+		if emptyBase == "" {
+			emptyBase = candidate.base
+		}
+		if len(candidate.results) > 0 {
+			results = candidate.results
+			selectedBase = candidate.base
+			break
+		}
+	}
+	if selectedBase == "" {
+		selectedBase = emptyBase
+	}
+	if selectedBase == "" {
+		if lastErr != nil {
+			return nil, fmt.Errorf("[%s] 搜索请求失败: %w", p.Name(), lastErr)
+		}
+		return []model.SearchResult{}, nil
+	}
+
+	// 8. 异步获取详情页信息
+	enhancedResults := p.enhanceWithDetails(client, results, selectedBase)
+
+	// 9. 关键词过滤
+	return plugin.FilterResultsByKeyword(enhancedResults, keyword), nil
+}
+
+func (p *HubanAsyncPlugin) searchAtBase(client *http.Client, keyword, baseURL string) ([]model.SearchResult, error) {
+	searchURL := fmt.Sprintf("%s/index.php/vod/search/wd/%s.html", strings.TrimRight(baseURL, "/"), url.QueryEscape(keyword))
 
 	// 2. 创建带超时的上下文
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
@@ -202,7 +256,7 @@ func (p *HubanAsyncPlugin) searchImpl(client *http.Client, keyword string, ext m
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Referer", "http://103.45.162.207:20720/")
+	req.Header.Set("Referer", strings.TrimRight(baseURL, "/")+"/")
 
 	// 5. 发送请求
 	resp, err := p.doRequestWithRetry(req, client)
@@ -231,11 +285,7 @@ func (p *HubanAsyncPlugin) searchImpl(client *http.Client, keyword string, ext m
 		}
 	})
 
-	// 8. 异步获取详情页信息
-	enhancedResults := p.enhanceWithDetails(client, results)
-
-	// 9. 关键词过滤
-	return plugin.FilterResultsByKeyword(enhancedResults, keyword), nil
+	return results, nil
 }
 
 // parseSearchItem 解析单个搜索结果项
@@ -339,7 +389,7 @@ func (p *HubanAsyncPlugin) parseSearchItem(s *goquery.Selection, keyword string)
 }
 
 // enhanceWithDetails 异步获取详情页信息
-func (p *HubanAsyncPlugin) enhanceWithDetails(client *http.Client, results []model.SearchResult) []model.SearchResult {
+func (p *HubanAsyncPlugin) enhanceWithDetails(client *http.Client, results []model.SearchResult, baseURL string) []model.SearchResult {
 	var enhancedResults []model.SearchResult
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -363,9 +413,10 @@ func (p *HubanAsyncPlugin) enhanceWithDetails(client *http.Client, results []mod
 				return
 			}
 			itemID := parts[1]
+			cacheKey := strings.TrimRight(baseURL, "/") + "|" + itemID
 
 			// 检查缓存
-			if cached, ok := detailCache.Load(itemID); ok {
+			if cached, ok := detailCache.Load(cacheKey); ok {
 				atomic.AddInt64(&cacheHits, 1)
 				r := cached.(model.SearchResult)
 				mu.Lock()
@@ -377,7 +428,7 @@ func (p *HubanAsyncPlugin) enhanceWithDetails(client *http.Client, results []mod
 			atomic.AddInt64(&cacheMisses, 1)
 
 			// 获取详情页链接和图片
-			detailLinks, detailImages := p.fetchDetailLinksAndImages(client, itemID)
+			detailLinks, detailImages := p.fetchDetailLinksAndImages(client, baseURL, itemID)
 			result.Links = detailLinks
 
 			// 合并图片：优先使用详情页的海报，如果没有则使用搜索结果的图片
@@ -386,7 +437,7 @@ func (p *HubanAsyncPlugin) enhanceWithDetails(client *http.Client, results []mod
 			}
 
 			// 缓存结果
-			detailCache.Store(itemID, result)
+			detailCache.Store(cacheKey, result)
 
 			mu.Lock()
 			enhancedResults = append(enhancedResults, result)
@@ -399,7 +450,7 @@ func (p *HubanAsyncPlugin) enhanceWithDetails(client *http.Client, results []mod
 }
 
 // fetchDetailLinksAndImages 获取详情页的下载链接和图片
-func (p *HubanAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, itemID string) ([]model.Link, []string) {
+func (p *HubanAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, baseURL, itemID string) ([]model.Link, []string) {
 	// 性能统计
 	start := time.Now()
 	atomic.AddInt64(&detailPageRequests, 1)
@@ -408,7 +459,7 @@ func (p *HubanAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, itemID
 		atomic.AddInt64(&totalDetailTime, duration)
 	}()
 
-	detailURL := fmt.Sprintf("http://103.45.162.207:20720/index.php/vod/detail/id/%s.html", itemID)
+	detailURL := fmt.Sprintf("%s/index.php/vod/detail/id/%s.html", strings.TrimRight(baseURL, "/"), itemID)
 
 	// 创建带超时的上下文
 	ctx, cancel := context.WithTimeout(context.Background(), DetailTimeout)
@@ -425,7 +476,7 @@ func (p *HubanAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, itemID
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Referer", "http://103.45.162.207:20720/")
+	req.Header.Set("Referer", strings.TrimRight(baseURL, "/")+"/")
 
 	// 发送请求（带重试）
 	resp, err := p.doRequestWithRetry(req, client)
@@ -472,33 +523,31 @@ func (p *HubanAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, itemID
 	return links, images
 }
 
-
-
 // isValidNetworkDriveURL 检查URL是否为有效的网盘链接
 func (p *HubanAsyncPlugin) isValidNetworkDriveURL(url string) bool {
 	// 过滤掉明显无效的链接
-	if strings.Contains(url, "javascript:") || 
-	   url == "" ||
-	   (!strings.HasPrefix(url, "http") && !strings.HasPrefix(url, "magnet:") && !strings.HasPrefix(url, "ed2k:")) {
+	if strings.Contains(url, "javascript:") ||
+		url == "" ||
+		(!strings.HasPrefix(url, "http") && !strings.HasPrefix(url, "magnet:") && !strings.HasPrefix(url, "ed2k:")) {
 		return false
 	}
-	
+
 	// 检查是否匹配任何支持的网盘格式（16种）
 	return quarkLinkRegex.MatchString(url) ||
-		   ucLinkRegex.MatchString(url) ||
-		   baiduLinkRegex.MatchString(url) ||
-		   aliyunLinkRegex.MatchString(url) ||
-		   xunleiLinkRegex.MatchString(url) ||
-		   tianyiLinkRegex.MatchString(url) ||
-		   link115Regex.MatchString(url) ||
-		   mobileLinkRegex.MatchString(url) ||
-		   weiyunLinkRegex.MatchString(url) ||
-		   lanzouLinkRegex.MatchString(url) ||
-		   jianguoyunLinkRegex.MatchString(url) ||
-		   link123Regex.MatchString(url) ||
-		   pikpakLinkRegex.MatchString(url) ||
-		   magnetLinkRegex.MatchString(url) ||
-		   ed2kLinkRegex.MatchString(url)
+		ucLinkRegex.MatchString(url) ||
+		baiduLinkRegex.MatchString(url) ||
+		aliyunLinkRegex.MatchString(url) ||
+		xunleiLinkRegex.MatchString(url) ||
+		tianyiLinkRegex.MatchString(url) ||
+		link115Regex.MatchString(url) ||
+		mobileLinkRegex.MatchString(url) ||
+		weiyunLinkRegex.MatchString(url) ||
+		lanzouLinkRegex.MatchString(url) ||
+		jianguoyunLinkRegex.MatchString(url) ||
+		link123Regex.MatchString(url) ||
+		pikpakLinkRegex.MatchString(url) ||
+		magnetLinkRegex.MatchString(url) ||
+		ed2kLinkRegex.MatchString(url)
 }
 
 // determineLinkType 根据URL确定链接类型（支持16种类型）
@@ -545,12 +594,12 @@ func (p *HubanAsyncPlugin) extractPassword(url string) string {
 	if matches := passwordRegex.FindStringSubmatch(url); len(matches) > 1 {
 		return matches[1]
 	}
-	
+
 	// 115网盘密码
 	if matches := password115Regex.FindStringSubmatch(url); len(matches) > 1 {
 		return matches[1]
 	}
-	
+
 	return ""
 }
 
@@ -569,6 +618,9 @@ func (p *HubanAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Cl
 			lastErr = fmt.Errorf("HTTP状态码: %d", resp.StatusCode)
 		} else {
 			lastErr = err
+		}
+		if req.Context().Err() != nil {
+			return nil, req.Context().Err()
 		}
 
 		// 快速重试：只等待很短时间

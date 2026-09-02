@@ -20,24 +20,24 @@ import (
 var (
 	// 从详情页URL中提取ID的正则表达式
 	detailIDRegex = regexp.MustCompile(`/vod/detail/id/(\d+)\.html`)
-	
+
 	// 常见网盘链接的正则表达式（支持16种类型）
-	quarkLinkRegex     = regexp.MustCompile(`https?://pan\.quark\.cn/s/[0-9a-zA-Z]+`)
-	ucLinkRegex        = regexp.MustCompile(`https?://drive\.uc\.cn/s/[0-9a-zA-Z]+(\?[^"'\s]*)?`)
-	baiduLinkRegex     = regexp.MustCompile(`https?://pan\.baidu\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
-	aliyunLinkRegex    = regexp.MustCompile(`https?://(www\.)?(aliyundrive\.com|alipan\.com)/s/[0-9a-zA-Z]+`)
-	xunleiLinkRegex    = regexp.MustCompile(`https?://pan\.xunlei\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
-	tianyiLinkRegex    = regexp.MustCompile(`https?://cloud\.189\.cn/t/[0-9a-zA-Z]+`)
-	link115Regex       = regexp.MustCompile(`https?://115\.com/s/[0-9a-zA-Z]+`)
-	mobileLinkRegex    = regexp.MustCompile(`https?://caiyun\.feixin\.10086\.cn/[0-9a-zA-Z]+`)
-	weiyunLinkRegex    = regexp.MustCompile(`https?://share\.weiyun\.com/[0-9a-zA-Z]+`)
-	lanzouLinkRegex    = regexp.MustCompile(`https?://(www\.)?(lanzou[uixys]*|lan[zs]o[ux])\.(com|net|org)/[0-9a-zA-Z]+`)
+	quarkLinkRegex      = regexp.MustCompile(`https?://pan\.quark\.cn/s/[0-9a-zA-Z]+`)
+	ucLinkRegex         = regexp.MustCompile(`https?://drive\.uc\.cn/s/[0-9a-zA-Z]+(\?[^"'\s]*)?`)
+	baiduLinkRegex      = regexp.MustCompile(`https?://pan\.baidu\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
+	aliyunLinkRegex     = regexp.MustCompile(`https?://(www\.)?(aliyundrive\.com|alipan\.com)/s/[0-9a-zA-Z]+`)
+	xunleiLinkRegex     = regexp.MustCompile(`https?://pan\.xunlei\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
+	tianyiLinkRegex     = regexp.MustCompile(`https?://cloud\.189\.cn/t/[0-9a-zA-Z]+`)
+	link115Regex        = regexp.MustCompile(`https?://115\.com/s/[0-9a-zA-Z]+`)
+	mobileLinkRegex     = regexp.MustCompile(`https?://caiyun\.feixin\.10086\.cn/[0-9a-zA-Z]+`)
+	weiyunLinkRegex     = regexp.MustCompile(`https?://share\.weiyun\.com/[0-9a-zA-Z]+`)
+	lanzouLinkRegex     = regexp.MustCompile(`https?://(www\.)?(lanzou[uixys]*|lan[zs]o[ux])\.(com|net|org)/[0-9a-zA-Z]+`)
 	jianguoyunLinkRegex = regexp.MustCompile(`https?://(www\.)?jianguoyun\.com/p/[0-9a-zA-Z]+`)
-	link123Regex       = regexp.MustCompile(`https?://123pan\.com/s/[0-9a-zA-Z]+`)
-	pikpakLinkRegex    = regexp.MustCompile(`https?://mypikpak\.com/s/[0-9a-zA-Z]+`)
-	magnetLinkRegex    = regexp.MustCompile(`magnet:\?xt=urn:btih:[0-9a-fA-F]{40}`)
-	ed2kLinkRegex      = regexp.MustCompile(`ed2k://\|file\|.+\|\d+\|[0-9a-fA-F]{32}\|/`)
-	
+	link123Regex        = regexp.MustCompile(`https?://123pan\.com/s/[0-9a-zA-Z]+`)
+	pikpakLinkRegex     = regexp.MustCompile(`https?://mypikpak\.com/s/[0-9a-zA-Z]+`)
+	magnetLinkRegex     = regexp.MustCompile(`magnet:\?xt=urn:btih:[0-9a-fA-F]{40}`)
+	ed2kLinkRegex       = regexp.MustCompile(`ed2k://\|file\|.+\|\d+\|[0-9a-fA-F]{32}\|/`)
+
 	// 缓存相关
 	detailCache = sync.Map{} // 缓存详情页解析结果
 )
@@ -59,6 +59,15 @@ const (
 	// 缓存TTL - 更短的缓存时间
 	cacheTTL = 1 * time.Hour
 )
+
+var sourceURLs = []string{
+	"https://www.muoua.top",
+	"http://www.muoua.top",
+	"https://333.333291.xyz",
+	"http://333.333291.xyz",
+	"https://666.666291.xyz",
+	"http://666.666291.xyz",
+}
 
 // 性能统计（原子操作）
 var (
@@ -134,19 +143,67 @@ func (p *MuouAsyncPlugin) searchImpl(client *http.Client, keyword string, ext ma
 		client = p.optimizedClient
 	}
 
-	// 1. 构建搜索URL
-	searchURL := fmt.Sprintf("https://666.666291.xyz/index.php/vod/search/wd/%s.html", url.QueryEscape(keyword))
-	
+	var results []model.SearchResult
+	var selectedBase string
+	var emptyBase string
+	var lastErr error
+	type sourceResult struct {
+		base    string
+		results []model.SearchResult
+		err     error
+	}
+	resultCh := make(chan sourceResult, len(sourceURLs))
+	for _, baseURL := range sourceURLs {
+		go func(base string) {
+			candidate, err := p.searchAtBase(client, keyword, base)
+			resultCh <- sourceResult{base: base, results: candidate, err: err}
+		}(baseURL)
+	}
+	for range sourceURLs {
+		candidate := <-resultCh
+		if candidate.err != nil {
+			lastErr = candidate.err
+			continue
+		}
+		if emptyBase == "" {
+			emptyBase = candidate.base
+		}
+		if len(candidate.results) > 0 {
+			results = candidate.results
+			selectedBase = candidate.base
+			break
+		}
+	}
+	if selectedBase == "" {
+		selectedBase = emptyBase
+	}
+	if selectedBase == "" {
+		if lastErr != nil {
+			return nil, fmt.Errorf("[%s] 搜索请求失败: %w", p.Name(), lastErr)
+		}
+		return []model.SearchResult{}, nil
+	}
+
+	// 8. 异步获取详情页信息
+	enhancedResults := p.enhanceWithDetails(client, results, selectedBase)
+
+	// 9. 关键词过滤
+	return plugin.FilterResultsByKeyword(enhancedResults, keyword), nil
+}
+
+func (p *MuouAsyncPlugin) searchAtBase(client *http.Client, keyword, baseURL string) ([]model.SearchResult, error) {
+	searchURL := fmt.Sprintf("%s/index.php/vod/search/wd/%s.html", strings.TrimRight(baseURL, "/"), url.QueryEscape(keyword))
+
 	// 2. 创建带超时的上下文
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
 	defer cancel()
-	
+
 	// 3. 创建请求
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 创建请求失败: %w", p.Name(), err)
 	}
-	
+
 	// 4. 设置完整的请求头（避免反爬虫）
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
@@ -154,69 +211,65 @@ func (p *MuouAsyncPlugin) searchImpl(client *http.Client, keyword string, ext ma
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
 	req.Header.Set("Cache-Control", "max-age=0")
-	req.Header.Set("Referer", "https://666.666291.xyz/")
-	
+	req.Header.Set("Referer", strings.TrimRight(baseURL, "/")+"/")
+
 	// 5. 发送请求（带重试机制）
 	resp, err := p.doRequestWithRetry(req, client)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 搜索请求失败: %w", p.Name(), err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("[%s] 搜索请求返回状态码: %d", p.Name(), resp.StatusCode)
 	}
-	
+
 	// 6. 解析搜索结果页面
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 解析搜索页面失败: %w", p.Name(), err)
 	}
-	
+
 	// 7. 提取搜索结果
 	var results []model.SearchResult
-	
+
 	doc.Find(".module-search-item").Each(func(i int, s *goquery.Selection) {
 		result := p.parseSearchItem(s, keyword)
 		if result.UniqueID != "" {
 			results = append(results, result)
 		}
 	})
-	
-	// 8. 异步获取详情页信息
-	enhancedResults := p.enhanceWithDetails(client, results)
-	
-	// 9. 关键词过滤
-	return plugin.FilterResultsByKeyword(enhancedResults, keyword), nil
+
+	return results, nil
 }
 
 // parseSearchItem 解析单个搜索结果项
 func (p *MuouAsyncPlugin) parseSearchItem(s *goquery.Selection, keyword string) model.SearchResult {
 	result := model.SearchResult{}
-	
+
 	// 提取详情页链接和ID (修正：使用正确的选择器)
 	detailLink, exists := s.Find(".video-info-header h3 a").First().Attr("href")
 	if !exists {
 		return result
 	}
-	
+
 	// 提取ID
 	matches := detailIDRegex.FindStringSubmatch(detailLink)
 	if len(matches) < 2 {
 		return result
 	}
-	
+
 	itemID := matches[1]
 	result.UniqueID = fmt.Sprintf("%s-%s", p.Name(), itemID)
-	
+
 	// 提取标题
 	titleElement := s.Find(".video-info-header h3 a")
 	result.Title = strings.TrimSpace(titleElement.Text())
-	
+
 	// 提取资源类型/质量
 	qualityElement := s.Find(".video-serial")
 	quality := strings.TrimSpace(qualityElement.Text())
-	
+
 	// 提取分类信息
 	var tags []string
 	s.Find(".video-info-aux .tag-link a").Each(func(i int, tag *goquery.Selection) {
@@ -226,7 +279,7 @@ func (p *MuouAsyncPlugin) parseSearchItem(s *goquery.Selection, keyword string) 
 		}
 	})
 	result.Tags = tags
-	
+
 	// 提取导演信息
 	director := ""
 	s.Find(".video-info-items").Each(func(i int, item *goquery.Selection) {
@@ -235,7 +288,7 @@ func (p *MuouAsyncPlugin) parseSearchItem(s *goquery.Selection, keyword string) 
 			director = strings.TrimSpace(item.Find(".video-info-actor a").Text())
 		}
 	})
-	
+
 	// 提取主演信息
 	var actors []string
 	s.Find(".video-info-items").Each(func(i int, item *goquery.Selection) {
@@ -249,7 +302,7 @@ func (p *MuouAsyncPlugin) parseSearchItem(s *goquery.Selection, keyword string) 
 			})
 		}
 	})
-	
+
 	// 提取剧情简介
 	plotElement := s.Find(".video-info-items").FilterFunction(func(i int, item *goquery.Selection) bool {
 		title := strings.TrimSpace(item.Find(".video-info-itemtitle").Text())
@@ -284,30 +337,30 @@ func (p *MuouAsyncPlugin) parseSearchItem(s *goquery.Selection, keyword string) 
 	}
 
 	result.Content = strings.Join(contentParts, "\n")
-	result.Channel = "" // 插件搜索结果不设置频道名，只有Telegram频道结果才设置
+	result.Channel = ""           // 插件搜索结果不设置频道名，只有Telegram频道结果才设置
 	result.Datetime = time.Time{} // 使用零值而不是nil，参考jikepan插件标准
 
 	return result
 }
 
 // enhanceWithDetails 异步获取详情页信息以获取下载链接
-func (p *MuouAsyncPlugin) enhanceWithDetails(client *http.Client, results []model.SearchResult) []model.SearchResult {
+func (p *MuouAsyncPlugin) enhanceWithDetails(client *http.Client, results []model.SearchResult, baseURL string) []model.SearchResult {
 	var enhancedResults []model.SearchResult
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	
+
 	// 限制并发数
 	semaphore := make(chan struct{}, MaxConcurrency)
-	
+
 	for _, result := range results {
 		wg.Add(1)
 		go func(r model.SearchResult) {
 			defer wg.Done()
-			
+
 			// 获取信号量
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			
+
 			// 从UniqueID提取ID
 			parts := strings.Split(r.UniqueID, "-")
 			if len(parts) < 2 {
@@ -316,11 +369,12 @@ func (p *MuouAsyncPlugin) enhanceWithDetails(client *http.Client, results []mode
 				mu.Unlock()
 				return
 			}
-			
+
 			itemID := parts[1]
+			cacheKey := strings.TrimRight(baseURL, "/") + "|" + itemID
 
 			// 检查缓存
-			if cached, ok := detailCache.Load(itemID); ok {
+			if cached, ok := detailCache.Load(cacheKey); ok {
 				if cachedResult, ok := cached.(model.SearchResult); ok {
 					atomic.AddInt64(&cacheHits, 1)
 					mu.Lock()
@@ -332,7 +386,7 @@ func (p *MuouAsyncPlugin) enhanceWithDetails(client *http.Client, results []mode
 			atomic.AddInt64(&cacheMisses, 1)
 
 			// 获取详情页链接和图片
-			detailLinks, detailImages := p.fetchDetailLinksAndImages(client, itemID)
+			detailLinks, detailImages := p.fetchDetailLinksAndImages(client, baseURL, itemID)
 			r.Links = detailLinks
 
 			// 合并图片：优先使用详情页的海报，如果没有则使用搜索结果的图片
@@ -341,14 +395,14 @@ func (p *MuouAsyncPlugin) enhanceWithDetails(client *http.Client, results []mode
 			}
 
 			// 缓存结果
-			detailCache.Store(itemID, r)
+			detailCache.Store(cacheKey, r)
 
 			mu.Lock()
 			enhancedResults = append(enhancedResults, r)
 			mu.Unlock()
 		}(result)
 	}
-	
+
 	wg.Wait()
 	return enhancedResults
 }
@@ -357,33 +411,36 @@ func (p *MuouAsyncPlugin) enhanceWithDetails(client *http.Client, results []mode
 func (p *MuouAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
 	maxRetries := 3
 	var lastErr error
-	
+
 	for i := 0; i < maxRetries; i++ {
 		if i > 0 {
 			// 指数退避
 			backoff := time.Duration(1<<uint(i-1)) * 200 * time.Millisecond
 			time.Sleep(backoff)
 		}
-		
+
 		// 克隆请求
 		reqClone := req.Clone(req.Context())
-		
+
 		resp, err := client.Do(reqClone)
 		if err == nil && resp.StatusCode == 200 {
 			return resp, nil
 		}
-		
+
 		if resp != nil {
 			resp.Body.Close()
 		}
 		lastErr = err
+		if req.Context().Err() != nil {
+			return nil, req.Context().Err()
+		}
 	}
-	
+
 	return nil, fmt.Errorf("重试 %d 次后仍然失败: %w", maxRetries, lastErr)
 }
 
 // fetchDetailLinksAndImages 获取详情页的下载链接和图片
-func (p *MuouAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, itemID string) ([]model.Link, []string) {
+func (p *MuouAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, baseURL, itemID string) ([]model.Link, []string) {
 	// 性能统计
 	start := time.Now()
 	atomic.AddInt64(&detailPageRequests, 1)
@@ -392,7 +449,7 @@ func (p *MuouAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, itemID 
 		atomic.AddInt64(&totalDetailTime, duration)
 	}()
 
-	detailURL := fmt.Sprintf("https://666.666291.xyz/index.php/vod/detail/id/%s.html", itemID)
+	detailURL := fmt.Sprintf("%s/index.php/vod/detail/id/%s.html", strings.TrimRight(baseURL, "/"), itemID)
 
 	// 创建带超时的上下文
 	ctx, cancel := context.WithTimeout(context.Background(), DetailTimeout)
@@ -409,7 +466,7 @@ func (p *MuouAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, itemID 
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Referer", "https://666.666291.xyz/")
+	req.Header.Set("Referer", strings.TrimRight(baseURL, "/")+"/")
 
 	// 发送请求（带重试）
 	resp, err := p.doRequestWithRetry(req, client)
@@ -486,36 +543,36 @@ func (p *MuouAsyncPlugin) fetchDetailLinksAndImages(client *http.Client, itemID 
 
 // fetchDetailLinks 获取详情页的下载链接（兼容性方法，仅返回链接）
 func (p *MuouAsyncPlugin) fetchDetailLinks(client *http.Client, itemID string) []model.Link {
-	links, _ := p.fetchDetailLinksAndImages(client, itemID)
+	links, _ := p.fetchDetailLinksAndImages(client, sourceURLs[0], itemID)
 	return links
 }
 
 // isValidNetworkDriveURL 检查URL是否为有效的网盘链接
 func (p *MuouAsyncPlugin) isValidNetworkDriveURL(url string) bool {
 	// 过滤掉明显无效的链接
-	if strings.Contains(url, "javascript:") || 
-	   strings.Contains(url, "#") ||
-	   url == "" ||
-	   (!strings.HasPrefix(url, "http") && !strings.HasPrefix(url, "magnet:") && !strings.HasPrefix(url, "ed2k:")) {
+	if strings.Contains(url, "javascript:") ||
+		strings.Contains(url, "#") ||
+		url == "" ||
+		(!strings.HasPrefix(url, "http") && !strings.HasPrefix(url, "magnet:") && !strings.HasPrefix(url, "ed2k:")) {
 		return false
 	}
-	
+
 	// 检查是否匹配任何支持的网盘格式（16种）
 	return quarkLinkRegex.MatchString(url) ||
-		   ucLinkRegex.MatchString(url) ||
-		   baiduLinkRegex.MatchString(url) ||
-		   aliyunLinkRegex.MatchString(url) ||
-		   xunleiLinkRegex.MatchString(url) ||
-		   tianyiLinkRegex.MatchString(url) ||
-		   link115Regex.MatchString(url) ||
-		   mobileLinkRegex.MatchString(url) ||
-		   weiyunLinkRegex.MatchString(url) ||
-		   lanzouLinkRegex.MatchString(url) ||
-		   jianguoyunLinkRegex.MatchString(url) ||
-		   link123Regex.MatchString(url) ||
-		   pikpakLinkRegex.MatchString(url) ||
-		   magnetLinkRegex.MatchString(url) ||
-		   ed2kLinkRegex.MatchString(url)
+		ucLinkRegex.MatchString(url) ||
+		baiduLinkRegex.MatchString(url) ||
+		aliyunLinkRegex.MatchString(url) ||
+		xunleiLinkRegex.MatchString(url) ||
+		tianyiLinkRegex.MatchString(url) ||
+		link115Regex.MatchString(url) ||
+		mobileLinkRegex.MatchString(url) ||
+		weiyunLinkRegex.MatchString(url) ||
+		lanzouLinkRegex.MatchString(url) ||
+		jianguoyunLinkRegex.MatchString(url) ||
+		link123Regex.MatchString(url) ||
+		pikpakLinkRegex.MatchString(url) ||
+		magnetLinkRegex.MatchString(url) ||
+		ed2kLinkRegex.MatchString(url)
 }
 
 // determineLinkType 根据URL确定链接类型（支持16种类型）
@@ -572,7 +629,7 @@ func (p *MuouAsyncPlugin) GetPerformanceStats() map[string]interface{} {
 	totalCacheMisses := atomic.LoadInt64(&cacheMisses)
 	totalSearchTime := atomic.LoadInt64(&totalSearchTime)
 	totalDetailTime := atomic.LoadInt64(&totalDetailTime)
-	
+
 	var avgSearchTime, avgDetailTime, cacheHitRate float64
 	if totalSearchRequests > 0 {
 		avgSearchTime = float64(totalSearchTime) / float64(totalSearchRequests) / 1e6 // 转换为毫秒
@@ -583,16 +640,16 @@ func (p *MuouAsyncPlugin) GetPerformanceStats() map[string]interface{} {
 	if totalCacheHits+totalCacheMisses > 0 {
 		cacheHitRate = float64(totalCacheHits) / float64(totalCacheHits+totalCacheMisses) * 100
 	}
-	
+
 	return map[string]interface{}{
-		"search_requests":        totalSearchRequests,
-		"detail_page_requests":   totalDetailRequests,
-		"cache_hits":            totalCacheHits,
-		"cache_misses":          totalCacheMisses,
-		"cache_hit_rate":        cacheHitRate,
-		"avg_search_time_ms":    avgSearchTime,
-		"avg_detail_time_ms":    avgDetailTime,
-		"total_search_time_ns":  totalSearchTime,
-		"total_detail_time_ns":  totalDetailTime,
+		"search_requests":      totalSearchRequests,
+		"detail_page_requests": totalDetailRequests,
+		"cache_hits":           totalCacheHits,
+		"cache_misses":         totalCacheMisses,
+		"cache_hit_rate":       cacheHitRate,
+		"avg_search_time_ms":   avgSearchTime,
+		"avg_detail_time_ms":   avgDetailTime,
+		"total_search_time_ns": totalSearchTime,
+		"total_detail_time_ns": totalDetailTime,
 	}
 }

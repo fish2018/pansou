@@ -1,7 +1,7 @@
-package ddys
+package diduan
 
 import (
-	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -12,132 +12,167 @@ import (
 	"sync"
 	"time"
 
+	cloudscraper "github.com/Advik-B/cloudscraper/lib"
+	"github.com/Advik-B/cloudscraper/lib/stealth"
 	"github.com/PuerkitoBio/goquery"
 	"pansou/model"
 	"pansou/plugin"
 )
 
+var encodedURLRegex = regexp.MustCompile(`(?i)atob\(\s*['"]([A-Za-z0-9+/=_-]+)['"]\s*\)`)
+
+func absoluteURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "//") {
+		return "https:" + raw
+	}
+	if strings.HasPrefix(raw, "/") {
+		return BaseURL + raw
+	}
+	return raw
+}
+
+func linkPassword(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	query := parsed.Query()
+	for _, key := range []string{"pwd", "password", "pass", "code"} {
+		if value := strings.TrimSpace(query.Get(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 const (
-	PluginName    = "ddys"
-	DisplayName   = "低端影视"
-	Description   = "低端影视 - 影视资源网盘链接搜索"
-	BaseURL       = "https://ddys.pro"
-	SearchPath    = "/?s=%s&post_type=post"
-	UserAgent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
-	MaxResults    = 50
+	PluginName     = "diduan"
+	DisplayName    = "低端影视"
+	Description    = "低端影视 - 影视资源网盘链接搜索"
+	BaseURL        = "https://ddys.io"
+	SearchPath     = "/search?q=%s"
+	UserAgent      = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+	MaxResults     = 50
 	MaxConcurrency = 20
 )
 
-// DdysPlugin 低端影视插件
-type DdysPlugin struct {
+// DiduanPlugin 低端影视插件
+type DiduanPlugin struct {
 	*plugin.BaseAsyncPlugin
-	debugMode    bool
-	detailCache  sync.Map // 缓存详情页结果
-	cacheTTL     time.Duration
+	debugMode   bool
+	detailCache sync.Map // 缓存详情页结果
+	cacheTTL    time.Duration
+	scraper     *cloudscraper.Scraper
+	scraperMu   sync.Mutex // cloudscraper 的 stealth 状态不是并发安全的
 }
 
 // init 注册插件
 func init() {
-	plugin.RegisterGlobalPlugin(NewDdysPlugin())
+	plugin.RegisterGlobalPlugin(NewDiduanPlugin())
 }
 
-// NewDdysPlugin 创建新的低端影视插件实例
-func NewDdysPlugin() *DdysPlugin {
+// NewDiduanPlugin 创建新的低端影视插件实例
+func NewDiduanPlugin() *DiduanPlugin {
 	debugMode := false // 生产环境关闭调试
+	// API 请求已有超时与并发控制，关闭 cloudscraper 的人为延迟，避免
+	// 搜索页 + 详情页请求超过 PanSou 的 4 秒快速响应窗口。
+	scraper, err := cloudscraper.New(cloudscraper.WithStealth(stealth.Options{Enabled: false}))
+	if err != nil {
+		log.Printf("[%s] 初始化 cloudscraper 失败: %v", PluginName, err)
+	}
 
-	p := &DdysPlugin{
+	p := &DiduanPlugin{
 		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin(PluginName, 1), // 标准网盘插件，启用Service层过滤
 		debugMode:       debugMode,
 		cacheTTL:        30 * time.Minute, // 详情页缓存30分钟
+		scraper:         scraper,
 	}
 
 	return p
 }
 
 // Name 插件名称
-func (p *DdysPlugin) Name() string {
+func (p *DiduanPlugin) Name() string {
 	return PluginName
 }
 
 // DisplayName 插件显示名称
-func (p *DdysPlugin) DisplayName() string {
+func (p *DiduanPlugin) DisplayName() string {
 	return DisplayName
 }
 
 // Description 插件描述
-func (p *DdysPlugin) Description() string {
+func (p *DiduanPlugin) Description() string {
 	return Description
 }
 
 // Search 搜索接口
-func (p *DdysPlugin) Search(keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
-	return p.searchImpl(&http.Client{Timeout: 30 * time.Second}, keyword, ext)
+func (p *DiduanPlugin) Search(keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
+	result, err := p.SearchWithResult(keyword, ext)
+	if err != nil {
+		return nil, err
+	}
+	return result.Results, nil
+}
+
+// SearchWithResult 使用 BaseAsyncPlugin 的缓存和后台刷新能力。
+func (p *DiduanPlugin) SearchWithResult(keyword string, ext map[string]interface{}) (model.PluginSearchResult, error) {
+	return p.AsyncSearchWithResult(keyword, p.searchImpl, p.MainCacheKey, ext)
 }
 
 // searchImpl 搜索实现
-func (p *DdysPlugin) searchImpl(client *http.Client, keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
+func (p *DiduanPlugin) searchImpl(client *http.Client, keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
+	if p.scraper == nil {
+		return nil, fmt.Errorf("[%s] Cloudflare 请求客户端未初始化", p.Name())
+	}
 	if p.debugMode {
-		log.Printf("[DDYS] 开始搜索: %s", keyword)
+		log.Printf("[DIDUAN] 开始搜索: %s", keyword)
 	}
 
 	// 第一步：执行搜索获取结果列表
-	searchResults, err := p.executeSearch(client, keyword)
+	searchResults, err := p.executeSearch(keyword)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 执行搜索失败: %w", p.Name(), err)
 	}
 
 	if p.debugMode {
-		log.Printf("[DDYS] 搜索获取到 %d 个结果", len(searchResults))
+		log.Printf("[DIDUAN] 搜索获取到 %d 个结果", len(searchResults))
 	}
 
 	// 第二步：并发获取详情页链接
-	finalResults := p.fetchDetailLinks(client, searchResults, keyword)
+	finalResults := p.fetchDetailLinks(searchResults, keyword)
 
 	if p.debugMode {
-		log.Printf("[DDYS] 最终获取到 %d 个有效结果", len(finalResults))
+		log.Printf("[DIDUAN] 最终获取到 %d 个有效结果", len(finalResults))
 	}
 
 	// 第三步：关键词过滤（标准网盘插件需要过滤）
 	filteredResults := plugin.FilterResultsByKeyword(finalResults, keyword)
-	
+
 	if p.debugMode {
-		log.Printf("[DDYS] 关键词过滤后剩余 %d 个结果", len(filteredResults))
+		log.Printf("[DIDUAN] 关键词过滤后剩余 %d 个结果", len(filteredResults))
 	}
 
 	return filteredResults, nil
 }
 
 // executeSearch 执行搜索请求
-func (p *DdysPlugin) executeSearch(client *http.Client, keyword string) ([]model.SearchResult, error) {
+func (p *DiduanPlugin) executeSearch(keyword string) ([]model.SearchResult, error) {
 	// 构建搜索URL
 	searchURL := fmt.Sprintf("%s%s", BaseURL, fmt.Sprintf(SearchPath, url.QueryEscape(keyword)))
 
-	// 创建带超时的上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("[%s] 创建搜索请求失败: %w", p.Name(), err)
-	}
-
-	// 设置完整的请求头
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Upgrade-Insecure-Requests", "1")
-	req.Header.Set("Cache-Control", "max-age=0")
-	req.Header.Set("Referer", BaseURL+"/")
-
-	resp, err := p.doRequestWithRetry(req, client)
+	resp, err := p.getPage(searchURL)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 搜索请求失败: %w", p.Name(), err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("[%s] 搜索请求HTTP状态错误: %d", p.Name(), resp.StatusCode)
+		return nil, p.httpStatusError("搜索", resp)
 	}
 
 	// 解析HTML提取搜索结果
@@ -149,60 +184,93 @@ func (p *DdysPlugin) executeSearch(client *http.Client, keyword string) ([]model
 	return p.parseSearchResults(doc)
 }
 
-// doRequestWithRetry 带重试机制的HTTP请求
-func (p *DdysPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
-	maxRetries := 3
-	var lastErr error
-	
-	for i := 0; i < maxRetries; i++ {
-		if i > 0 {
-			// 指数退避重试
-			backoff := time.Duration(1<<uint(i-1)) * 200 * time.Millisecond
-			time.Sleep(backoff)
-		}
-		
-		// 克隆请求避免并发问题
-		reqClone := req.Clone(req.Context())
-		
-		resp, err := client.Do(reqClone)
-		if err == nil && resp.StatusCode == 200 {
-			return resp, nil
-		}
-		
-		if resp != nil {
-			resp.Body.Close()
-		}
-		lastErr = err
+// getPage 串行化 cloudscraper 调用，避免其 stealth 计数器并发竞争。
+func (p *DiduanPlugin) getPage(rawURL string) (*http.Response, error) {
+	p.scraperMu.Lock()
+	defer p.scraperMu.Unlock()
+	return p.scraper.Get(rawURL)
+}
+
+func (p *DiduanPlugin) httpStatusError(action string, resp *http.Response) error {
+	if strings.EqualFold(resp.Header.Get("cf-mitigated"), "challenge") {
+		return fmt.Errorf("[%s] %s触发 Cloudflare Managed Challenge (HTTP %d)", p.Name(), action, resp.StatusCode)
 	}
-	
-	return nil, fmt.Errorf("[%s] 重试 %d 次后仍然失败: %w", p.Name(), maxRetries, lastErr)
+	return fmt.Errorf("[%s] %sHTTP状态错误: %d", p.Name(), action, resp.StatusCode)
 }
 
 // parseSearchResults 解析搜索结果HTML
-func (p *DdysPlugin) parseSearchResults(doc *goquery.Document) ([]model.SearchResult, error) {
+func (p *DiduanPlugin) parseSearchResults(doc *goquery.Document) ([]model.SearchResult, error) {
 	var results []model.SearchResult
 
-	// 查找搜索结果项: article[class^="post-"]
-	doc.Find("article[class*='post-']").Each(func(i int, s *goquery.Selection) {
-		if len(results) >= MaxResults {
-			return
+	// ddys.io 当前页面使用 movie-card；影视搜索区的第一个 h2 下才是搜索结果，
+	// 后面的 movie-card 是推荐内容，不能一并请求详情页。
+	var cards *goquery.Selection
+	doc.Find("h2").EachWithBreak(func(_ int, heading *goquery.Selection) bool {
+		if strings.HasPrefix(strings.TrimSpace(heading.Text()), "影视") {
+			cards = heading.Parent().Parent().Find(".movie-card")
+			return false
 		}
-
-		result := p.parseResultItem(s, i+1)
-		if result != nil {
+		return true
+	})
+	if cards == nil || cards.Length() == 0 {
+		// 兼容旧模板：仅扫描文章列表。
+		cards = doc.Find("article[class*='post-']")
+	}
+	cards.EachWithBreak(func(i int, s *goquery.Selection) bool {
+		if len(results) >= MaxResults {
+			return false
+		}
+		if result := p.parseResultItem(s, i+1); result != nil {
 			results = append(results, *result)
 		}
+		return true
 	})
 
 	if p.debugMode {
-		log.Printf("[DDYS] 解析到 %d 个原始结果", len(results))
+		log.Printf("[DIDUAN] 解析到 %d 个原始结果", len(results))
 	}
 
 	return results, nil
 }
 
 // parseResultItem 解析单个搜索结果项
-func (p *DdysPlugin) parseResultItem(s *goquery.Selection, index int) *model.SearchResult {
+func (p *DiduanPlugin) parseResultItem(s *goquery.Selection, index int) *model.SearchResult {
+	// 新版 ddys 卡片：/movie/<slug>，标题位于 h3 a，海报位于 img。
+	linkEl := s.Find("h3 a[href^='/movie/']").First()
+	if linkEl.Length() == 0 {
+		linkEl = s.Find("a[href^='/movie/']").First()
+	}
+	if linkEl.Length() > 0 {
+		detailURL, exists := linkEl.Attr("href")
+		if !exists || detailURL == "" {
+			return nil
+		}
+		detailURL = absoluteURL(detailURL)
+		title := strings.TrimSpace(linkEl.Text())
+		if title == "" {
+			return nil
+		}
+		slug := strings.Trim(strings.TrimPrefix(detailURL, BaseURL+"/movie/"), "/")
+		if slug == "" {
+			slug = fmt.Sprintf("item-%d", index)
+		}
+		content := strings.TrimSpace(s.Find("h3").Parent().Text())
+		result := &model.SearchResult{
+			Title:     title,
+			Content:   fmt.Sprintf("%s\n详情页: %s", content, detailURL),
+			Channel:   "",
+			MessageID: fmt.Sprintf("%s-%s", p.Name(), slug),
+			UniqueID:  fmt.Sprintf("%s-%s", p.Name(), slug),
+			Datetime:  time.Now(),
+			Links:     []model.Link{},
+		}
+		if poster, ok := s.Find("img").First().Attr("src"); ok && poster != "" {
+			result.Images = []string{poster}
+		}
+		return result
+	}
+
+	// 旧 WordPress 模板兼容路径。
 	// 提取文章ID
 	articleClass, _ := s.Attr("class")
 	postID := p.extractPostID(articleClass)
@@ -211,10 +279,10 @@ func (p *DdysPlugin) parseResultItem(s *goquery.Selection, index int) *model.Sea
 	}
 
 	// 提取标题和链接
-	linkEl := s.Find(".post-title a")
+	linkEl = s.Find(".post-title a")
 	if linkEl.Length() == 0 {
 		if p.debugMode {
-			log.Printf("[DDYS] 跳过无标题链接的结果")
+			log.Printf("[DIDUAN] 跳过无标题链接的结果")
 		}
 		return nil
 	}
@@ -229,7 +297,7 @@ func (p *DdysPlugin) parseResultItem(s *goquery.Selection, index int) *model.Sea
 	detailURL, _ := linkEl.Attr("href")
 	if detailURL == "" {
 		if p.debugMode {
-			log.Printf("[DDYS] 跳过无链接的结果: %s", title)
+			log.Printf("[DIDUAN] 跳过无链接的结果: %s", title)
 		}
 		return nil
 	}
@@ -259,14 +327,14 @@ func (p *DdysPlugin) parseResultItem(s *goquery.Selection, index int) *model.Sea
 	result.Content += fmt.Sprintf("\n详情页: %s", detailURL)
 
 	if p.debugMode {
-		log.Printf("[DDYS] 解析结果: %s (%s)", title, category)
+		log.Printf("[DIDUAN] 解析结果: %s (%s)", title, category)
 	}
 
 	return &result
 }
 
 // extractPostID 从文章class中提取文章ID
-func (p *DdysPlugin) extractPostID(articleClass string) string {
+func (p *DiduanPlugin) extractPostID(articleClass string) string {
 	// 匹配 post-{数字} 格式
 	re := regexp.MustCompile(`post-(\d+)`)
 	matches := re.FindStringSubmatch(articleClass)
@@ -277,7 +345,7 @@ func (p *DdysPlugin) extractPostID(articleClass string) string {
 }
 
 // extractPublishTime 提取发布时间
-func (p *DdysPlugin) extractPublishTime(s *goquery.Selection) time.Time {
+func (p *DiduanPlugin) extractPublishTime(s *goquery.Selection) time.Time {
 	timeEl := s.Find(".meta_date time.entry-date")
 	if timeEl.Length() == 0 {
 		return time.Now()
@@ -297,7 +365,7 @@ func (p *DdysPlugin) extractPublishTime(s *goquery.Selection) time.Time {
 }
 
 // extractCategory 提取分类
-func (p *DdysPlugin) extractCategory(s *goquery.Selection) string {
+func (p *DiduanPlugin) extractCategory(s *goquery.Selection) string {
 	categoryEl := s.Find(".meta_categories .cat-links a")
 	if categoryEl.Length() > 0 {
 		return strings.TrimSpace(categoryEl.Text())
@@ -306,7 +374,7 @@ func (p *DdysPlugin) extractCategory(s *goquery.Selection) string {
 }
 
 // extractContent 提取内容简介
-func (p *DdysPlugin) extractContent(s *goquery.Selection) string {
+func (p *DiduanPlugin) extractContent(s *goquery.Selection) string {
 	contentEl := s.Find(".entry-content")
 	if contentEl.Length() > 0 {
 		content := strings.TrimSpace(contentEl.Text())
@@ -320,7 +388,7 @@ func (p *DdysPlugin) extractContent(s *goquery.Selection) string {
 }
 
 // fetchDetailLinks 并发获取详情页链接
-func (p *DdysPlugin) fetchDetailLinks(client *http.Client, searchResults []model.SearchResult, keyword string) []model.SearchResult {
+func (p *DiduanPlugin) fetchDetailLinks(searchResults []model.SearchResult, keyword string) []model.SearchResult {
 	if len(searchResults) == 0 {
 		return []model.SearchResult{}
 	}
@@ -334,27 +402,27 @@ func (p *DdysPlugin) fetchDetailLinks(client *http.Client, searchResults []model
 		wg.Add(1)
 		go func(r model.SearchResult) {
 			defer wg.Done()
-			semaphore <- struct{}{} // 获取信号量
+			semaphore <- struct{}{}        // 获取信号量
 			defer func() { <-semaphore }() // 释放信号量
 
 			// 从Content中提取详情页URL
 			detailURL := p.extractDetailURLFromContent(r.Content)
 			if detailURL == "" {
 				if p.debugMode {
-					log.Printf("[DDYS] 跳过无详情页URL的结果: %s", r.Title)
+					log.Printf("[DIDUAN] 跳过无详情页URL的结果: %s", r.Title)
 				}
 				return
 			}
 
 			// 获取详情页链接
-			links := p.fetchDetailPageLinks(client, detailURL)
+			links := p.fetchDetailPageLinks(detailURL)
 			if len(links) > 0 {
 				r.Links = links
 				// 清理Content中的详情页URL
 				r.Content = p.cleanContent(r.Content)
 				resultsChan <- r
 			} else if p.debugMode {
-				log.Printf("[DDYS] 详情页无有效链接: %s", r.Title)
+				log.Printf("[DIDUAN] 详情页无有效链接: %s", r.Title)
 			}
 		}(result)
 	}
@@ -375,7 +443,7 @@ func (p *DdysPlugin) fetchDetailLinks(client *http.Client, searchResults []model
 }
 
 // extractDetailURLFromContent 从Content中提取详情页URL
-func (p *DdysPlugin) extractDetailURLFromContent(content string) string {
+func (p *DiduanPlugin) extractDetailURLFromContent(content string) string {
 	lines := strings.Split(content, "\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, "详情页: ") {
@@ -386,7 +454,7 @@ func (p *DdysPlugin) extractDetailURLFromContent(content string) string {
 }
 
 // cleanContent 清理Content，移除详情页URL行
-func (p *DdysPlugin) cleanContent(content string) string {
+func (p *DiduanPlugin) cleanContent(content string) string {
 	lines := strings.Split(content, "\n")
 	var cleanedLines []string
 	for _, line := range lines {
@@ -398,39 +466,21 @@ func (p *DdysPlugin) cleanContent(content string) string {
 }
 
 // fetchDetailPageLinks 获取详情页的网盘链接
-func (p *DdysPlugin) fetchDetailPageLinks(client *http.Client, detailURL string) []model.Link {
+func (p *DiduanPlugin) fetchDetailPageLinks(detailURL string) []model.Link {
 	// 检查缓存
 	if cached, found := p.detailCache.Load(detailURL); found {
 		if links, ok := cached.([]model.Link); ok {
 			if p.debugMode {
-				log.Printf("[DDYS] 使用缓存的详情页链接: %s", detailURL)
+				log.Printf("[DIDUAN] 使用缓存的详情页链接: %s", detailURL)
 			}
 			return links
 		}
 	}
 
-	// 创建带超时的上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", detailURL, nil)
+	resp, err := p.getPage(detailURL)
 	if err != nil {
 		if p.debugMode {
-			log.Printf("[DDYS] 创建详情页请求失败: %v", err)
-		}
-		return []model.Link{}
-	}
-
-	// 设置请求头
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	req.Header.Set("Referer", BaseURL+"/")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		if p.debugMode {
-			log.Printf("[DDYS] 详情页请求失败: %v", err)
+			log.Printf("[DIDUAN] 详情页请求失败: %v", err)
 		}
 		return []model.Link{}
 	}
@@ -438,7 +488,7 @@ func (p *DdysPlugin) fetchDetailPageLinks(client *http.Client, detailURL string)
 
 	if resp.StatusCode != 200 {
 		if p.debugMode {
-			log.Printf("[DDYS] 详情页HTTP状态错误: %d", resp.StatusCode)
+			log.Printf("[DIDUAN] 详情页请求失败: %v", p.httpStatusError("详情页", resp))
 		}
 		return []model.Link{}
 	}
@@ -447,7 +497,7 @@ func (p *DdysPlugin) fetchDetailPageLinks(client *http.Client, detailURL string)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		if p.debugMode {
-			log.Printf("[DDYS] 读取详情页响应失败: %v", err)
+			log.Printf("[DIDUAN] 读取详情页响应失败: %v", err)
 		}
 		return []model.Link{}
 	}
@@ -461,15 +511,45 @@ func (p *DdysPlugin) fetchDetailPageLinks(client *http.Client, detailURL string)
 	}
 
 	if p.debugMode {
-		log.Printf("[DDYS] 从详情页提取到 %d 个链接: %s", len(links), detailURL)
+		log.Printf("[DIDUAN] 从详情页提取到 %d 个链接: %s", len(links), detailURL)
 	}
 
 	return links
 }
 
 // parseNetworkDiskLinks 解析网盘链接
-func (p *DdysPlugin) parseNetworkDiskLinks(htmlContent string) []model.Link {
+func (p *DiduanPlugin) parseNetworkDiskLinks(htmlContent string) []model.Link {
 	var links []model.Link
+	seen := make(map[string]bool)
+	appendLink := func(rawURL, password string) {
+		rawURL = absoluteURL(rawURL)
+		if rawURL == "" || seen[rawURL] {
+			return
+		}
+		if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+			return
+		}
+		if password == "" {
+			password = linkPassword(rawURL)
+		}
+		seen[rawURL] = true
+		links = append(links, model.Link{Type: p.determineCloudType(rawURL), URL: rawURL, Password: password})
+	}
+
+	// 当前 ddys 详情页通过 JavaScript atob() 懒加载网盘地址。
+	for _, match := range encodedURLRegex.FindAllStringSubmatch(htmlContent, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(match[1], "-", "+"))
+		if err != nil {
+			continue
+		}
+		decodedURL := strings.TrimSpace(string(decoded))
+		if strings.Contains(decodedURL, "://") {
+			appendLink(decodedURL, "")
+		}
+	}
 
 	// 定义网盘链接匹配模式
 	patterns := []struct {
@@ -486,9 +566,6 @@ func (p *DdysPlugin) parseNetworkDiskLinks(htmlContent string) []model.Link {
 		{"通用网盘", `<a[^>]*href\s*=\s*["'](https?://[^"']*(?:pan|drive|cloud)[^"']*)["'][^>]*>([^<]+)</a>`, "others"},
 	}
 
-	// 去重用的map
-	seen := make(map[string]bool)
-
 	for _, pattern := range patterns {
 		re := regexp.MustCompile(pattern.pattern)
 		matches := re.FindAllStringSubmatch(htmlContent, -1)
@@ -496,12 +573,6 @@ func (p *DdysPlugin) parseNetworkDiskLinks(htmlContent string) []model.Link {
 		for _, match := range matches {
 			if len(match) >= 3 {
 				url := match[1]
-				
-				// 去重
-				if seen[url] {
-					continue
-				}
-				seen[url] = true
 
 				// 确定网盘类型
 				urlType := p.determineCloudType(url)
@@ -511,17 +582,17 @@ func (p *DdysPlugin) parseNetworkDiskLinks(htmlContent string) []model.Link {
 
 				// 提取可能的提取码
 				password := p.extractPassword(htmlContent, url)
-
-				link := model.Link{
-					Type:     urlType,
-					URL:      url,
-					Password: password,
+				if password == "" {
+					password = linkPassword(url)
 				}
 
-				links = append(links, link)
+				if !seen[url] {
+					seen[url] = true
+					links = append(links, model.Link{Type: urlType, URL: url, Password: password})
+				}
 
 				if p.debugMode {
-					log.Printf("[DDYS] 找到链接: %s (%s)", url, urlType)
+					log.Printf("[DIDUAN] 找到链接: %s (%s)", url, urlType)
 				}
 			}
 		}
@@ -531,7 +602,7 @@ func (p *DdysPlugin) parseNetworkDiskLinks(htmlContent string) []model.Link {
 }
 
 // extractPassword 提取网盘提取码
-func (p *DdysPlugin) extractPassword(content string, panURL string) string {
+func (p *DiduanPlugin) extractPassword(content string, panURL string) string {
 	// 常见提取码模式
 	patterns := []string{
 		`提取[码密][：:]?\s*([A-Za-z0-9]{4,8})`,
@@ -555,7 +626,7 @@ func (p *DdysPlugin) extractPassword(content string, panURL string) string {
 	if end > len(content) {
 		end = len(content)
 	}
-	
+
 	searchArea := content[start:end]
 
 	for _, pattern := range patterns {
@@ -570,7 +641,7 @@ func (p *DdysPlugin) extractPassword(content string, panURL string) string {
 }
 
 // determineCloudType 根据URL自动识别网盘类型（按开发指南完整列表）
-func (p *DdysPlugin) determineCloudType(url string) string {
+func (p *DiduanPlugin) determineCloudType(url string) string {
 	switch {
 	case strings.Contains(url, "pan.quark.cn"):
 		return "quark"

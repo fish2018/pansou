@@ -1,14 +1,14 @@
-# DDYS（低端影视）插件HTML结构分析
+# DIDUAN（低端影视）插件HTML结构分析
 
 ## 网站概述
 - **网站名称**: 低端影视
-- **域名**: https://ddys.pro/
+- **域名**: https://ddys.io/
 - **类型**: 影视资源网站，提供在线播放和网盘下载链接
 
 ## API流程概述
 
 ### 搜索页面
-- **请求URL**: `https://ddys.pro/?s={keyword}&post_type=post`
+- **请求URL**: `https://ddys.io/?s={keyword}&post_type=post`
 - **方法**: GET
 - **Headers**: 标准浏览器请求头
 - **特点**: WordPress网站，使用标准搜索功能
@@ -23,7 +23,7 @@
             <div class="post-content col-md-12">
                 <header class="entry-header">
                     <h2 class="post-title">
-                        <a href="https://ddys.pro/deadpool/" rel="bookmark">死侍 1-3</a>
+                        <a href="https://ddys.io/deadpool/" rel="bookmark">死侍 1-3</a>
                     </h2>
                 </header>
                 
