@@ -35,7 +35,8 @@ const (
 )
 
 var (
-	dataKeyRegex = regexp.MustCompile(`data-key="([0-9a-fA-F]+)"`)
+	// Ghost keys may contain suffixes such as "_blocked" in addition to hex characters.
+	dataKeyRegex = regexp.MustCompile(`data-key="([^"]+)"`)
 
 	linkPatterns = []struct {
 		reg *regexp.Regexp
@@ -500,10 +501,13 @@ func (p *JsNoteClubPlugin) doRequestWithRetry(req *http.Request, client *http.Cl
 		if err == nil && resp.StatusCode == http.StatusOK {
 			return resp, nil
 		}
-		if resp != nil && resp.StatusCode >= 500 {
+		if resp != nil {
 			resp.Body.Close()
 		}
 		lastErr = err
+		if err == nil {
+			lastErr = fmt.Errorf("HTTP 状态码 %d", resp.StatusCode)
+		}
 		if attempt < maxRetries-1 {
 			time.Sleep(retryBaseDelay * time.Duration(1<<attempt))
 		}

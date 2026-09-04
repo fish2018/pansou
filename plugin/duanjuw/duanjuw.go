@@ -17,10 +17,12 @@ import (
 )
 
 var (
-	duanjuwIDRegex     = regexp.MustCompile(`[?&]id=(\d+)`)
-	duanjuwTextURLReg  = regexp.MustCompile(`https?://[^\s<>"']+`)
-	duanjuwSpaceReg    = regexp.MustCompile(`\s+`)
-	duanjuwPwdURLRegex = regexp.MustCompile(`[?&](?:pwd|passcode|code)=([0-9A-Za-z]+)`)
+	duanjuwIDRegex         = regexp.MustCompile(`[?&]id=(\d+)`)
+	duanjuwTextURLReg      = regexp.MustCompile(`https?://[^\s<>"']+`)
+	duanjuwSpaceReg        = regexp.MustCompile(`\s+`)
+	duanjuwPwdURLRegex     = regexp.MustCompile(`[?&](?:pwd|passcode|code)=([0-9A-Za-z]+)`)
+	duanjuwSearchItemStart = regexp.MustCompile(`(?m)(?:^|\n)\s*\d+\s*[、.．]\s*《`)
+	duanjuwBreakTag        = regexp.MustCompile(`(?i)<br\s*/?>`)
 
 	duanjuwLinkPatterns = []struct {
 		reg *regexp.Regexp
@@ -50,7 +52,7 @@ var (
 const (
 	duanjuwPluginName      = "duanjuw"
 	duanjuwBaseURL         = "https://sm3.cc"
-	duanjuwSearchURL       = duanjuwBaseURL + "/search.php?q=%s&page=1"
+	duanjuwSearchURL       = duanjuwBaseURL + "/so/search.php?act=search&q=%s&page=1"
 	duanjuwDefaultPriority = 3
 	duanjuwSearchTimeout   = 12 * time.Second
 	duanjuwDetailTimeout   = 10 * time.Second
@@ -128,6 +130,13 @@ func (p *DuanjuwPlugin) searchImpl(client *http.Client, keyword string, ext map[
 	if len(items) == 0 {
 		return []model.SearchResult{}, nil
 	}
+	// The current site renders search results as numbered chat entries with
+	// direct pan links. Older pages still use result cards and need detail fetches.
+	for _, item := range items {
+		if len(item.Links) > 0 {
+			return plugin.FilterResultsByKeyword(items, keyword), nil
+		}
+	}
 
 	results := p.enrichResults(client, items)
 	return plugin.FilterResultsByKeyword(results, keyword), nil
@@ -135,6 +144,10 @@ func (p *DuanjuwPlugin) searchImpl(client *http.Client, keyword string, ext map[
 
 func (p *DuanjuwPlugin) parseSearchResults(doc *goquery.Document) []model.SearchResult {
 	results := make([]model.SearchResult, 0)
+
+	if bubble := doc.Find(".message.system .bubble").First(); bubble.Length() > 0 {
+		return p.parseChatSearchResults(bubble)
+	}
 
 	doc.Find("li.col-6").Each(func(_ int, item *goquery.Selection) {
 		linkNode := item.Find("h3.f-14 a").First()
@@ -184,6 +197,73 @@ func (p *DuanjuwPlugin) parseSearchResults(doc *goquery.Document) []model.Search
 	})
 
 	return results
+}
+
+// parseChatSearchResults handles sm3.cc's current search response, where each
+// numbered item contains a title followed by one or more direct pan links.
+func (p *DuanjuwPlugin) parseChatSearchResults(bubble *goquery.Selection) []model.SearchResult {
+	html, err := bubble.Html()
+	if err != nil || strings.TrimSpace(html) == "" {
+		return nil
+	}
+	html = duanjuwBreakTag.ReplaceAllString(html, "\n")
+	starts := duanjuwSearchItemStart.FindAllStringIndex(html, -1)
+	if len(starts) == 0 {
+		return nil
+	}
+
+	results := make([]model.SearchResult, 0, len(starts))
+	for i, start := range starts {
+		end := len(html)
+		if i+1 < len(starts) {
+			end = starts[i+1][0]
+		}
+		segment := html[start[0]:end]
+		open := strings.Index(segment, "《")
+		if open < 0 {
+			continue
+		}
+		close := strings.Index(segment[open+len("《"):], "》")
+		if close < 0 {
+			continue
+		}
+		close += open + len("《")
+		titleHTML := segment[open+len("《") : close]
+		title := normalizeDuanjuwText(htmlFragmentText(titleHTML))
+		if title == "" {
+			continue
+		}
+
+		fragment, err := goquery.NewDocumentFromReader(strings.NewReader("<div>" + segment + "</div>"))
+		if err != nil {
+			continue
+		}
+		links := extractDuanjuwLinks(fragment.Selection)
+		if len(links) == 0 {
+			continue
+		}
+		uniquePart := title
+		if len(links) > 0 {
+			uniquePart += "-" + links[0].URL
+		}
+		results = append(results, model.SearchResult{
+			UniqueID: fmt.Sprintf("%s-%s", p.Name(), url.QueryEscape(uniquePart)),
+			Title:    title,
+			Content:  cleanDuanjuwDescription(htmlFragmentText(segment)),
+			Links:    links,
+			Channel:  "",
+			Datetime: time.Now(),
+		})
+	}
+	return results
+}
+
+func htmlFragmentText(fragment string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader("<div>" + fragment + "</div>"))
+	if err != nil {
+		return ""
+	}
+	return doc.Find("div").First().Text()
 }
 
 func (p *DuanjuwPlugin) enrichResults(client *http.Client, items []model.SearchResult) []model.SearchResult {
@@ -352,18 +432,17 @@ func classifyDuanjuwLink(raw string) (string, string) {
 }
 
 func extractDuanjuwPassword(node *goquery.Selection) string {
+	if href, ok := node.Attr("href"); ok {
+		if matches := duanjuwPwdURLRegex.FindStringSubmatch(href); len(matches) >= 2 {
+			return strings.TrimSpace(matches[1])
+		}
+	}
 	candidates := []string{node.Text()}
 	if title, ok := node.Attr("title"); ok {
 		candidates = append(candidates, title)
 	}
-	if parent := node.Parent(); parent.Length() > 0 {
+	if parent := node.Parent(); parent.Length() > 0 && parent.Find("a[href]").Length() <= 1 {
 		candidates = append(candidates, parent.Text())
-		if next := parent.Next(); next.Length() > 0 {
-			candidates = append(candidates, next.Text())
-		}
-	}
-	if next := node.Next(); next.Length() > 0 {
-		candidates = append(candidates, next.Text())
 	}
 
 	for _, text := range candidates {

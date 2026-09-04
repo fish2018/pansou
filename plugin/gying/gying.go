@@ -34,6 +34,7 @@ import (
 	"pansou/util/json"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/net/idna"
 	"golang.org/x/net/proxy"
 
 	cloudscraper "github.com/Advik-B/cloudscraper/lib"
@@ -41,17 +42,23 @@ import (
 
 // 插件配置参数
 const (
-	MaxConcurrentUsers   = 10   // 最多使用的用户数
-	MaxConcurrentDetails = 50   // 最大并发详情请求数
+	MaxConcurrentUsers   = 10    // 最多使用的用户数
+	MaxConcurrentDetails = 50    // 最大并发详情请求数
 	DebugLog             = false // 调试日志开关（排查问题时改为true）
 )
 
 // 默认账户配置（可通过Web界面添加更多账户）
 // 用户数据会保存到文件，重启后自动恢复
 const (
-	DefaultGyingBaseURL = "https://www.gying.net"
+	DefaultGyingBaseURL = "https://www.xn--wcv59z.com"
 	GyingConfigFileName = "gying_config.json"
 )
+
+var legacyGyingHosts = map[string]struct{}{
+	"gying.net":      {},
+	"www.gying.net":  {},
+	"xn--wcv59z.com": {},
+}
 
 var (
 	challengeJSONPattern  = regexp.MustCompile(`(?s)const\s+json\s*=\s*(\{.*?\})\s*;\s*const\s+jss\s*=`)
@@ -244,7 +251,7 @@ const HTMLTemplate = `<!DOCTYPE html>
 
             <div class="form-group">
                 <label>站点地址</label>
-                <input type="text" id="base-url" placeholder="例如: https://www.gying.net">
+                <input type="text" id="base-url" placeholder="例如: https://www.教父.com">
             </div>
             <button class="btn btn-primary" onclick="saveBaseURL()">保存站点地址</button>
             <p style="margin-top: 10px; font-size: 12px; color: #666;">
@@ -611,7 +618,26 @@ func normalizeBaseURL(raw string) (string, error) {
 		return "", fmt.Errorf("站点地址不能包含路径")
 	}
 
-	return parsed.Scheme + "://" + parsed.Host, nil
+	// HTTP clients do not consistently convert Unicode hostnames to IDNA.
+	// Store the ASCII form so both the config page and requests are reliable.
+	hostname, err := idna.Lookup.ToASCII(parsed.Hostname())
+	if err != nil {
+		return "", fmt.Errorf("站点域名格式错误: %v", err)
+	}
+	host := hostname
+	if port := parsed.Port(); port != "" {
+		host += ":" + port
+	}
+	return parsed.Scheme + "://" + host, nil
+}
+
+func isLegacyGyingBaseURL(baseURL string) bool {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	_, ok := legacyGyingHosts[strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))]
+	return ok
 }
 
 func (p *GyingPlugin) configPath() string {
@@ -668,6 +694,12 @@ func (p *GyingPlugin) loadConfig() error {
 	baseURL, err := normalizeBaseURL(config.BaseURL)
 	if err != nil {
 		return err
+	}
+	if isLegacyGyingBaseURL(baseURL) {
+		baseURL = DefaultGyingBaseURL
+		if err := p.saveConfig(baseURL); err != nil {
+			return fmt.Errorf("迁移旧站点配置失败: %w", err)
+		}
 	}
 	p.setBaseURL(baseURL)
 	return nil
