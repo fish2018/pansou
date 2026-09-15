@@ -1,0 +1,35 @@
+{
+  "code": 200,
+  "message": "搜索完成",
+  "data": {
+    "list": [
+      {
+        "title": "名称：流浪地球  (2019) 4K HDR",
+        "source": "百度",
+        "disk_type": "baidu",
+        "url": "baidu+/0=="
+      },
+      {
+        "title": "名称：流浪地球2 (2023) 4K HDR & Dv",
+        "source": "百度",
+        "disk_type": "baidu",
+        "url": "baidu+/1=="
+      }
+    ],
+    "search_stats": [
+      {
+        "interface": "百度",
+        "disk_type": "baidu",
+        "success": true,
+        "result_count": 12
+      },
+      {
+        "interface": "百度网盘",
+        "disk_type": "baidu",
+        "success": false,
+        "result_count": 0,
+        "error": "Unexpected token < in JSON at position 0"
+      }
+    ]
+  }
+}

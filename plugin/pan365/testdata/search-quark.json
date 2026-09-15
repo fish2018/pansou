@@ -1,0 +1,48 @@
+{
+  "code": 200,
+  "message": "搜索完成",
+  "data": {
+    "list": [
+      {
+        "title": "📅 9月9日🎬 流浪地球2(2023) 中国大陆 [] [科幻/冒险/灾难]  主演：吴京/刘德",
+        "source": "夸克",
+        "disk_type": "quark",
+        "url": "quark+/0=="
+      },
+      {
+        "title": "📅 9月8日🎬 ----流浪地球 (2019) 4K/2160P 杜比视界 3D 简体字幕类型：",
+        "source": "夸克",
+        "disk_type": "quark",
+        "url": "quark+/1=="
+      }
+    ],
+    "search_stats": [
+      {
+        "interface": "夸克",
+        "disk_type": "quark",
+        "success": true,
+        "result_count": 66
+      },
+      {
+        "interface": "百度",
+        "disk_type": "baidu",
+        "success": true,
+        "result_count": 12
+      },
+      {
+        "interface": "夸克网盘",
+        "disk_type": "quark",
+        "success": false,
+        "result_count": 0,
+        "error": "Unexpected token < in JSON at position 0"
+      },
+      {
+        "interface": "百度网盘",
+        "disk_type": "baidu",
+        "success": false,
+        "result_count": 0,
+        "error": "Unexpected token < in JSON at position 0"
+      }
+    ]
+  }
+}
