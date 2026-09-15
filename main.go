@@ -46,6 +46,7 @@ import (
 	_ "pansou/plugin/gying"
 	_ "pansou/plugin/haitunsou"
 	_ "pansou/plugin/hdmoli"
+	_ "pansou/plugin/hjzhencai"
 	_ "pansou/plugin/huban"
 	_ "pansou/plugin/hunhepan"
 	_ "pansou/plugin/ikantv"
