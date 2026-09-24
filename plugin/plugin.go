@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -60,6 +61,22 @@ type InitializablePlugin interface {
 	// Initialize 执行插件初始化（创建目录、加载数据等）
 	// 只会被调用一次，应该是幂等的
 	Initialize() error
+}
+
+// ExtContextKey 是 ext 中承载本次搜索上下文的键。
+// Service 层用它把批任务的超时时间传给插件，插件基类据此在到点后立刻返回，
+// 不必等插件自身的响应超时或内部重试；放在 ext 里传递而不是保存在插件实例上，
+// 是为了避免并发请求共享同一个插件实例时互相覆盖。
+const ExtContextKey = "_ctx"
+
+// ContextFromExt 取出本次搜索的上下文，未设置时返回 background。
+func ContextFromExt(ext map[string]interface{}) context.Context {
+	if ext != nil {
+		if ctx, ok := ext[ExtContextKey].(context.Context); ok && ctx != nil {
+			return ctx
+		}
+	}
+	return context.Background()
 }
 
 // ============================================================
@@ -757,15 +774,12 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 		responseTimeout = config.AppConfig.AsyncResponseTimeoutDur
 	}
 
-	// 等待响应超时或结果
-	select {
-	case results := <-resultChan:
-		close(doneChan)
-		return results, nil
-	case err := <-errorChan:
-		close(doneChan)
-		return nil, err
-	case <-time.After(responseTimeout):
+	// 本次搜索的上下文：由调用方通过 ext 传入，
+	// 批任务超时后据此提前返回，不必等插件自身的响应超时。
+	searchCtx := ContextFromExt(ext)
+
+	// 超时或调用方取消：返回空结果，后台继续处理并填充缓存
+	partial := func() []model.SearchResult {
 		// 插件响应超时，后台继续处理（优化完成，日志简化）
 
 		// 响应超时，返回空结果，后台继续处理
@@ -781,7 +795,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 				recordCacheAccess(pluginSpecificCacheKey)
 				fmt.Printf("[%s] 响应超时，返回部分缓存: %s (项目数: %d)\n",
 					p.name, pluginSpecificCacheKey, len(cachedResult.Results))
-				return cachedResult.Results, nil
+				return cachedResult.Results
 			}
 		}
 
@@ -798,7 +812,21 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 		p.updateMainCacheWithFinal(mainCacheKey, []model.SearchResult{}, false)
 
 		// fmt.Printf("[%s] 响应超时，后台继续处理: %s\n", p.name, pluginSpecificCacheKey)
-		return []model.SearchResult{}, nil
+		return []model.SearchResult{}
+	}
+
+	// 等待响应超时、调用方取消或结果
+	select {
+	case results := <-resultChan:
+		close(doneChan)
+		return results, nil
+	case err := <-errorChan:
+		close(doneChan)
+		return nil, err
+	case <-time.After(responseTimeout):
+		return partial(), nil
+	case <-searchCtx.Done():
+		return partial(), nil
 	}
 }
 
@@ -924,6 +952,33 @@ func (p *BaseAsyncPlugin) AsyncSearchWithResult(
 		responseTimeout = config.AppConfig.AsyncResponseTimeoutDur
 	}
 
+	// 本次搜索的上下文：由调用方通过 ext 传入，
+	// 批任务超时后据此提前返回，不必等插件自身的响应超时。
+	searchCtx := ContextFromExt(ext)
+
+	// 超时或调用方取消：返回空结果，后台继续处理并填充缓存
+	pending := func() model.PluginSearchResult {
+		// 🔥 超时处理：返回空结果，后台继续处理
+		go p.completeSearchInBackground(keyword, searchFunc, pluginSpecificCacheKey, mainCacheKey, doneChan, ext)
+
+		// 存储临时缓存（标记为不完整）
+		apiResponseCache.Store(pluginSpecificCacheKey, cachedResponse{
+			Results:     []model.SearchResult{},
+			Timestamp:   now,
+			Complete:    false, // 🔥 标记为不完整
+			LastAccess:  now,
+			AccessCount: 1,
+		})
+
+		return model.PluginSearchResult{
+			Results:   []model.SearchResult{},
+			IsFinal:   false, // 🔥 超时返回，非最终结果
+			Timestamp: now,
+			Source:    p.name,
+			Message:   "处理中，后台继续...",
+		}
+	}
+
 	select {
 	case results := <-resultChan:
 		// 不直接关闭，让defer处理
@@ -959,25 +1014,9 @@ func (p *BaseAsyncPlugin) AsyncSearchWithResult(
 		return model.PluginSearchResult{}, err
 
 	case <-time.After(responseTimeout):
-		// 🔥 超时处理：返回空结果，后台继续处理
-		go p.completeSearchInBackground(keyword, searchFunc, pluginSpecificCacheKey, mainCacheKey, doneChan, ext)
-
-		// 存储临时缓存（标记为不完整）
-		apiResponseCache.Store(pluginSpecificCacheKey, cachedResponse{
-			Results:     []model.SearchResult{},
-			Timestamp:   now,
-			Complete:    false, // 🔥 标记为不完整
-			LastAccess:  now,
-			AccessCount: 1,
-		})
-
-		return model.PluginSearchResult{
-			Results:   []model.SearchResult{},
-			IsFinal:   false, // 🔥 超时返回，非最终结果
-			Timestamp: now,
-			Source:    p.name,
-			Message:   "处理中，后台继续...",
-		}, nil
+		return pending(), nil
+	case <-searchCtx.Done():
+		return pending(), nil
 	}
 }
 

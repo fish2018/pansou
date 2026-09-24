@@ -587,6 +587,12 @@ func getKeywordPriority(title string) int {
 
 // 搜索单个频道
 func (s *SearchService) searchChannel(keyword string, channel string) ([]model.SearchResult, error) {
+	return s.searchChannelWithContext(context.Background(), keyword, channel)
+}
+
+// searchChannelWithContext 在调用方上下文内搜索单个频道。
+// 频道请求自身的 4 秒超时保留，同时受父上下文的取消约束。
+func (s *SearchService) searchChannelWithContext(parent context.Context, keyword string, channel string) ([]model.SearchResult, error) {
 	// 构建搜索URL
 	url := util.BuildSearchURL(channel, keyword, "")
 
@@ -594,7 +600,7 @@ func (s *SearchService) searchChannel(keyword string, channel string) ([]model.S
 	client := util.GetHTTPClient()
 
 	// 创建一个带超时的上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
 	defer cancel()
 
 	// 创建请求
@@ -1244,8 +1250,8 @@ func (s *SearchService) searchTG(keyword string, channels []string, forceRefresh
 
 	for _, channel := range channels {
 		ch := channel // 创建副本，避免闭包问题
-		tasks = append(tasks, func() interface{} {
-			results, err := s.searchChannel(keyword, ch)
+		tasks = append(tasks, func(ctx context.Context) interface{} {
+			results, err := s.searchChannelWithContext(ctx, keyword, ch)
 			if err != nil {
 				return nil
 			}
@@ -1281,6 +1287,22 @@ func (s *SearchService) searchTG(keyword string, channels []string, forceRefresh
 	}
 
 	return results, nil
+}
+
+// pluginExtContextKey 与 plugin.ExtContextKey 一致；
+// 独立定义是因为下面的循环用 plugin 作为局部变量名，遮蔽了包名。
+const pluginExtContextKey = plugin.ExtContextKey
+
+// pluginExtWithContext 复制 ext 并注入本次批任务的上下文。
+// 复制而不是就地写入，避免并发请求共享同一个 ext 互相覆盖，
+// 同时插件基类可以据此在批任务超时后立刻返回而不是等自己的响应超时。
+func pluginExtWithContext(ext map[string]interface{}, ctx context.Context) map[string]interface{} {
+	taskExt := make(map[string]interface{}, len(ext)+1)
+	for k, v := range ext {
+		taskExt[k] = v
+	}
+	taskExt[pluginExtContextKey] = ctx
+	return taskExt
 }
 
 // searchPlugins 搜索插件
@@ -1375,14 +1397,15 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 	tasks := make([]pool.Task, 0, len(availablePlugins))
 	for _, p := range availablePlugins {
 		plugin := p // 创建副本，避免闭包问题
-		tasks = append(tasks, func() interface{} {
+		tasks = append(tasks, func(ctx context.Context) interface{} {
 			// 设置主缓存键和当前关键词
 			plugin.SetMainCacheKey(cacheKey)
 			plugin.SetCurrentKeyword(keyword)
 
 			// 插件的Search方法已经负责异步调度、插件缓存和后台刷新。
 			// 这里直接调用，避免再包一层AsyncSearch导致嵌套等待和重复超时。
-			results, err := plugin.Search(keyword, ext)
+			// 批任务的超时时间通过 ext 传给插件，插件基类据此在到点后立刻返回。
+			results, err := plugin.Search(keyword, pluginExtWithContext(ext, ctx))
 
 			if err != nil {
 				return nil
