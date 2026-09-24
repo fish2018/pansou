@@ -42,6 +42,7 @@ import (
 	_ "pansou/plugin/dyyj"
 	_ "pansou/plugin/dyyjpro"
 	_ "pansou/plugin/erxiao"
+	_ "pansou/plugin/erxiaopan"
 	_ "pansou/plugin/feikuai"
 	_ "pansou/plugin/gaoqing888"
 	_ "pansou/plugin/gying"
