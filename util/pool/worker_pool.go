@@ -71,7 +71,12 @@ func (p *WorkerPool) startWorkers() {
 					
 					// 执行任务并发送结果
 					result := task()
-					p.results <- result
+					select {
+					case p.results <- result:
+					case <-p.ctx.Done():
+						// 已超时，没有人再读取结果，直接退出避免阻塞
+						return
+					}
 					
 				case <-p.ctx.Done():
 					return
@@ -160,7 +165,6 @@ func ExecuteBatchWithTimeout(tasks []Task, maxWorkers int, timeout time.Duration
 	
 	// 创建工作池
 	pool := NewWorkerPoolWithContext(ctx, maxWorkers)
-	defer pool.Close()
 	
 	// 提交所有任务
 	for _, task := range tasks {
@@ -169,10 +173,23 @@ func ExecuteBatchWithTimeout(tasks []Task, maxWorkers int, timeout time.Duration
 			// 任务提交成功
 		case <-ctx.Done():
 			// 超时或取消，停止提交更多任务
-			return pool.GetResults(len(tasks))
+			return closeAfterResults(pool, len(tasks))
 		}
 	}
 	
 	// 获取所有结果，GetResults方法会处理超时情况
-	return pool.GetResults(len(tasks))
+	return closeAfterResults(pool, len(tasks))
+}
+
+// closeAfterResults 收集结果后关闭工作池。
+// 超时时仍在执行的任务无法被中断，Close 会阻塞到它们结束，
+// 因此超时情况下在后台关闭，保证调用方按超时时间拿到已完成的结果。
+func closeAfterResults(pool *WorkerPool, count int) []interface{} {
+	results := pool.GetResults(count)
+	if len(results) < count {
+		go pool.Close()
+	} else {
+		pool.Close()
+	}
+	return results
 } 
