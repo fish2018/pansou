@@ -50,14 +50,14 @@ func TestSearchImpl(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/test":
+		case "/test1":
 			encodedConfig, err := jsonutil.MarshalString(config)
 			if err != nil {
 				t.Error(err)
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			writeJSON(t, w, apiEnvelope[string]{Code: 200, Msg: "ok", Data: xorUTF16(encodedConfig, bootstrapKey)})
+			writeJSON(t, w, apiEnvelope[string]{Code: 200, Msg: "ok", Data: xorUTF16(encodedConfig, configEndpoints[0].key)})
 		case "/v1/search":
 			var payload searchPayload
 			decodeRequest(t, r, config, &payload)
@@ -69,7 +69,7 @@ func TestSearchImpl(t *testing.T) {
 				{ID: 102, Title: "仙逆 百度", Root: 4},
 				{ID: 103, Title: "仙逆 未知", Root: 99},
 			}})
-		case "/v1/getKey":
+		case "/v1/getKey670I23762183":
 			var payload getKeyPayload
 			decodeRequest(t, r, config, &payload)
 			keys := map[int64]string{
@@ -101,6 +101,43 @@ func TestSearchImpl(t *testing.T) {
 	}
 	if results[1].Links[0].Type != "baidu" || results[1].Links[0].Password != "1234" {
 		t.Fatalf("unexpected second link: %#v", results[1].Links[0])
+	}
+}
+
+// 站点再次变更路径时，旧路径仍可用的场景由回退逻辑兜住。
+func TestSearchImplFallsBackToLegacyEndpoints(t *testing.T) {
+	config := apiConfig{URLVersion: "v1", UserID: "test-user", Start: 2, End: 6}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		// 只提供旧路径，使用旧密钥
+		case "/test":
+			encodedConfig, _ := jsonutil.MarshalString(config)
+			writeJSON(t, w, apiEnvelope[string]{Code: 200, Msg: "ok", Data: xorUTF16(encodedConfig, configEndpoints[1].key)})
+		case "/v1/search":
+			var payload searchPayload
+			decodeRequest(t, r, config, &payload)
+			writeJSON(t, w, apiEnvelope[[]searchItem]{Code: 200, Msg: "ok", Data: []searchItem{
+				{ID: 201, Title: "仙逆 夸克", Root: 2},
+			}})
+		case "/v1/getKey":
+			var payload getKeyPayload
+			decodeRequest(t, r, config, &payload)
+			writeJSON(t, w, apiEnvelope[string]{Code: 200, Msg: "ok", Data: "legacy-share"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := NewYingsoPlugin()
+	p.apiBaseURL = server.URL
+	results, err := p.searchImpl(server.Client(), "仙逆", nil)
+	if err != nil {
+		t.Fatalf("回退到旧端点后仍失败: %v", err)
+	}
+	if len(results) != 1 || results[0].Links[0].URL != "https://pan.quark.cn/s/legacy-share" {
+		t.Fatalf("回退结果异常: %#v", results)
 	}
 }
 

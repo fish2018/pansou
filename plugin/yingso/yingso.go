@@ -22,13 +22,29 @@ const (
 	pluginName        = "yingso"
 	defaultAPIBaseURL = "https://ysapi.yingso.fun"
 	websiteURL        = "https://yingso.fun"
-	bootstrapKey      = "12345678"
 	defaultPriority   = 3
 	pageSize          = 30
 	requestTimeout    = 25 * time.Second
 	maxKeyConcurrency = 8
 	maxResponseSize   = 1 << 20
 )
+
+// configEndpoints 与 getKeyEndpoints 是站点混淆过的接口路径与配置密钥。
+//
+// 站点在 2026-09 变更过一次：配置接口由 /test 变为 /test1、XOR 密钥由
+// 12345678 变为 672134612、取真实链接接口由 /getKey 变为 /getKey670I23762183。
+// 旧路径直接 404，插件曾因此长期只报"获取接口配置失败"。
+// 这里按新→旧顺序逐个尝试，站点再次变更时也不至于整个插件失效。
+var configEndpoints = []struct {
+	path string
+	key  string
+}{
+	{"/test1", "672134612"},
+	{"/test", "12345678"},
+}
+
+// 取真实分享链接的接口，仅需 id 参数（id2/x1 实测非必需）。
+var getKeyEndpoints = []string{"/getKey670I23762183", "/getKey"}
 
 type YingsoPlugin struct {
 	*plugin.BaseAsyncPlugin
@@ -188,23 +204,32 @@ func (p *YingsoPlugin) searchImpl(client *http.Client, keyword string, _ map[str
 }
 
 func (p *YingsoPlugin) fetchConfig(ctx context.Context, client *http.Client) (apiConfig, error) {
-	var response apiEnvelope[string]
-	if err := p.requestJSON(ctx, client, http.MethodGet, p.apiBaseURL+"/test", nil, &response); err != nil {
-		return apiConfig{}, fmt.Errorf("[%s] 获取接口配置失败: %w", p.Name(), err)
-	}
-	if response.Code != http.StatusOK || response.Data == "" {
-		return apiConfig{}, fmt.Errorf("[%s] 接口配置异常: code=%d msg=%s", p.Name(), response.Code, response.Msg)
+	var lastErr error
+	for _, candidate := range configEndpoints {
+		var response apiEnvelope[string]
+		if err := p.requestJSON(ctx, client, http.MethodGet, p.apiBaseURL+candidate.path, nil, &response); err != nil {
+			lastErr = err
+			continue
+		}
+		if response.Code != http.StatusOK || response.Data == "" {
+			lastErr = fmt.Errorf("code=%d msg=%s", response.Code, response.Msg)
+			continue
+		}
+
+		decoded := xorUTF16(response.Data, candidate.key)
+		var config apiConfig
+		if err := jsonutil.UnmarshalString(decoded, &config); err != nil {
+			lastErr = fmt.Errorf("解析接口配置失败: %w", err)
+			continue
+		}
+		if config.URLVersion == "" || config.UserID == "" || config.Start < 0 || config.End <= config.Start || config.End > 24 {
+			lastErr = fmt.Errorf("接口配置缺少必要字段")
+			continue
+		}
+		return config, nil
 	}
 
-	decoded := xorUTF16(response.Data, bootstrapKey)
-	var config apiConfig
-	if err := jsonutil.UnmarshalString(decoded, &config); err != nil {
-		return apiConfig{}, fmt.Errorf("[%s] 解析接口配置失败: %w", p.Name(), err)
-	}
-	if config.URLVersion == "" || config.UserID == "" || config.Start < 0 || config.End <= config.Start || config.End > 24 {
-		return apiConfig{}, fmt.Errorf("[%s] 接口配置缺少必要字段", p.Name())
-	}
-	return config, nil
+	return apiConfig{}, fmt.Errorf("[%s] 获取接口配置失败: %w", p.Name(), lastErr)
 }
 
 func (p *YingsoPlugin) search(ctx context.Context, client *http.Client, config apiConfig, keyword string) ([]searchItem, error) {
@@ -240,12 +265,23 @@ func (p *YingsoPlugin) resolveItem(ctx context.Context, client *http.Client, con
 	}
 
 	var response apiEnvelope[string]
-	endpoint := fmt.Sprintf("%s/%s/getKey", p.apiBaseURL, url.PathEscape(config.URLVersion))
-	if err := p.requestJSON(ctx, client, http.MethodPost, endpoint, encrypted, &response); err != nil {
-		return model.SearchResult{}, err
+	var lastErr error
+	for _, path := range getKeyEndpoints {
+		response = apiEnvelope[string]{}
+		endpoint := fmt.Sprintf("%s/%s%s", p.apiBaseURL, url.PathEscape(config.URLVersion), path)
+		if err := p.requestJSON(ctx, client, http.MethodPost, endpoint, encrypted, &response); err != nil {
+			lastErr = err
+			continue
+		}
+		if response.Code != http.StatusOK || strings.TrimSpace(response.Data) == "" {
+			lastErr = fmt.Errorf("code=%d msg=%s", response.Code, response.Msg)
+			continue
+		}
+		lastErr = nil
+		break
 	}
-	if response.Code != http.StatusOK || strings.TrimSpace(response.Data) == "" {
-		return model.SearchResult{}, fmt.Errorf("getKey id=%d code=%d msg=%s", item.ID, response.Code, response.Msg)
+	if lastErr != nil {
+		return model.SearchResult{}, fmt.Errorf("getKey id=%d: %w", item.ID, lastErr)
 	}
 
 	linkType, linkURL, password := buildLink(item.Root, response.Data)
