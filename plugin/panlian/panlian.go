@@ -33,11 +33,14 @@ import (
 	"pansou/util/json"
 )
 
+// DefaultBaseURL 是站点根地址。声明为变量而非常量，是为了让测试能指向本地假服务器，
+// 从而验证重试与中止语义，而不是只能靠肉眼看代码。
+var DefaultBaseURL = "https://pinglian.lol"
+
 const (
 	PluginName        = "panlian"
 	DisplayName       = "盘链"
 	Description       = "盘链 - 登录后检索影视资源并聚合网盘链接"
-	DefaultBaseURL    = "https://pinglian.lol"
 	ConfigFileName    = "panlian_config.json"
 	RequestTimeout    = 20 * time.Second
 	MaxConcurrentJobs = 4
