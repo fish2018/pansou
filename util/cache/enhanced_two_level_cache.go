@@ -3,6 +3,7 @@ package cache
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"pansou/config"
@@ -55,7 +56,13 @@ func (c *EnhancedTwoLevelCache) Set(key string, data []byte, ttl time.Duration) 
 	// 异步设置磁盘缓存（这是IO操作，可能较慢）
 	go func(k string, d []byte, t time.Duration) {
 		// 使用独立的goroutine写入磁盘，避免阻塞调用者
-		_ = c.disk.Set(k, d, t)
+		//
+		// 磁盘写失败原先被 _ = 完全吞掉：内存里还有值，看起来一切正常，直到重启后
+		// 缓存全空、且没有任何线索。异步写没法把错误回传给调用方，所以至少要让它在
+		// 日志里可见——但必须限流，否则磁盘故障时每次 Set 都打一行，会把日志刷爆。
+		if err := c.disk.Set(k, d, t); err != nil {
+			logDiskWriteFailure(err)
+		}
 	}(key, data, ttl)
 
 	return nil
@@ -176,4 +183,35 @@ func (c *EnhancedTwoLevelCache) FlushMemoryToDisk() error {
 	}
 
 	return lastErr
+}
+
+// diskWriteFailureLogInterval 是磁盘写失败日志的最小间隔。
+// 磁盘故障（例如写满）会让每次 Set 都失败，不限流会把日志刷爆、反而看不到别的问题。
+const diskWriteFailureLogInterval = 30 * time.Second
+
+var (
+	diskWriteFailureLastLog int64 // 上一次打印的时间戳（UnixNano，atomic）
+	diskWriteFailureSkipped int64 // 被限流跳过的次数（atomic）
+)
+
+// logDiskWriteFailure 记录磁盘写失败，按 diskWriteFailureLogInterval 限流。
+// 限流期间累积的失败次数会在下一次真正打印时一并报出，保证"数量"这个信息不丢。
+func logDiskWriteFailure(err error) {
+	now := time.Now().UnixNano()
+	last := atomic.LoadInt64(&diskWriteFailureLastLog)
+	if last != 0 && now-last < int64(diskWriteFailureLogInterval) {
+		atomic.AddInt64(&diskWriteFailureSkipped, 1)
+		return
+	}
+	if !atomic.CompareAndSwapInt64(&diskWriteFailureLastLog, last, now) {
+		// 另一个 goroutine 刚打印过，这次让给它
+		atomic.AddInt64(&diskWriteFailureSkipped, 1)
+		return
+	}
+	skipped := atomic.SwapInt64(&diskWriteFailureSkipped, 0)
+	if skipped > 0 {
+		fmt.Printf("[CACHE] 磁盘缓存写入失败（另有 %d 次同类失败被限流跳过）: %v\n", skipped, err)
+		return
+	}
+	fmt.Printf("[CACHE] 磁盘缓存写入失败: %v\n", err)
 }

@@ -365,9 +365,16 @@ func (p *NSGameAsyncPlugin) postSessionRaw(client *http.Client, path string, bod
 		return nil, fmt.Errorf("[%s] 会话请求失败: %w", p.Name(), err)
 	}
 	defer resp.Body.Close()
-	data, _ := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
+	// 先判状态码再读体：非 200 的响应体本来就要丢弃，先读它既浪费又可能因为
+	// 错误页过大而报出"响应过大"，把真正有用的状态码盖掉。
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("[%s] 会话返回状态码: %d", p.Name(), resp.StatusCode)
+	}
+	// 原先这里写的是 data, _ := ...：读体失败被丢弃，于是"半截 data + nil error"会被
+	// 当成成功返回，调用方拿到的是被截断的会话数据却毫无察觉。
+	data, readErr := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
+	if readErr != nil {
+		return nil, fmt.Errorf("[%s] 读取会话响应失败: %w", p.Name(), readErr)
 	}
 	return data, nil
 }
