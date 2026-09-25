@@ -195,44 +195,34 @@ func (p *BixinAsyncPlugin) fetchPage(client *http.Client, keyword string, offset
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 
-	var resp *http.Response
 	var responseBody []byte
 
-	// 重试逻辑
-	for i := 0; i <= p.retries; i++ {
-		// 发送请求
-		resp, err = client.Do(req)
+	// 重试逻辑收敛到 util.DoWithRetry：这段循环原先在全仓复制了 30 多份，每份都要自己
+	// 处理"最后一次不再等待""错误怎么包装""响应体在循环里怎么关"。
+	// 参数保持既有行为不变（固定 500ms、共 p.retries+1 次尝试）。
+	err = util.DoWithRetry(util.RetryConfig{
+		Attempts:  p.retries + 1,
+		BaseDelay: 500 * time.Millisecond,
+		MaxDelay:  500 * time.Millisecond,
+	}, func(_ int) error {
+		resp, err := client.Do(req)
 		if err != nil {
-			if i == p.retries {
-				return nil, false, fmt.Errorf("请求失败: %w", err)
-			}
-			time.Sleep(500 * time.Millisecond)
-			continue
+			return fmt.Errorf("请求失败: %w", err)
 		}
-
-		// 这里不能用 defer：它在重试循环里会把每次响应都压到函数返回才关，
-		// 重试 N 次就有 N 个响应体（连同连接）一直不释放。读完立即关闭。
-		responseBody, err = util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
+		// 读完立即关闭：由组件保证每轮独立，不会像 defer 那样压到函数返回
+		body, readErr := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		resp.Body.Close()
-		if err != nil {
-			if i == p.retries {
-				return nil, false, fmt.Errorf("读取响应失败: %w", err)
-			}
-			time.Sleep(500 * time.Millisecond)
-			continue
+		if readErr != nil {
+			return fmt.Errorf("读取响应失败: %w", readErr)
 		}
-
-		// 状态码检查
 		if resp.StatusCode != http.StatusOK {
-			if i == p.retries {
-				return nil, false, fmt.Errorf("API返回非200状态码: %d", resp.StatusCode)
-			}
-			time.Sleep(500 * time.Millisecond)
-			continue
+			return fmt.Errorf("API返回非200状态码: %d", resp.StatusCode)
 		}
-
-		// 请求成功，跳出重试循环
-		break
+		responseBody = body
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
 	}
 
 	// 解析响应
