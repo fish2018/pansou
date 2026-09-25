@@ -101,7 +101,51 @@ func (c *DiskCache) saveMetadata(key string, meta *diskCacheMetadata) error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(metadataFile, data, 0644)
+	// 元数据同样要原子写：半截元数据会让缓存项"存在但读不出"
+	return writeFileAtomic(metadataFile, data, 0644)
+}
+
+// writeFileAtomic 原子落盘：写临时文件 → fsync → rename。
+//
+// 原先直接 ioutil.WriteFile 到最终路径：进程在写一半时被 kill（容器滚动更新、OOM、
+// 宿主机重启）会留下截断的文件，而元数据仍然有效，Get 就会把半截 JSON 交给反序列化
+// ——故障表现是"结果是空的/残缺的"而不是缓存未命中，排查时极易误判为上游插件故障。
+//
+// rename 在同一文件系统内是原子的：读者要么看到旧内容、要么看到完整新内容。
+// fsync 是为了防止"rename 已生效但数据还在页缓存里"时断电留下空文件。
+func writeFileAtomic(filePath string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(filePath)
+	tmp, err := os.CreateTemp(dir, filepath.Base(filePath)+".tmp")
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败: %w", err)
+	}
+	tmpName := tmp.Name()
+	// 无论从哪条路径返回，都别留下临时文件
+	defer func() {
+		if tmpName != "" {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("写入临时文件失败: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("刷盘失败: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("关闭临时文件失败: %w", err)
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return fmt.Errorf("设置文件权限失败: %w", err)
+	}
+	if err := os.Rename(tmpName, filePath); err != nil {
+		return fmt.Errorf("重命名到目标路径失败: %w", err)
+	}
+	tmpName = "" // rename 成功，临时文件已不存在
+	return nil
 }
 
 // 获取文件名
@@ -115,13 +159,11 @@ func (c *DiskCache) Set(key string, data []byte, ttl time.Duration) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	// 如果已存在，先减去旧项的大小
+	// 如果已存在，先减去旧项的大小。
+	// 这里不再预删旧文件：getFilename 是键的哈希，新旧文件同路径，rename 会整体覆盖；
+	// 预先 os.Remove 反而把"写一半崩溃"的窗口重新打开，且删不掉时错误被丢弃。
 	if meta, exists := c.metadata[key]; exists {
 		c.currSize -= int64(meta.Size)
-		// 删除旧文件
-		filename := c.getFilename(key)
-		os.Remove(filepath.Join(c.path, filename))
-		os.Remove(filepath.Join(c.path, filename+".meta"))
 	}
 
 	// 检查空间
@@ -140,8 +182,8 @@ func (c *DiskCache) Set(key string, data []byte, ttl time.Duration) error {
 		return fmt.Errorf("创建缓存目录失败: %v", err)
 	}
 
-	// 写入文件
-	if err := ioutil.WriteFile(filePath, data, 0644); err != nil {
+	// 原子写入文件
+	if err := writeFileAtomic(filePath, data, 0644); err != nil {
 		return err
 	}
 
@@ -157,8 +199,11 @@ func (c *DiskCache) Set(key string, data []byte, ttl time.Duration) error {
 
 	// 保存元数据
 	if err := c.saveMetadata(key, meta); err != nil {
-		// 如果元数据保存失败，删除数据文件
-		os.Remove(filePath)
+		// 元数据没落盘就等于这项不存在（Get 只认内存元数据表），
+		// 数据文件留着只会占空间，删掉；删除失败只记日志不回滚主错误。
+		if rmErr := os.Remove(filePath); rmErr != nil && !os.IsNotExist(rmErr) {
+			fmt.Printf("[DISK_CACHE] 元数据保存失败后清理数据文件也未成功: %s | %v\n", filePath, rmErr)
+		}
 		return err
 	}
 
@@ -217,12 +262,21 @@ func (c *DiskCache) Delete(key string) error {
 		return nil
 	}
 
-	// 删除文件
+	// 删除文件。文件本就不存在是正常情况（过期清理、重复删除），不算失败；
+	// 其它错误要报出来，否则会变成"元数据已删但文件永远留在磁盘上"的静默泄漏。
 	filename := c.getFilename(key)
-	os.Remove(filepath.Join(c.path, filename))
-	os.Remove(filepath.Join(c.path, filename+".meta"))
+	var firstErr error
+	for _, name := range []string{filename, filename + ".meta"} {
+		if err := os.Remove(filepath.Join(c.path, name)); err != nil && !os.IsNotExist(err) {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("删除缓存文件 %s 失败: %w", name, err)
+			} else {
+				fmt.Printf("[DISK_CACHE] 删除缓存文件失败: %s | %v\n", name, err)
+			}
+		}
+	}
 
-	// 更新元数据
+	// 更新元数据（无论文件是否删干净都要做，否则内存表会一直引用不存在的项）
 	c.currSize -= int64(meta.Size)
 	delete(c.metadata, key)
 
