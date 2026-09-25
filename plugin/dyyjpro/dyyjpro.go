@@ -387,13 +387,22 @@ func fetchDocument(client *http.Client, requestURL string, timeout time.Duration
 }
 
 func fetchBody(client *http.Client, requestURL string, timeout time.Duration, referer string) ([]byte, error) {
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	var body []byte
+
+	// 重试逻辑收敛到 util.DoWithRetry。关键语义：原实现每次尝试各自 context.WithTimeout，
+	// 即超时按次计算而不是整轮共享——ctx/cancel 必须建在闭包内（defer cancel 随闭包返回释放，
+	// 不跨轮累积）。退避仍是 200ms x 2^attempt。
+	err := util.DoWithRetry(util.RetryConfig{
+		Attempts:   maxRetries,
+		BaseDelay:  200 * time.Millisecond,
+		Multiplier: 2,
+	}, func(_ int) error {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 		if err != nil {
-			cancel()
-			return nil, err
+			return err
 		}
 
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
@@ -401,26 +410,25 @@ func fetchBody(client *http.Client, requestURL string, timeout time.Duration, re
 		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 		req.Header.Set("Connection", "keep-alive")
 		req.Header.Set("Referer", referer)
-
 		resp, err := client.Do(req)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			defer resp.Body.Close()
-			data, readErr := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
-			cancel()
-			return data, readErr
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
 		if err != nil {
-			lastErr = err
-		} else {
-			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			return err
 		}
-		cancel()
-		if attempt < maxRetries-1 {
-			time.Sleep(200 * time.Millisecond * time.Duration(1<<attempt))
+		if resp.StatusCode != http.StatusOK {
+			status := resp.StatusCode
+			resp.Body.Close()
+			return fmt.Errorf("HTTP %d", status)
 		}
+		data, readErr := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
+		resp.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		body = data
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, lastErr
+	return body, nil
 }
