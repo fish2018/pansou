@@ -49,11 +49,11 @@ type SearchAPIResponse struct {
 
 // ShareItem 搜索结果项
 type ShareItem struct {
-	HSID      string `json:"hsid"`      // 海搜ID，用于获取具体链接
-	Platform  string `json:"platform"`  // 网盘类型
+	HSID      string `json:"hsid"`       // 海搜ID，用于获取具体链接
+	Platform  string `json:"platform"`   // 网盘类型
 	ShareName string `json:"share_name"` // 分享名称，可能包含HTML标签
-	StatFile  int    `json:"stat_file"` // 文件数量
-	StatSize  int64  `json:"stat_size"` // 总大小(字节)
+	StatFile  int    `json:"stat_file"`  // 文件数量
+	StatSize  int64  `json:"stat_size"`  // 总大小(字节)
 }
 
 // FetchAPIResponse 链接获取API响应结构
@@ -84,7 +84,7 @@ type LinkResult struct {
 
 func init() {
 	p := &HaisouPlugin{
-		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin("haisou", 3), 
+		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin("haisou", 3),
 	}
 	plugin.RegisterGlobalPlugin(p)
 }
@@ -513,11 +513,11 @@ func mapPlatformType(platform string) string {
 // cleanHTMLTags 清理HTML标签
 func cleanHTMLTags(text string) string {
 	// 移除高亮标签 <span class="highlight">...</span>
-	re := regexp.MustCompile(`<span[^>]*class="highlight"[^>]*>(.*?)</span>`)
+	re := haisouRe1
 	cleaned := re.ReplaceAllString(text, "$1")
 
 	// 移除其他可能的HTML标签
-	re2 := regexp.MustCompile(`<[^>]*>`)
+	re2 := haisouRe2
 	cleaned = re2.ReplaceAllString(cleaned, "")
 
 	return strings.TrimSpace(cleaned)
@@ -546,3 +546,10 @@ func formatSize(size int64) string {
 		return fmt.Sprintf("%d B", size)
 	}
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	haisouRe1 = regexp.MustCompile(`<span[^>]*class="highlight"[^>]*>(.*?)</span>`)
+	haisouRe2 = regexp.MustCompile(`<[^>]*>`)
+)

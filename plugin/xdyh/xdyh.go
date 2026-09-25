@@ -19,13 +19,13 @@ const (
 	pluginName = "xdyh"
 	apiURL     = "https://ys.66ds.de/search"
 	refererURL = "https://ys.66ds.de/"
-	
+
 	// 超时时间配置
-	DefaultTimeout = 15 * time.Second  // API聚合搜索需要更长时间
-	
+	DefaultTimeout = 15 * time.Second // API聚合搜索需要更长时间
+
 	// 并发数配置
 	MaxConcurrency = 10
-	
+
 	// HTTP连接池配置
 	MaxIdleConns        = 100
 	MaxIdleConnsPerHost = 30
@@ -43,7 +43,7 @@ var (
 // 在init函数中注册插件
 func init() {
 	plugin.RegisterGlobalPlugin(NewXdyhPlugin())
-	
+
 	// 启动缓存清理goroutine
 	go startCacheCleaner()
 }
@@ -52,7 +52,7 @@ func init() {
 func startCacheCleaner() {
 	ticker := time.NewTicker(20 * time.Minute)
 	defer ticker.Stop()
-	
+
 	for range ticker.C {
 		// 清空所有缓存
 		searchCache = sync.Map{}
@@ -82,7 +82,7 @@ func createOptimizedHTTPClient() *http.Client {
 // NewXdyhPlugin 创建新的XDYH异步插件
 func NewXdyhPlugin() *XdyhAsyncPlugin {
 	return &XdyhAsyncPlugin{
-		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin(pluginName, 3), 
+		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin(pluginName, 3),
 		optimizedClient: createOptimizedHTTPClient(),
 	}
 }
@@ -110,72 +110,72 @@ func (p *XdyhAsyncPlugin) searchImpl(client *http.Client, keyword string, ext ma
 			return results, nil
 		}
 	}
-	
+
 	// 2. 构建请求体
 	requestBody := SearchRequest{
 		Keyword:    keyword,
-		Sites:      nil,  // null表示搜索所有站点
-		MaxWorkers: 10,   // API默认并发数
+		Sites:      nil, // null表示搜索所有站点
+		MaxWorkers: 10,  // API默认并发数
 		SaveToFile: false,
 		SplitLinks: true,
 	}
-	
+
 	// 3. JSON序列化
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] JSON序列化失败: %w", pluginName, err)
 	}
-	
+
 	// 4. 创建带超时的上下文
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
 	defer cancel()
-	
+
 	// 5. 创建请求
 	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 创建请求失败: %w", pluginName, err)
 	}
-	
+
 	// 6. 设置请求头
 	p.setRequestHeaders(req)
-	
+
 	// 7. 发送请求
 	resp, err := p.doRequestWithRetry(req, client)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 搜索请求失败: %w", pluginName, err)
 	}
 	defer resp.Body.Close()
-	
+
 	// 8. 检查状态码
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("[%s] 请求返回状态码: %d", pluginName, resp.StatusCode)
 	}
-	
+
 	// 9. 读取响应体
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应失败: %w", pluginName, err)
 	}
-	
+
 	// 10. 解析JSON响应
 	var apiResp APIResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
 		return nil, fmt.Errorf("[%s] JSON解析失败: %w", pluginName, err)
 	}
-	
+
 	// 11. 检查API响应状态
 	if apiResp.Status != "success" {
 		return nil, fmt.Errorf("[%s] API返回错误状态: %s", pluginName, apiResp.Status)
 	}
-	
+
 	// 12. 转换为标准格式
 	results := p.convertToSearchResults(apiResp, keyword)
-	
+
 	// 13. 缓存结果
 	if len(results) > 0 {
 		searchCache.Store(cacheKey, results)
 	}
-	
+
 	// 14. 关键词过滤
 	return plugin.FilterResultsByKeyword(results, keyword), nil
 }
@@ -196,28 +196,28 @@ func (p *XdyhAsyncPlugin) setRequestHeaders(req *http.Request) {
 func (p *XdyhAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
 	maxRetries := 3
 	var lastErr error
-	
+
 	for i := 0; i < maxRetries; i++ {
 		if i > 0 {
 			// 指数退避重试
 			backoff := time.Duration(1<<uint(i-1)) * 500 * time.Millisecond
 			time.Sleep(backoff)
 		}
-		
+
 		// 克隆请求避免并发问题
 		reqClone := req.Clone(req.Context())
-		
+
 		resp, err := client.Do(reqClone)
 		if err == nil && resp.StatusCode == 200 {
 			return resp, nil
 		}
-		
+
 		if resp != nil {
 			resp.Body.Close()
 		}
 		lastErr = err
 	}
-	
+
 	return nil, fmt.Errorf("重试 %d 次后仍然失败: %w", maxRetries, lastErr)
 }
 
@@ -225,7 +225,7 @@ func (p *XdyhAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Cli
 func (p *XdyhAsyncPlugin) convertToSearchResults(apiResp APIResponse, keyword string) []model.SearchResult {
 	results := make([]model.SearchResult, 0, len(apiResp.Data))
 	seenTitles := make(map[string]bool) // 去重用
-	
+
 	for i, item := range apiResp.Data {
 		// 简单去重处理
 		titleKey := fmt.Sprintf("%s_%s", item.Title, item.SourceSite)
@@ -233,66 +233,66 @@ func (p *XdyhAsyncPlugin) convertToSearchResults(apiResp APIResponse, keyword st
 			continue
 		}
 		seenTitles[titleKey] = true
-		
+
 		// 转换链接
 		links := p.convertDriveLinks(item)
 		if len(links) == 0 {
 			continue // 跳过没有有效链接的结果
 		}
-		
+
 		// 解析时间
 		datetime := p.parseDateTime(item.PostDate)
-		
+
 		// 构建内容描述
 		content := p.buildContentDescription(item)
-		
+
 		// 提取标签
 		tags := p.extractTags(item.Title, item.SourceSite)
-		
+
 		// 创建搜索结果
 		result := model.SearchResult{
-			UniqueID:  fmt.Sprintf("%s-%d", pluginName, i),
-			Title:     item.Title,
-			Content:   content,
-			Datetime:  datetime,
-			Tags:      tags,
-			Links:     links,
-			Channel:   "", // 插件搜索结果必须为空字符串
+			UniqueID: fmt.Sprintf("%s-%d", pluginName, i),
+			Title:    item.Title,
+			Content:  content,
+			Datetime: datetime,
+			Tags:     tags,
+			Links:    links,
+			Channel:  "", // 插件搜索结果必须为空字符串
 		}
-		
+
 		results = append(results, result)
 	}
-	
+
 	return results
 }
 
 // convertDriveLinks 转换网盘链接
 func (p *XdyhAsyncPlugin) convertDriveLinks(item SearchResultItem) []model.Link {
 	links := make([]model.Link, 0, len(item.DriveLinks))
-	
+
 	for _, driveURL := range item.DriveLinks {
 		if driveURL == "" {
 			continue
 		}
-		
+
 		// 验证链接有效性
 		if !p.isValidURL(driveURL) {
 			continue
 		}
-		
+
 		// 确定网盘类型
 		linkType := p.determineCloudType(driveURL)
-		
+
 		// 创建链接对象
 		link := model.Link{
 			Type:     linkType,
 			URL:      driveURL,
 			Password: item.Password, // API已提供密码字段
 		}
-		
+
 		links = append(links, link)
 	}
-	
+
 	return links
 }
 
@@ -305,13 +305,13 @@ func (p *XdyhAsyncPlugin) parseDateTime(dateStr string) time.Time {
 		"2006/01/02",
 		"01/02/2006",
 	}
-	
+
 	for _, format := range formats {
 		if t, err := time.Parse(format, dateStr); err == nil {
 			return t
 		}
 	}
-	
+
 	// 解析失败时返回当前时间
 	return time.Now()
 }
@@ -319,22 +319,22 @@ func (p *XdyhAsyncPlugin) parseDateTime(dateStr string) time.Time {
 // buildContentDescription 构建内容描述
 func (p *XdyhAsyncPlugin) buildContentDescription(item SearchResultItem) string {
 	parts := []string{}
-	
+
 	// 来源站点
 	if item.SourceSite != "" {
 		parts = append(parts, fmt.Sprintf("来源: %s", item.SourceSite))
 	}
-	
+
 	// 链接数量
 	if item.LinkCount > 0 {
 		parts = append(parts, fmt.Sprintf("链接数: %d", item.LinkCount))
 	}
-	
+
 	// 密码信息
 	if item.HasPassword && item.Password != "" {
 		parts = append(parts, fmt.Sprintf("密码: %s", item.Password))
 	}
-	
+
 	// 文件预览
 	if item.FilePreview != "" {
 		preview := strings.ReplaceAll(item.FilePreview, "<em>", "")
@@ -344,25 +344,25 @@ func (p *XdyhAsyncPlugin) buildContentDescription(item SearchResultItem) string 
 		}
 		parts = append(parts, fmt.Sprintf("预览: %s", preview))
 	}
-	
+
 	return strings.Join(parts, " | ")
 }
 
 // extractTags 提取标签
 func (p *XdyhAsyncPlugin) extractTags(title, sourceSite string) []string {
 	tags := []string{}
-	
+
 	// 添加来源站点作为标签
 	if sourceSite != "" {
 		tags = append(tags, sourceSite)
 	}
-	
+
 	// 从标题中提取常见标签
 	title = strings.ToLower(title)
 	tagKeywords := map[string]string{
-		"4k":     "4K",
-		"1080p":  "1080P",
-		"720p":   "720P",
+		"4k":    "4K",
+		"1080p": "1080P",
+		"720p":  "720P",
 		"蓝光":    "蓝光",
 		"高清":    "高清",
 		"更新":    "更新中",
@@ -372,13 +372,13 @@ func (p *XdyhAsyncPlugin) extractTags(title, sourceSite string) []string {
 		"动漫":    "动漫",
 		"综艺":    "综艺",
 	}
-	
+
 	for keyword, tag := range tagKeywords {
 		if strings.Contains(title, keyword) {
 			tags = append(tags, tag)
 		}
 	}
-	
+
 	return tags
 }
 
@@ -387,7 +387,7 @@ func (p *XdyhAsyncPlugin) isValidURL(urlStr string) bool {
 	if urlStr == "" {
 		return false
 	}
-	
+
 	// 检查基本的URL格式
 	if strings.HasPrefix(urlStr, "http://") || strings.HasPrefix(urlStr, "https://") {
 		// HTTP/HTTPS链接需要有域名
@@ -397,7 +397,7 @@ func (p *XdyhAsyncPlugin) isValidURL(urlStr string) bool {
 		// 简单检查是否包含域名
 		return strings.Contains(urlStr[8:], ".")
 	}
-	
+
 	return false
 }
 
@@ -432,7 +432,7 @@ func (p *XdyhAsyncPlugin) determineCloudType(url string) string {
 // API请求结构体
 type SearchRequest struct {
 	Keyword    string      `json:"keyword"`
-	Sites      interface{} `json:"sites"`        // null or []string
+	Sites      interface{} `json:"sites"` // null or []string
 	MaxWorkers int         `json:"max_workers"`
 	SaveToFile bool        `json:"save_to_file"`
 	SplitLinks bool        `json:"split_links"`
@@ -451,13 +451,13 @@ type APIResponse struct {
 }
 
 type Summary struct {
-	TotalSitesSearched      int `json:"total_sites_searched"`
-	SuccessfulSites         int `json:"successful_sites"`
-	FailedSites             int `json:"failed_sites"`
-	TotalSearchResults      int `json:"total_search_results"`
-	TotalSuccessfulParses   int `json:"total_successful_parses"`
-	TotalDriveLinks         int `json:"total_drive_links"`
-	UniqueLinks             int `json:"unique_links"`
+	TotalSitesSearched    int `json:"total_sites_searched"`
+	SuccessfulSites       int `json:"successful_sites"`
+	FailedSites           int `json:"failed_sites"`
+	TotalSearchResults    int `json:"total_search_results"`
+	TotalSuccessfulParses int `json:"total_successful_parses"`
+	TotalDriveLinks       int `json:"total_drive_links"`
+	UniqueLinks           int `json:"unique_links"`
 }
 
 type SearchResultItem struct {
@@ -474,9 +474,9 @@ type SearchResultItem struct {
 }
 
 type Performance struct {
-	TotalSearchTime   float64 `json:"total_search_time"`
-	SitesSearched     int     `json:"sites_searched"`
-	AvgTimePerSite    float64 `json:"avg_time_per_site"`
-	Optimization      string  `json:"optimization"`
-	Timestamp         string  `json:"timestamp"`
+	TotalSearchTime float64 `json:"total_search_time"`
+	SitesSearched   int     `json:"sites_searched"`
+	AvgTimePerSite  float64 `json:"avg_time_per_site"`
+	Optimization    string  `json:"optimization"`
+	Timestamp       string  `json:"timestamp"`
 }

@@ -447,7 +447,7 @@ func (p *DjgouPlugin) extractContent(mainContent *goquery.Selection) string {
 	content := strings.TrimSpace(mainContent.Text())
 
 	// 清理空白字符
-	content = regexp.MustCompile(`\s+`).ReplaceAllString(content, " ")
+	content = djgouRe1.ReplaceAllString(content, " ")
 
 	// 限制长度
 	if len(content) > 300 {
@@ -485,3 +485,9 @@ func (p *DjgouPlugin) doRequestWithRetry(req *http.Request, client *http.Client)
 
 	return nil, fmt.Errorf("重试 %d 次后仍然失败: %w", maxRetries, lastErr)
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	djgouRe1 = regexp.MustCompile(`\s+`)
+)

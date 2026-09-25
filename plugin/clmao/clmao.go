@@ -490,11 +490,11 @@ func (p *ClmaoPlugin) mapCategory(category string) string {
 // cleanTitle 清理标题
 func (p *ClmaoPlugin) cleanTitle(title string) string {
 	// 移除【】之间的广告内容
-	title = regexp.MustCompile(`【[^】]*】`).ReplaceAllString(title, "")
+	title = clmaoRe1.ReplaceAllString(title, "")
 	// 移除[]之间的内容（如有需要）
-	title = regexp.MustCompile(`\[[^\]]*\]`).ReplaceAllString(title, "")
+	title = clmaoRe2.ReplaceAllString(title, "")
 	// 移除多余的空格
-	title = regexp.MustCompile(`\s+`).ReplaceAllString(title, " ")
+	title = clmaoRe3.ReplaceAllString(title, " ")
 	return strings.TrimSpace(title)
 }
 
@@ -536,3 +536,11 @@ func (p *ClmaoPlugin) doRequestWithRetry(req *http.Request, client *http.Client)
 func init() {
 	plugin.RegisterGlobalPlugin(NewClmaoPlugin())
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	clmaoRe1 = regexp.MustCompile(`【[^】]*】`)
+	clmaoRe2 = regexp.MustCompile(`\[[^\]]*\]`)
+	clmaoRe3 = regexp.MustCompile(`\s+`)
+)

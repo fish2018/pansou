@@ -26,11 +26,11 @@ func init() {
 const (
 	// API基础URL
 	BaseURL = "https://miaosou.fun/api/secendsearch"
-	
+
 	// 默认参数
-	MaxRetries = 3
+	MaxRetries     = 3
 	TimeoutSeconds = 30
-	
+
 	// AES解密参数
 	AESKey = "4OToScUFOaeVTrHE"
 	AESIV  = "9CLGao1vHKqm17Oz"
@@ -40,7 +40,7 @@ const (
 var (
 	// HTML标签清理正则
 	htmlTagRegex = regexp.MustCompile(`<[^>]*>`)
-	
+
 	// 时间格式解析
 	timeLayout = "2006-01-02 15:04:05"
 )
@@ -89,52 +89,52 @@ func (p *MiaosouPlugin) searchImpl(client *http.Client, keyword string, ext map[
 			}
 		}
 	}
-	
+
 	// 构建请求URL
 	searchURL := fmt.Sprintf("%s?name=%s&pageNo=1", BaseURL, url.QueryEscape(searchKeyword))
-	
+
 	// 创建带超时的上下文
 	ctx, cancel := context.WithTimeout(context.Background(), TimeoutSeconds*time.Second)
 	defer cancel()
-	
+
 	// 创建请求
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 创建请求失败: %w", p.Name(), err)
 	}
-	
+
 	// 设置请求头
 	p.setRequestHeaders(req, searchKeyword)
-	
+
 	// 发送HTTP请求（带重试机制）
 	resp, err := p.doRequestWithRetry(req, client)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 搜索请求失败: %w", p.Name(), err)
 	}
 	defer resp.Body.Close()
-	
+
 	// 检查状态码
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("[%s] 请求返回状态码: %d", p.Name(), resp.StatusCode)
 	}
-	
+
 	// 读取响应体
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
 	}
-	
+
 	// 解析响应
 	var apiResp MiaosouResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
 		return nil, fmt.Errorf("[%s] JSON解析失败: %w", p.Name(), err)
 	}
-	
+
 	// 检查API响应状态
 	if apiResp.Code != 200 {
 		return nil, fmt.Errorf("[%s] API错误: %s", p.Name(), apiResp.Msg)
 	}
-	
+
 	// 转换为标准格式
 	results := make([]model.SearchResult, 0, len(apiResp.Data.List))
 	for _, item := range apiResp.Data.List {
@@ -142,13 +142,13 @@ func (p *MiaosouPlugin) searchImpl(client *http.Client, keyword string, ext map[
 		if err != nil {
 			continue // 跳过转换失败的项目
 		}
-		
+
 		// 只添加有链接的结果
 		if len(result.Links) > 0 {
 			results = append(results, result)
 		}
 	}
-	
+
 	// 关键词过滤
 	return results, nil
 }
@@ -166,28 +166,28 @@ func (p *MiaosouPlugin) setRequestHeaders(req *http.Request, keyword string) {
 // doRequestWithRetry 带重试机制的HTTP请求
 func (p *MiaosouPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
 	var lastErr error
-	
+
 	for i := 0; i < MaxRetries; i++ {
 		if i > 0 {
 			// 指数退避重试
 			backoff := time.Duration(1<<uint(i-1)) * 200 * time.Millisecond
 			time.Sleep(backoff)
 		}
-		
+
 		// 克隆请求避免并发问题
 		reqClone := req.Clone(req.Context())
-		
+
 		resp, err := client.Do(reqClone)
 		if err == nil && resp.StatusCode == 200 {
 			return resp, nil
 		}
-		
+
 		if resp != nil {
 			resp.Body.Close()
 		}
 		lastErr = err
 	}
-	
+
 	return nil, fmt.Errorf("重试 %d 次后仍然失败: %w", MaxRetries, lastErr)
 }
 
@@ -199,13 +199,13 @@ func (p *MiaosouPlugin) convertToSearchResult(item MiaosouItem) (model.SearchRes
 	if item.Content != nil {
 		content = *item.Content
 	}
-	
+
 	// 解析时间
 	datetime, err := time.Parse(timeLayout, item.GmtShare)
 	if err != nil {
 		datetime = time.Now() // 如果解析失败，使用当前时间
 	}
-	
+
 	// 构造链接（这里需要解密URL，目前先保持原样）
 	links := []model.Link{}
 	if item.URL != "" {
@@ -220,7 +220,7 @@ func (p *MiaosouPlugin) convertToSearchResult(item MiaosouItem) (model.SearchRes
 			links = append(links, link)
 		}
 	}
-	
+
 	// 设置标签
 	tags := []string{}
 	if item.From != "" {
@@ -229,7 +229,7 @@ func (p *MiaosouPlugin) convertToSearchResult(item MiaosouItem) (model.SearchRes
 	if item.Type != nil && *item.Type != "" {
 		tags = append(tags, *item.Type)
 	}
-	
+
 	result := model.SearchResult{
 		UniqueID: fmt.Sprintf("%s-%s", p.Name(), item.ID),
 		Title:    title,
@@ -239,7 +239,7 @@ func (p *MiaosouPlugin) convertToSearchResult(item MiaosouItem) (model.SearchRes
 		Links:    links,
 		Channel:  "", // 插件搜索结果必须为空字符串
 	}
-	
+
 	return result, nil
 }
 
@@ -257,40 +257,40 @@ func (p *MiaosouPlugin) decryptURL(encryptedURL string) string {
 	if encryptedURL == "" {
 		return ""
 	}
-	
+
 	// Base64解码
 	ciphertext, err := base64.StdEncoding.DecodeString(encryptedURL)
 	if err != nil {
 		return ""
 	}
-	
+
 	// 准备密钥和IV
 	key := []byte(AESKey)
 	iv := []byte(AESIV)
-	
+
 	// 创建AES解密器
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return ""
 	}
-	
+
 	// 检查密文长度
 	if len(ciphertext) < aes.BlockSize {
 		return ""
 	}
-	
+
 	// 使用CBC模式解密
 	mode := cipher.NewCBCDecrypter(block, iv)
-	
+
 	// 解密
 	mode.CryptBlocks(ciphertext, ciphertext)
-	
+
 	// 去除PKCS7填充
 	plaintext := p.removePKCS7Padding(ciphertext)
 	if plaintext == nil {
 		return ""
 	}
-	
+
 	return string(plaintext)
 }
 
@@ -299,22 +299,22 @@ func (p *MiaosouPlugin) removePKCS7Padding(data []byte) []byte {
 	if len(data) == 0 {
 		return nil
 	}
-	
+
 	// 获取填充长度
 	padding := int(data[len(data)-1])
-	
+
 	// 验证填充
 	if padding > len(data) || padding > aes.BlockSize {
 		return nil
 	}
-	
+
 	// 检查填充是否正确
 	for i := len(data) - padding; i < len(data); i++ {
 		if data[i] != byte(padding) {
 			return nil
 		}
 	}
-	
+
 	// 返回去除填充后的数据
 	return data[:len(data)-padding]
 }
@@ -356,18 +356,18 @@ type MiaosouData struct {
 }
 
 type MiaosouItem struct {
-	ID          string              `json:"id"`
-	Name        string              `json:"name"`
-	URL         string              `json:"url"`
-	Type        *string             `json:"type"`
-	From        string              `json:"from"`
-	Content     *string             `json:"content"`
-	GmtCreate   string              `json:"gmtCreate"`
-	GmtShare    string              `json:"gmtShare"`
-	FileCount   int                 `json:"fileCount"`
-	CreatorID   *string             `json:"creatorId"`
-	CreatorName string              `json:"creatorName"`
-	FileInfos   []MiaosouFileInfo   `json:"fileInfos"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	URL         string            `json:"url"`
+	Type        *string           `json:"type"`
+	From        string            `json:"from"`
+	Content     *string           `json:"content"`
+	GmtCreate   string            `json:"gmtCreate"`
+	GmtShare    string            `json:"gmtShare"`
+	FileCount   int               `json:"fileCount"`
+	CreatorID   *string           `json:"creatorId"`
+	CreatorName string            `json:"creatorName"`
+	FileInfos   []MiaosouFileInfo `json:"fileInfos"`
 }
 
 type MiaosouFileInfo struct {

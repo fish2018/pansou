@@ -20,14 +20,14 @@ import (
 )
 
 const (
-	PluginName    = "xys"
-	DisplayName   = "小云搜索"
-	Description   = "小云搜索 - 阿里云盘、夸克网盘、百度网盘等多网盘搜索引擎"
-	BaseURL       = "https://www.yunso.net"
-	TokenPath     = "/index/user/s"
-	SearchPath    = "/api/validate/searchX2"
-	UserAgent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
-	MaxResults    = 50
+	PluginName  = "xys"
+	DisplayName = "小云搜索"
+	Description = "小云搜索 - 阿里云盘、夸克网盘、百度网盘等多网盘搜索引擎"
+	BaseURL     = "https://www.yunso.net"
+	TokenPath   = "/index/user/s"
+	SearchPath  = "/api/validate/searchX2"
+	UserAgent   = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+	MaxResults  = 50
 )
 
 // XysPlugin 小云搜索插件
@@ -76,7 +76,7 @@ func (p *XysPlugin) Name() string {
 	return PluginName
 }
 
-// DisplayName 插件显示名称  
+// DisplayName 插件显示名称
 func (p *XysPlugin) DisplayName() string {
 	return DisplayName
 }
@@ -180,7 +180,7 @@ func (p *XysPlugin) getToken(client *http.Client, keyword string) (string, error
 		scriptContent := s.Text()
 		if strings.Contains(scriptContent, "DToken") {
 			// 使用正则表达式提取token
-			re := regexp.MustCompile(`const\s+DToken\s*=\s*"([^"]+)"`)
+			re := xysRe1
 			matches := re.FindStringSubmatch(scriptContent)
 			if len(matches) > 1 {
 				token = matches[1]
@@ -208,28 +208,28 @@ func (p *XysPlugin) getToken(client *http.Client, keyword string) (string, error
 func (p *XysPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
 	maxRetries := 3
 	var lastErr error
-	
+
 	for i := 0; i < maxRetries; i++ {
 		if i > 0 {
 			// 指数退避重试
 			backoff := time.Duration(1<<uint(i-1)) * 200 * time.Millisecond
 			time.Sleep(backoff)
 		}
-		
+
 		// 克隆请求避免并发问题
 		reqClone := req.Clone(req.Context())
-		
+
 		resp, err := client.Do(reqClone)
 		if err == nil && resp.StatusCode == 200 {
 			return resp, nil
 		}
-		
+
 		if resp != nil {
 			resp.Body.Close()
 		}
 		lastErr = err
 	}
-	
+
 	return nil, fmt.Errorf("[%s] 重试 %d 次后仍然失败: %w", p.Name(), maxRetries, lastErr)
 }
 
@@ -319,7 +319,7 @@ func (p *XysPlugin) parseSearchResults(htmlData, keyword string) ([]model.Search
 
 	// 关键词过滤（标准网盘插件需要过滤）
 	filteredResults := plugin.FilterResultsByKeyword(results, keyword)
-	
+
 	if p.debugMode {
 		log.Printf("[XYS] 关键词过滤后剩余 %d 个结果", len(filteredResults))
 	}
@@ -409,7 +409,7 @@ func (p *XysPlugin) cleanTitle(title string) string {
 	}
 
 	// 移除HTML标签
-	re := regexp.MustCompile(`<[^>]*>`)
+	re := xysRe2
 	cleaned := re.ReplaceAllString(title, "")
 
 	// 移除@符号
@@ -417,7 +417,7 @@ func (p *XysPlugin) cleanTitle(title string) string {
 
 	// 清理多余的空格
 	cleaned = strings.TrimSpace(cleaned)
-	re = regexp.MustCompile(`\s+`)
+	re = xysRe3
 	cleaned = re.ReplaceAllString(cleaned, " ")
 
 	return cleaned
@@ -427,17 +427,17 @@ func (p *XysPlugin) cleanTitle(title string) string {
 func (p *XysPlugin) parseTime(timeStr string) time.Time {
 	// 清理时间字符串，移除图标等
 	timeStr = strings.TrimSpace(timeStr)
-	
+
 	// 查找时间格式 YYYY-MM-DD HH:MM:SS
-	re := regexp.MustCompile(`(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})`)
+	re := xysRe4
 	matches := re.FindStringSubmatch(timeStr)
-	
+
 	if len(matches) > 1 {
 		if t, err := time.Parse("2006-01-02 15:04:05", matches[1]); err == nil {
 			return t
 		}
 	}
-	
+
 	// 如果解析失败，返回当前时间
 	return time.Now()
 }
@@ -473,3 +473,11 @@ func determineCloudType(url string) string {
 	}
 }
 
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	xysRe1 = regexp.MustCompile(`const\s+DToken\s*=\s*"([^"]+)"`)
+	xysRe2 = regexp.MustCompile(`<[^>]*>`)
+	xysRe3 = regexp.MustCompile(`\s+`)
+	xysRe4 = regexp.MustCompile(`(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})`)
+)

@@ -21,19 +21,19 @@ import (
 )
 
 const (
-	PluginName          = "javdb"
-	DisplayName         = "JavDB"
-	Description         = "JavDB - 影片数据库，专门提供磁力链接搜索"
-	BaseURL             = "https://javdb.com"
-	SearchPath          = "/search?q=%s&f=all"
-	UserAgent           = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
-	MaxResults          = 50
-	MaxConcurrency      = 10
-	
+	PluginName     = "javdb"
+	DisplayName    = "JavDB"
+	Description    = "JavDB - 影片数据库，专门提供磁力链接搜索"
+	BaseURL        = "https://javdb.com"
+	SearchPath     = "/search?q=%s&f=all"
+	UserAgent      = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+	MaxResults     = 50
+	MaxConcurrency = 10
+
 	// 429限流重试配置
-	MaxRetryOnRateLimit = 0    // 遇到429时的最大重试次数，设为0则不重试
-	MinRetryDelay       = 4    // 最小延迟秒数
-	MaxRetryDelay       = 8    // 最大延迟秒数
+	MaxRetryOnRateLimit = 0 // 遇到429时的最大重试次数，设为0则不重试
+	MinRetryDelay       = 4 // 最小延迟秒数
+	MaxRetryDelay       = 8 // 最大延迟秒数
 )
 
 // JavdbPlugin JavDB插件
@@ -42,8 +42,8 @@ type JavdbPlugin struct {
 	debugMode      bool
 	detailCache    sync.Map // 缓存详情页结果
 	cacheTTL       time.Duration
-	rateLimited    int32  // 429限流标志位，使用atomic操作
-	rateLimitCount int32  // 429错误计数
+	rateLimited    int32 // 429限流标志位，使用atomic操作
+	rateLimitCount int32 // 429错误计数
 }
 
 // init 注册插件
@@ -53,13 +53,13 @@ func init() {
 
 // NewJavdbPlugin 创建新的JavDB插件实例
 func NewJavdbPlugin() *JavdbPlugin {
-	debugMode := false 
-	
+	debugMode := false
+
 	// 初始化随机种子
 	rand.Seed(time.Now().UnixNano())
 
 	p := &JavdbPlugin{
-		BaseAsyncPlugin: plugin.NewBaseAsyncPluginWithFilter(PluginName, 5, true), 
+		BaseAsyncPlugin: plugin.NewBaseAsyncPluginWithFilter(PluginName, 5, true),
 		debugMode:       debugMode,
 		cacheTTL:        30 * time.Minute, // 详情页缓存30分钟
 	}
@@ -150,10 +150,10 @@ func (p *JavdbPlugin) searchImpl(client *http.Client, keyword string, ext map[st
 func (p *JavdbPlugin) executeSearchWithRateLimit(client *http.Client, keyword string) ([]model.SearchResult, error, bool) {
 	// 重置限流状态，每次新搜索都重新尝试
 	atomic.StoreInt32(&p.rateLimited, 0)
-	
+
 	// 构建搜索URL
 	searchURL := fmt.Sprintf("%s%s", BaseURL, fmt.Sprintf(SearchPath, url.QueryEscape(keyword)))
-	
+
 	if p.debugMode {
 		log.Printf("[JAVDB] 搜索URL: %s", searchURL)
 		// 显示重试配置信息
@@ -241,40 +241,39 @@ func (p *JavdbPlugin) executeSearchWithRateLimit(client *http.Client, keyword st
 	return results, err, false
 }
 
-
 // doRequestWithRetry 带重试机制的HTTP请求
 func (p *JavdbPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
 	maxRetries := 3
 	var lastErr error
-	
+
 	for i := 0; i < maxRetries; i++ {
 		if i > 0 {
 			// 指数退避重试
 			backoff := time.Duration(1<<uint(i-1)) * 200 * time.Millisecond
 			time.Sleep(backoff)
 		}
-		
+
 		// 克隆请求避免并发问题
 		reqClone := req.Clone(req.Context())
-		
+
 		resp, err := client.Do(reqClone)
 		if err == nil && resp.StatusCode == 200 {
 			return resp, nil
 		}
-		
+
 		if resp != nil {
 			resp.Body.Close()
 		}
 		lastErr = err
 	}
-	
+
 	return nil, fmt.Errorf("[%s] 重试 %d 次后仍然失败: %w", p.Name(), maxRetries, lastErr)
 }
 
 // doRequestWithRateLimitRetry 带429重试机制的HTTP请求
 func (p *JavdbPlugin) doRequestWithRateLimitRetry(req *http.Request, client *http.Client) (*http.Response, error) {
 	var lastErr error
-	
+
 	for attempt := 0; attempt <= MaxRetryOnRateLimit; attempt++ {
 		if attempt > 0 {
 			// 随机延迟，避免同时重试造成更大压力
@@ -284,10 +283,10 @@ func (p *JavdbPlugin) doRequestWithRateLimitRetry(req *http.Request, client *htt
 			}
 			time.Sleep(time.Duration(delaySeconds) * time.Second)
 		}
-		
+
 		// 克隆请求避免并发问题
 		reqClone := req.Clone(req.Context())
-		
+
 		resp, err := client.Do(reqClone)
 		if err != nil {
 			lastErr = err
@@ -296,23 +295,23 @@ func (p *JavdbPlugin) doRequestWithRateLimitRetry(req *http.Request, client *htt
 			}
 			continue
 		}
-		
+
 		// 如果不是429，直接返回（无论成功还是其他错误）
 		if resp.StatusCode != 429 {
 			return resp, nil
 		}
-		
+
 		// 遇到429
 		atomic.AddInt32(&p.rateLimitCount, 1)
 		if p.debugMode {
 			log.Printf("[JAVDB] 遇到429限流，尝试 %d/%d", attempt+1, MaxRetryOnRateLimit+1)
 		}
-		
+
 		// 如果不允许重试或已达到最大重试次数
 		if MaxRetryOnRateLimit == 0 || attempt >= MaxRetryOnRateLimit {
 			atomic.StoreInt32(&p.rateLimited, 1)
 			resp.Body.Close()
-			return nil, fmt.Errorf("[%s] 429限流，%s", p.Name(), 
+			return nil, fmt.Errorf("[%s] 429限流，%s", p.Name(),
 				func() string {
 					if MaxRetryOnRateLimit == 0 {
 						return "不重试"
@@ -320,11 +319,11 @@ func (p *JavdbPlugin) doRequestWithRateLimitRetry(req *http.Request, client *htt
 					return fmt.Sprintf("重试%d次后仍然限流", MaxRetryOnRateLimit)
 				}())
 		}
-		
+
 		resp.Body.Close()
 		lastErr = fmt.Errorf("429 Too Many Requests")
 	}
-	
+
 	return nil, lastErr
 }
 
@@ -336,15 +335,15 @@ func (p *JavdbPlugin) parseSearchResults(doc *goquery.Document) ([]model.SearchR
 		// 检查是否找到了.movie-list元素
 		movieListEl := doc.Find(".movie-list")
 		log.Printf("[JAVDB] 找到.movie-list元素数量: %d", movieListEl.Length())
-		
+
 		// 检查是否找到了.item元素
 		itemEls := doc.Find(".movie-list .item")
 		log.Printf("[JAVDB] 找到.movie-list .item元素数量: %d", itemEls.Length())
-		
+
 		// 如果没有找到预期元素，尝试其他可能的选择器
 		if itemEls.Length() == 0 {
 			log.Printf("[JAVDB] 尝试查找其他可能的结果元素...")
-			
+
 			// 尝试其他可能的选择器
 			altSelectors := []string{
 				".movie-list > div",
@@ -353,14 +352,14 @@ func (p *JavdbPlugin) parseSearchResults(doc *goquery.Document) ([]model.SearchR
 				".video-list .item",
 				".search-results .item",
 			}
-			
+
 			for _, selector := range altSelectors {
 				altEls := doc.Find(selector)
 				if altEls.Length() > 0 {
 					log.Printf("[JAVDB] 找到替代选择器 '%s' 的元素数量: %d", selector, altEls.Length())
 				}
 			}
-			
+
 			// 输出页面的主要结构用于调试
 			doc.Find("div[class*='movie'], div[class*='video'], div[class*='search'], div[class*='result']").Each(func(i int, s *goquery.Selection) {
 				className, _ := s.Attr("class")
@@ -413,7 +412,7 @@ func (p *JavdbPlugin) parseResultItem(s *goquery.Selection, index int) *model.Se
 	linkEl := s.Find("a.box")
 	if p.debugMode {
 		log.Printf("[JAVDB] 结果项 %d 找到a.box元素数量: %d", index, linkEl.Length())
-		
+
 		// 如果没有找到a.box，尝试其他可能的链接选择器
 		if linkEl.Length() == 0 {
 			altLinkSelectors := []string{"a", "a[href*='/v/']", ".box", "[href*='/v/']"}
@@ -512,7 +511,7 @@ func (p *JavdbPlugin) extractVideoInfo(s *goquery.Selection) (videoNumber, video
 	videoTitleEl := s.Find(".video-title")
 	if videoTitleEl.Length() > 0 {
 		fullTitle := strings.TrimSpace(videoTitleEl.Text())
-		
+
 		// 提取番号 (在<strong>标签中)
 		strongEl := videoTitleEl.Find("strong")
 		if strongEl.Length() > 0 {
@@ -533,7 +532,7 @@ func (p *JavdbPlugin) extractRating(s *goquery.Selection) string {
 		rating := strings.TrimSpace(ratingEl.Text())
 		// 清理评分文本，只保留主要信息
 		rating = strings.ReplaceAll(rating, "\n", " ")
-		rating = regexp.MustCompile(`\s+`).ReplaceAllString(rating, " ")
+		rating = javdbRe1.ReplaceAllString(rating, " ")
 		return rating
 	}
 	return ""
@@ -565,7 +564,7 @@ func (p *JavdbPlugin) extractTags(s *goquery.Selection) []string {
 func (p *JavdbPlugin) cleanTitle(title string) string {
 	title = strings.TrimSpace(title)
 	// 移除多余的空格
-	title = regexp.MustCompile(`\s+`).ReplaceAllString(title, " ")
+	title = javdbRe1.ReplaceAllString(title, " ")
 	return title
 }
 
@@ -609,7 +608,7 @@ func (p *JavdbPlugin) fetchDetailMagnetLinks(client *http.Client, searchResults 
 	semaphore := make(chan struct{}, MaxConcurrency)
 	var wg sync.WaitGroup
 	resultsChan := make(chan []model.SearchResult, len(searchResults))
-	
+
 	// 根据客户端超时调整策略
 	var finalResults []model.SearchResult
 	useTimeout := client.Timeout <= 5*time.Second // 短超时客户端使用超时机制
@@ -626,7 +625,7 @@ func (p *JavdbPlugin) fetchDetailMagnetLinks(client *http.Client, searchResults 
 		wg.Add(1)
 		go func(r model.SearchResult, index int) {
 			defer wg.Done()
-			semaphore <- struct{}{} // 获取信号量
+			semaphore <- struct{}{}        // 获取信号量
 			defer func() { <-semaphore }() // 释放信号量
 
 			// 在goroutine内部再次检查限流状态
@@ -755,8 +754,6 @@ func (p *JavdbPlugin) fetchDetailMagnetLinks(client *http.Client, searchResults 
 	return finalResults
 }
 
-
-
 // extractDetailURLFromContent 从Content中提取详情页URL
 func (p *JavdbPlugin) extractDetailURLFromContent(content string) string {
 	lines := strings.Split(content, "\n")
@@ -857,14 +854,14 @@ func (p *JavdbPlugin) fetchDetailPageMagnetLinks(client *http.Client, detailURL 
 		} else {
 			log.Printf("[JAVDB] 详情页不包含magnet字符串")
 		}
-		
+
 		// 检查是否包含预期的磁力链接容器元素
 		if strings.Contains(bodyStr, "magnets-content") {
 			log.Printf("[JAVDB] 找到magnets-content容器")
 		} else {
 			log.Printf("[JAVDB] 未找到magnets-content容器")
 		}
-		
+
 		if strings.Contains(bodyStr, "magnet-links") {
 			log.Printf("[JAVDB] 找到magnet-links容器")
 		} else {
@@ -908,24 +905,24 @@ func (p *JavdbPlugin) parseMagnetLinks(htmlContent string) []model.Link {
 		// 检查关键容器元素
 		magnetsContentEl := doc.Find("#magnets-content")
 		log.Printf("[JAVDB] 找到#magnets-content元素数量: %d", magnetsContentEl.Length())
-		
+
 		magnetLinksEl := doc.Find("#magnets-content .magnet-links")
 		log.Printf("[JAVDB] 找到#magnets-content .magnet-links元素数量: %d", magnetLinksEl.Length())
-		
+
 		magnetItemsEl := doc.Find("#magnets-content .magnet-links .item")
 		log.Printf("[JAVDB] 找到#magnets-content .magnet-links .item元素数量: %d", magnetItemsEl.Length())
-		
+
 		// 如果没有找到预期元素，尝试其他可能的选择器
 		if magnetItemsEl.Length() == 0 {
 			log.Printf("[JAVDB] 尝试其他可能的磁力链接选择器...")
-			
+
 			altSelectors := []string{
 				".magnet-links .item",
 				"[href^='magnet:']",
 				"a[href*='magnet:']",
 				".item [href^='magnet:']",
 			}
-			
+
 			for _, selector := range altSelectors {
 				altEls := doc.Find(selector)
 				if altEls.Length() > 0 {
@@ -1006,3 +1003,9 @@ func (p *JavdbPlugin) parseMagnetLinks(htmlContent string) []model.Link {
 
 	return links
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	javdbRe1 = regexp.MustCompile(`\s+`)
+)

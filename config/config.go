@@ -56,6 +56,9 @@ type Config struct {
 	TGResponseMaxBytes      int64         // 单个频道响应体上限
 	TGBackfillEnabled       bool          // 超时后是否后台补齐缺失频道
 	CachePartialTTLMinutes  int           // 结果不完整时的缓存有效期（分钟）
+	// 插件批任务配置
+	PluginBatchTimeout    time.Duration // 插件批任务软截止
+	PluginBackfillEnabled bool          // 超时后是否后台补齐缺失插件
 	// 认证相关配置
 	AuthEnabled     bool              // 是否启用认证
 	AuthUsers       map[string]string // 用户名:密码映射
@@ -118,6 +121,9 @@ func Init() {
 		TGResponseMaxBytes:      getTGResponseMaxBytes(),
 		TGBackfillEnabled:       getTGBackfillEnabled(),
 		CachePartialTTLMinutes:  getCachePartialTTL(),
+		// 插件批任务配置
+		PluginBatchTimeout:    time.Duration(getPluginBatchTimeout()) * time.Second,
+		PluginBackfillEnabled: getPluginBackfillEnabled(),
 		// 认证相关配置
 		AuthEnabled:     getAuthEnabled(),
 		AuthUsers:       getAuthUsers(),
@@ -291,17 +297,19 @@ func getCacheTTL() int {
 	return ttl
 }
 
-// 从环境变量获取TG频道批任务的软截止时间（秒），默认3秒。
-// 到点即返回已收集结果并标记为不完整，剩余频道由后台补齐，
-// 避免为了极少数慢频道把整个"快速兜底"请求拖到单请求超时。
+// 从环境变量获取TG频道批任务的软截止时间（秒），默认0表示跟随单频道请求超时。
+//
+// 每个频道请求自带 TG_CHANNEL_REQUEST_TIMEOUT_SECONDS（默认4秒）上限，
+// 批收集在最后一个请求结束时返回，所以"跟随单请求超时"就等于项目原有的实际行为，
+// 不会主动收紧预算。只有在本地实测过"提前返回不丢结果"之后，才用这个变量收紧。
 func getTGChannelTimeout() int {
 	timeoutEnv := os.Getenv("TG_CHANNEL_TIMEOUT_SECONDS")
 	if timeoutEnv == "" {
-		return 3
+		return 0
 	}
 	timeout, err := strconv.Atoi(timeoutEnv)
-	if err != nil || timeout <= 0 {
-		return 3
+	if err != nil || timeout < 0 {
+		return 0
 	}
 	return timeout
 }
@@ -383,6 +391,31 @@ func getUpstreamMaxIdleConnsPerHost() int {
 		return 110
 	}
 	return conn
+}
+
+// 从环境变量获取插件批任务的软截止时间（秒），默认0表示沿用PLUGIN_TIMEOUT。
+// 插件与频道的取舍不同：频道页可以在3秒内稳定拿全，而插件里存在磁力搜索这类
+// 明显更慢的站点，硬套3秒会把它们的真实结果整批截掉，所以默认保持原语义，
+// 由 PLUGIN_BATCH_TIMEOUT_SECONDS 按部署情况收紧。
+func getPluginBatchTimeout() int {
+	timeoutEnv := os.Getenv("PLUGIN_BATCH_TIMEOUT_SECONDS")
+	if timeoutEnv == "" {
+		return 0
+	}
+	timeout, err := strconv.Atoi(timeoutEnv)
+	if err != nil || timeout < 0 {
+		return 0
+	}
+	return timeout
+}
+
+// 从环境变量获取超时后是否后台补齐缺失插件，默认启用。
+func getPluginBackfillEnabled() bool {
+	enabled := os.Getenv("PLUGIN_BACKFILL_ENABLED")
+	if enabled == "" {
+		return true
+	}
+	return enabled != "false" && enabled != "0"
 }
 
 // 从环境变量获取是否启用压缩，如果未设置则默认禁用

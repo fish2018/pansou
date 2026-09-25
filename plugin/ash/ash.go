@@ -29,7 +29,7 @@ const (
 var (
 	// 提取JSON数据的正则表达式（预编译）
 	jsonDataRegex = regexp.MustCompile(`var jsonData = '(\[.*?\])';`)
-	
+
 	// 控制字符清理正则（预编译）
 	controlCharRegex = regexp.MustCompile(`[\x00-\x1F\x7F]`)
 )
@@ -73,32 +73,32 @@ func (p *AshPlugin) SearchWithResult(keyword string, ext map[string]interface{})
 func (p *AshPlugin) searchImpl(client *http.Client, keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
 	// 构建搜索URL
 	searchURL := fmt.Sprintf("https://so.allsharehub.com/s/%s.html", url.QueryEscape(keyword))
-	
+
 	// 创建带超时的上下文（减少超时时间，提高响应速度）
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	
+
 	// 创建请求
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 创建请求失败: %w", p.Name(), err)
 	}
-	
+
 	// 设置请求头
 	p.setRequestHeaders(req)
-	
+
 	// 发送请求（优化重试）
 	resp, err := p.doRequestWithRetry(req, client)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 搜索请求失败: %w", p.Name(), err)
 	}
 	defer resp.Body.Close()
-	
+
 	// 检查状态码
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("[%s] 请求返回状态码: %d", p.Name(), resp.StatusCode)
 	}
-	
+
 	// 读取响应（使用有限制的读取，避免读取过大内容）
 	// ASH页面通常不会太大，限制在2MB以内
 	limitReader := io.LimitReader(resp.Body, 2*1024*1024)
@@ -106,16 +106,16 @@ func (p *AshPlugin) searchImpl(client *http.Client, keyword string, ext map[stri
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
 	}
-	
+
 	// 从HTML中提取JSON数据（直接传递字节，避免字符串转换）
 	results, err := p.extractResultsFromBytes(body)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 提取搜索结果失败: %w", p.Name(), err)
 	}
-	
+
 	// 关键词过滤
 	filtered := plugin.FilterResultsByKeyword(results, keyword)
-	
+
 	return filtered, nil
 }
 
@@ -123,51 +123,51 @@ func (p *AshPlugin) searchImpl(client *http.Client, keyword string, ext map[stri
 func (p *AshPlugin) extractResultsFromBytes(data []byte) ([]model.SearchResult, error) {
 	// 直接在字节数组中查找JSON数据（避免转换为字符串）
 	html := string(data) // 只转换一次
-	
+
 	// 查找JSON数据
 	matches := jsonDataRegex.FindStringSubmatch(html)
 	if len(matches) < 2 {
 		return []model.SearchResult{}, nil // 没有找到数据，返回空结果
 	}
-	
+
 	// 提取JSON字符串
 	jsonStr := matches[1]
-	
+
 	// 清理JSON字符串（批量操作，减少内存分配）
 	if strings.Contains(jsonStr, "\\/") {
 		jsonStr = strings.ReplaceAll(jsonStr, "\\/", "/")
 	}
 	jsonStr = controlCharRegex.ReplaceAllString(jsonStr, "")
-	
+
 	// 解析JSON - 使用高性能的sonic库
 	var ashResults []AshResult
 	if err := json.Unmarshal([]byte(jsonStr), &ashResults); err != nil {
 		return nil, fmt.Errorf("JSON解析失败: %w", err)
 	}
-	
+
 	// 如果没有结果，直接返回
 	if len(ashResults) == 0 {
 		return []model.SearchResult{}, nil
 	}
-	
+
 	// 预分配切片容量，避免动态扩容
 	results := make([]model.SearchResult, 0, len(ashResults))
-	
+
 	// 批量处理所有结果
 	for i := range ashResults {
 		item := &ashResults[i]
-		
+
 		// 提前检查URL是否有效，避免无效处理
 		if item.URL == "" {
 			continue
 		}
-		
+
 		// 处理网盘链接
 		panURL := p.fixPanURL(item.URL)
 		if panURL == "" {
 			continue
 		}
-		
+
 		// 确定网盘类型（内联优化）
 		var panType string
 		switch item.IsType {
@@ -182,7 +182,7 @@ func (p *AshPlugin) extractResultsFromBytes(data []byte) ([]model.SearchResult, 
 		default:
 			panType = "quark"
 		}
-		
+
 		// 处理提取码
 		var password string
 		if item.Code != nil {
@@ -190,7 +190,7 @@ func (p *AshPlugin) extractResultsFromBytes(data []byte) ([]model.SearchResult, 
 				password = codeStr
 			}
 		}
-		
+
 		// 解析时间
 		var datetime time.Time
 		if item.Times != "" {
@@ -202,14 +202,14 @@ func (p *AshPlugin) extractResultsFromBytes(data []byte) ([]model.SearchResult, 
 		} else {
 			datetime = time.Now()
 		}
-		
+
 		// 获取标签
 		var tags []string
 		if item.SourceCategoryID > 0 && item.SourceCategoryID <= 6 {
 			categoryNames := [...]string{"短剧", "电影", "电视剧", "动漫", "综艺", "充电视频"}
 			tags = []string{categoryNames[item.SourceCategoryID-1]}
 		}
-		
+
 		// 构建搜索结果
 		results = append(results, model.SearchResult{
 			UniqueID: fmt.Sprintf("%s-%d", p.Name(), item.ID),
@@ -225,7 +225,7 @@ func (p *AshPlugin) extractResultsFromBytes(data []byte) ([]model.SearchResult, 
 			Tags: tags,
 		})
 	}
-	
+
 	return results, nil
 }
 
@@ -235,17 +235,17 @@ func (p *AshPlugin) fixPanURL(url string) string {
 	if len(url) < 8 { // 最短的URL: http://a
 		return ""
 	}
-	
+
 	// 验证链接协议（使用更快的检查方式）
 	if url[0] != 'h' || (url[4] != ':' && url[5] != ':') {
 		return ""
 	}
-	
+
 	// 只在包含错误域名时才进行替换，避免不必要的字符串操作
 	if strings.Contains(url, wrongQuarkDomain) {
 		return strings.Replace(url, wrongQuarkDomain, correctQuarkDomain, 1)
 	}
-	
+
 	return url
 }
 
@@ -264,14 +264,14 @@ func (p *AshPlugin) setRequestHeaders(req *http.Request) {
 func (p *AshPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
 	maxRetries := 2 // 减少重试次数，提高响应速度
 	var lastErr error
-	
+
 	for i := 0; i < maxRetries; i++ {
 		if i > 0 {
 			// 更短的退避时间
 			backoff := time.Duration(100<<uint(i-1)) * time.Millisecond
 			time.Sleep(backoff)
 		}
-		
+
 		// 克隆请求（只在重试时克隆）
 		var reqToUse *http.Request
 		if i == 0 {
@@ -279,31 +279,30 @@ func (p *AshPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (
 		} else {
 			reqToUse = req.Clone(req.Context())
 		}
-		
+
 		resp, err := client.Do(reqToUse)
-		
+
 		// 成功返回
 		if err == nil && resp.StatusCode == 200 {
 			return resp, nil
 		}
-		
+
 		// 清理响应
 		if resp != nil {
 			resp.Body.Close()
 		}
-		
+
 		lastErr = err
-		
+
 		// 如果是上下文取消或超时，不再重试
 		if req.Context().Err() != nil {
 			break
 		}
 	}
-	
+
 	if lastErr != nil {
 		return nil, fmt.Errorf("重试 %d 次后仍然失败: %w", maxRetries, lastErr)
 	}
-	
+
 	return nil, fmt.Errorf("重试 %d 次后仍然失败", maxRetries)
 }
-

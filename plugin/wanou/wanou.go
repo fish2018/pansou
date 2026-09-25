@@ -1,15 +1,15 @@
 package wanou
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
-	"context"
 	"sync/atomic"
+	"time"
 
 	"pansou/model"
 	"pansou/plugin"
@@ -41,20 +41,20 @@ func init() {
 var (
 	// 密码提取正则表达式
 	passwordRegex = regexp.MustCompile(`\?pwd=([0-9a-zA-Z]+)`)
-	
+
 	// 常见网盘链接的正则表达式（支持16种类型）
-	quarkLinkRegex     = regexp.MustCompile(`https?://pan\.quark\.cn/s/[0-9a-zA-Z]+`)
-	ucLinkRegex        = regexp.MustCompile(`https?://drive\.uc\.cn/s/[0-9a-zA-Z]+(\?[^"'\s]*)?`)
-	baiduLinkRegex     = regexp.MustCompile(`https?://pan\.baidu\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
-	aliyunLinkRegex    = regexp.MustCompile(`https?://(www\.)?(aliyundrive\.com|alipan\.com)/s/[0-9a-zA-Z]+`)
-	xunleiLinkRegex    = regexp.MustCompile(`https?://pan\.xunlei\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
-	tianyiLinkRegex    = regexp.MustCompile(`https?://cloud\.189\.cn/t/[0-9a-zA-Z]+`)
-	link115Regex       = regexp.MustCompile(`https?://115\.com/s/[0-9a-zA-Z]+`)
-	mobileLinkRegex    = regexp.MustCompile(`https?://caiyun\.feixin\.10086\.cn/[0-9a-zA-Z]+`)
-	link123Regex       = regexp.MustCompile(`https?://123pan\.com/s/[0-9a-zA-Z]+`)
-	pikpakLinkRegex    = regexp.MustCompile(`https?://mypikpak\.com/s/[0-9a-zA-Z]+`)
-	magnetLinkRegex    = regexp.MustCompile(`magnet:\?xt=urn:btih:[0-9a-fA-F]{40}`)
-	ed2kLinkRegex      = regexp.MustCompile(`ed2k://\|file\|.+\|\d+\|[0-9a-fA-F]{32}\|/`)
+	quarkLinkRegex  = regexp.MustCompile(`https?://pan\.quark\.cn/s/[0-9a-zA-Z]+`)
+	ucLinkRegex     = regexp.MustCompile(`https?://drive\.uc\.cn/s/[0-9a-zA-Z]+(\?[^"'\s]*)?`)
+	baiduLinkRegex  = regexp.MustCompile(`https?://pan\.baidu\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
+	aliyunLinkRegex = regexp.MustCompile(`https?://(www\.)?(aliyundrive\.com|alipan\.com)/s/[0-9a-zA-Z]+`)
+	xunleiLinkRegex = regexp.MustCompile(`https?://pan\.xunlei\.com/s/[0-9a-zA-Z_\-]+(\?pwd=[0-9a-zA-Z]+)?`)
+	tianyiLinkRegex = regexp.MustCompile(`https?://cloud\.189\.cn/t/[0-9a-zA-Z]+`)
+	link115Regex    = regexp.MustCompile(`https?://115\.com/s/[0-9a-zA-Z]+`)
+	mobileLinkRegex = regexp.MustCompile(`https?://caiyun\.feixin\.10086\.cn/[0-9a-zA-Z]+`)
+	link123Regex    = regexp.MustCompile(`https?://123pan\.com/s/[0-9a-zA-Z]+`)
+	pikpakLinkRegex = regexp.MustCompile(`https?://mypikpak\.com/s/[0-9a-zA-Z]+`)
+	magnetLinkRegex = regexp.MustCompile(`magnet:\?xt=urn:btih:[0-9a-fA-F]{40}`)
+	ed2kLinkRegex   = regexp.MustCompile(`ed2k://\|file\|.+\|\d+\|[0-9a-fA-F]{32}\|/`)
 )
 
 // WanouAsyncPlugin Wanou异步插件
@@ -118,16 +118,16 @@ func (p *WanouAsyncPlugin) searchImpl(client *http.Client, keyword string, ext m
 
 	// 构建API搜索URL
 	searchURL := fmt.Sprintf("https://woog.nxog.eu.org/api.php/provide/vod?ac=detail&wd=%s", url.QueryEscape(keyword))
-	
+
 	// 创建HTTP请求
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
 	defer cancel()
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 创建搜索请求失败: %w", p.Name(), err)
 	}
-	
+
 	// 设置请求头
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
@@ -135,30 +135,30 @@ func (p *WanouAsyncPlugin) searchImpl(client *http.Client, keyword string, ext m
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Referer", "https://woog.nxog.eu.org/")
 	req.Header.Set("Cache-Control", "no-cache")
-	
+
 	// 发送请求
 	resp, err := p.doRequestWithRetry(req, client)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 搜索请求失败: %w", p.Name(), err)
 	}
 	defer resp.Body.Close()
-	
+
 	// 解析JSON响应
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
 	}
-	
+
 	var apiResponse WanouAPIResponse
 	if err := json.Unmarshal(body, &apiResponse); err != nil {
 		return nil, fmt.Errorf("[%s] 解析JSON响应失败: %w", p.Name(), err)
 	}
-	
+
 	// 检查API响应状态
 	if apiResponse.Code != 1 {
 		return nil, fmt.Errorf("[%s] API返回错误: %s", p.Name(), apiResponse.Msg)
 	}
-	
+
 	// 解析搜索结果
 	var results []model.SearchResult
 	for _, item := range apiResponse.List {
@@ -166,18 +166,18 @@ func (p *WanouAsyncPlugin) searchImpl(client *http.Client, keyword string, ext m
 			results = append(results, result)
 		}
 	}
-	
+
 	return results, nil
 }
 
 // WanouAPIResponse API响应结构
 type WanouAPIResponse struct {
-	Code      int           `json:"code"`
-	Msg       string        `json:"msg"`
-	Page      int           `json:"page"`
-	PageCount int           `json:"pagecount"`
-	Limit     int           `json:"limit"`
-	Total     int           `json:"total"`
+	Code      int            `json:"code"`
+	Msg       string         `json:"msg"`
+	Page      int            `json:"page"`
+	PageCount int            `json:"pagecount"`
+	Limit     int            `json:"limit"`
+	Total     int            `json:"total"`
 	List      []WanouAPIItem `json:"list"`
 }
 
@@ -201,13 +201,13 @@ type WanouAPIItem struct {
 func (p *WanouAsyncPlugin) parseAPIItem(item WanouAPIItem) model.SearchResult {
 	// 构建唯一ID
 	uniqueID := fmt.Sprintf("%s-%d", p.Name(), item.VodID)
-	
+
 	// 构建标题
 	title := strings.TrimSpace(item.VodName)
 	if title == "" {
 		return model.SearchResult{}
 	}
-	
+
 	// 构建描述
 	var contentParts []string
 	if item.VodActor != "" {
@@ -226,7 +226,7 @@ func (p *WanouAsyncPlugin) parseAPIItem(item WanouAPIItem) model.SearchResult {
 		contentParts = append(contentParts, fmt.Sprintf("状态: %s", item.VodRemarks))
 	}
 	content := strings.Join(contentParts, " | ")
-	
+
 	// 解析下载链接
 	links := p.parseDownloadLinks(item.VodDownFrom, item.VodDownURL)
 
@@ -252,7 +252,7 @@ func (p *WanouAsyncPlugin) parseAPIItem(item WanouAPIItem) model.SearchResult {
 		Links:    links,
 		Tags:     tags,
 		Images:   images,
-		Channel:  "", // 插件搜索结果Channel为空
+		Channel:  "",          // 插件搜索结果Channel为空
 		Datetime: time.Time{}, // 使用零值而不是nil，参考jikepan插件标准
 	}
 }
@@ -262,59 +262,55 @@ func (p *WanouAsyncPlugin) parseDownloadLinks(vodDownFrom, vodDownURL string) []
 	if vodDownFrom == "" || vodDownURL == "" {
 		return nil
 	}
-	
+
 	// 按$$$分隔
 	fromParts := strings.Split(vodDownFrom, "$$$")
 	urlParts := strings.Split(vodDownURL, "$$$")
-	
+
 	// 确保数组长度一致
 	minLen := len(fromParts)
 	if len(urlParts) < minLen {
 		minLen = len(urlParts)
 	}
-	
+
 	var links []model.Link
 	for i := 0; i < minLen; i++ {
 		fromType := strings.TrimSpace(fromParts[i])
 		urlStr := strings.TrimSpace(urlParts[i])
-		
+
 		if urlStr == "" {
 			continue
 		}
-		
+
 		// 直接确定链接类型（合并验证和类型判断，避免重复正则匹配）
 		linkType := p.determineLinkTypeOptimized(fromType, urlStr)
 		if linkType == "" {
 			continue
 		}
-		
+
 		// 提取密码
 		password := p.extractPassword(urlStr)
-		
+
 		links = append(links, model.Link{
 			Type:     linkType,
 			URL:      urlStr,
 			Password: password,
 		})
 	}
-	
+
 	return links
 }
-
-
-
-
 
 // determineLinkTypeOptimized 优化的链接类型判断（避免重复正则匹配）
 func (p *WanouAsyncPlugin) determineLinkTypeOptimized(apiType, url string) string {
 	// 基本验证（包含原 isValidNetworkDriveURL 的逻辑）
-	if strings.Contains(url, "javascript:") || 
-	   strings.Contains(url, "#") ||
-	   url == "" ||
-	   (!strings.HasPrefix(url, "http") && !strings.HasPrefix(url, "magnet:") && !strings.HasPrefix(url, "ed2k:")) {
+	if strings.Contains(url, "javascript:") ||
+		strings.Contains(url, "#") ||
+		url == "" ||
+		(!strings.HasPrefix(url, "http") && !strings.HasPrefix(url, "magnet:") && !strings.HasPrefix(url, "ed2k:")) {
 		return ""
 	}
-	
+
 	// 优先根据API标识快速映射（避免正则匹配）
 	switch strings.ToUpper(apiType) {
 	case "BD":
@@ -358,7 +354,7 @@ func (p *WanouAsyncPlugin) determineLinkTypeOptimized(apiType, url string) strin
 			return "pikpak"
 		}
 	}
-	
+
 	// 如果API标识匹配失败，回退到URL正则匹配（一次性匹配）
 	switch {
 	case baiduLinkRegex.MatchString(url):
@@ -384,7 +380,7 @@ func (p *WanouAsyncPlugin) determineLinkTypeOptimized(apiType, url string) strin
 	case ed2kLinkRegex.MatchString(url):
 		return "ed2k"
 	case quarkLinkRegex.MatchString(url):
-		return "quark" 
+		return "quark"
 	default:
 		return "" // 不支持的类型
 	}
@@ -433,9 +429,9 @@ func (p *WanouAsyncPlugin) extractPassword(url string) string {
 
 // doRequestWithRetry 带重试的HTTP请求（优化JSON API的重试策略）
 func (p *WanouAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
-	maxRetries := 2  // 对于JSON API减少重试次数
+	maxRetries := 2 // 对于JSON API减少重试次数
 	var lastErr error
-	
+
 	for i := 0; i < maxRetries; i++ {
 		resp, err := client.Do(req)
 		if err == nil {
@@ -447,13 +443,13 @@ func (p *WanouAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Cl
 		} else {
 			lastErr = err
 		}
-		
+
 		// JSON API快速重试：只等待很短时间
 		if i < maxRetries-1 {
 			time.Sleep(100 * time.Millisecond) // 从秒级改为100毫秒
 		}
 	}
-	
+
 	return nil, fmt.Errorf("[%s] 请求失败，重试%d次后仍失败: %w", p.Name(), maxRetries, lastErr)
 }
 
@@ -461,15 +457,15 @@ func (p *WanouAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Cl
 func (p *WanouAsyncPlugin) GetPerformanceStats() map[string]interface{} {
 	totalRequests := atomic.LoadInt64(&searchRequests)
 	totalTime := atomic.LoadInt64(&totalSearchTime)
-	
+
 	var avgTime float64
 	if totalRequests > 0 {
 		avgTime = float64(totalTime) / float64(totalRequests) / 1e6 // 转换为毫秒
 	}
-	
+
 	return map[string]interface{}{
-		"search_requests":    totalRequests,
-		"avg_search_time_ms": avgTime,
+		"search_requests":      totalRequests,
+		"avg_search_time_ms":   avgTime,
 		"total_search_time_ns": totalTime,
 	}
 }

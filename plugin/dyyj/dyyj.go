@@ -491,8 +491,8 @@ func (p *DyyjPlugin) extractAPIContentLinks(contentHTML string) []model.Link {
 }
 
 func (p *DyyjPlugin) extractPasswordFromURLText(text string) string {
-	for _, pattern := range []string{`提取码[:：]?\\s*([A-Za-z0-9]{4,8})`, `密码[:：]?\\s*([A-Za-z0-9]{4,8})`, `pwd\\s*[=:：]\\s*([A-Za-z0-9]{4,8})`} {
-		if match := regexp.MustCompile(pattern).FindStringSubmatch(text); len(match) > 1 {
+	for _, re := range dyyjTextPasswordPatterns {
+		if match := re.FindStringSubmatch(text); len(match) > 1 {
 			return match[1]
 		}
 	}
@@ -1283,14 +1283,7 @@ func (p *DyyjPlugin) isNetworkDiskName(text string) bool {
 // extractPasswordFromURL 从URL中提取密码
 func (p *DyyjPlugin) extractPasswordFromURL(linkURL string) string {
 	// 从URL参数中提取密码
-	patterns := []string{
-		`[?&]pwd=([A-Za-z0-9]{4,8})`,
-		`[?&]password=([A-Za-z0-9]{4,8})`,
-		`[?&]code=([A-Za-z0-9]{4,8})`,
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
+	for _, re := range dyyjURLPasswordPatterns {
 		matches := re.FindStringSubmatch(linkURL)
 		if len(matches) > 1 {
 			return matches[1]
@@ -1332,4 +1325,18 @@ func (p *DyyjPlugin) determineCloudType(url string) string {
 	default:
 		return "others"
 	}
+}
+
+// dyyj 的密码提取模式：原先在函数内按 pattern 字符串逐个 MustCompile，
+// 每次调用都要重新解析模式，这里预编译为包级切片。
+var dyyjTextPasswordPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`提取码[:：]?\s*([A-Za-z0-9]{4,8})`),
+	regexp.MustCompile(`密码[:：]?\s*([A-Za-z0-9]{4,8})`),
+	regexp.MustCompile(`pwd\s*[=:：]\s*([A-Za-z0-9]{4,8})`),
+}
+
+var dyyjURLPasswordPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`[?&]pwd=([A-Za-z0-9]{4,8})`),
+	regexp.MustCompile(`[?&]password=([A-Za-z0-9]{4,8})`),
+	regexp.MustCompile(`[?&]code=([A-Za-z0-9]{4,8})`),
 }

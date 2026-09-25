@@ -696,7 +696,7 @@ func detailContent(meta map[string]string) string {
 
 func cleanTitle(value string) string {
 	value = cleanText(value)
-	value = regexp.MustCompile(`\s*\(\d{4}\)\s*$`).ReplaceAllString(value, "")
+	value = kpkuangRe1.ReplaceAllString(value, "")
 	return strings.TrimSpace(value)
 }
 
@@ -739,3 +739,9 @@ func shortID(value string) string {
 	}
 	return strconv.FormatUint(uint64(hash), 16)
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	kpkuangRe1 = regexp.MustCompile(`\s*\(\d{4}\)\s*$`)
+)

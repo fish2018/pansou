@@ -331,7 +331,7 @@ func absolutePansoURL(href string) string {
 
 func parsePansoDatetime(text string) time.Time {
 	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02"} {
-		if match := regexp.MustCompile(`\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}:\d{2})?`).FindString(text); match != "" {
+		if match := sousouRe1.FindString(text); match != "" {
 			if parsed, err := time.Parse(layout, match); err == nil {
 				return parsed
 			}
@@ -342,7 +342,7 @@ func parsePansoDatetime(text string) time.Time {
 
 func parsePansoPassword(selection *goquery.Selection) string {
 	text := strings.TrimSpace(selection.Text())
-	match := regexp.MustCompile(`(?i)(?:提取码|密码|pwd)[:：]?\s*([a-z0-9]{4})`).FindStringSubmatch(text)
+	match := sousouRe2.FindStringSubmatch(text)
 	if len(match) > 1 {
 		return match[1]
 	}
@@ -692,3 +692,10 @@ type SousouItem struct {
 	Weight      int         `json:"weight"`
 	Status      int         `json:"status"`
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	sousouRe1 = regexp.MustCompile(`\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}:\d{2})?`)
+	sousouRe2 = regexp.MustCompile(`(?i)(?:提取码|密码|pwd)[:：]?\s*([a-z0-9]{4})`)
+)

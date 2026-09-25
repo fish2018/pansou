@@ -18,30 +18,30 @@ import (
 // 预编译的正则表达式 - 用于从blurb中提取网盘链接
 var (
 	// 网盘链接正则表达式
-	quarkRegex    = regexp.MustCompile(`https://pan\.quark\.cn/s/[0-9a-zA-Z]+`)
-	baiduRegex    = regexp.MustCompile(`https://pan\.baidu\.com/s/[0-9a-zA-Z_\-]+(?:\?pwd=([0-9a-zA-Z]+))?`)
-	aliyunRegex   = regexp.MustCompile(`https://(?:www\.)?aliyundrive\.com/s/[0-9a-zA-Z]+`)
-	xunleiRegex   = regexp.MustCompile(`https://pan\.xunlei\.com/s/[0-9a-zA-Z_\-]+(?:\?pwd=([0-9a-zA-Z]+))?`)
-	tianyiRegex   = regexp.MustCompile(`https://cloud\.189\.cn/t/[0-9a-zA-Z]+`)
-	ucRegex       = regexp.MustCompile(`https://drive\.uc\.cn/s/[0-9a-zA-Z]+`)
-	pan115Regex   = regexp.MustCompile(`https://115\.com/s/[0-9a-zA-Z]+`)
-	
+	quarkRegex  = regexp.MustCompile(`https://pan\.quark\.cn/s/[0-9a-zA-Z]+`)
+	baiduRegex  = regexp.MustCompile(`https://pan\.baidu\.com/s/[0-9a-zA-Z_\-]+(?:\?pwd=([0-9a-zA-Z]+))?`)
+	aliyunRegex = regexp.MustCompile(`https://(?:www\.)?aliyundrive\.com/s/[0-9a-zA-Z]+`)
+	xunleiRegex = regexp.MustCompile(`https://pan\.xunlei\.com/s/[0-9a-zA-Z_\-]+(?:\?pwd=([0-9a-zA-Z]+))?`)
+	tianyiRegex = regexp.MustCompile(`https://cloud\.189\.cn/t/[0-9a-zA-Z]+`)
+	ucRegex     = regexp.MustCompile(`https://drive\.uc\.cn/s/[0-9a-zA-Z]+`)
+	pan115Regex = regexp.MustCompile(`https://115\.com/s/[0-9a-zA-Z]+`)
+
 	// 百度网盘提取码 (出现在文本中)
 	baiduPwdRegex = regexp.MustCompile(`(?:提取码|密码|pwd)[：:]\s*([0-9a-zA-Z]{4})`)
 )
 
 // 常量定义
 const (
-	pluginName        = "discourse"
+	pluginName = "discourse"
 	// searchURLTemplate = "https://linux.do/search.json?q=%s%%20%%23resource%%3Acloud-asset%%20in%%3Atitle&page=%d"
 	searchURLTemplate = "https://linux.do/search.json?q=%s%%20in%%3Atitle%%20%%23resource&page=%d"
 	detailURLTemplate = "https://linux.do/t/%d.json?track_visit=true&forceLoad=true"
 	defaultPriority   = 2
 	defaultTimeout    = 30 * time.Second
-	
+
 	// 多页获取配置
-	defaultMaxPages  = 1   // 默认最多获取1页
-	maxAllowedPages  = 10  // 最多允许获取10页
+	defaultMaxPages  = 1                      // 默认最多获取1页
+	maxAllowedPages  = 10                     // 最多允许获取10页
 	pageRequestDelay = 500 * time.Millisecond // 每页请求间隔
 )
 
@@ -53,38 +53,38 @@ type DiscourseAsyncPlugin struct {
 
 // SearchResponse 搜索API响应结构
 type SearchResponse struct {
-	Posts              []Post              `json:"posts"`
-	Topics             []Topic             `json:"topics"`
+	Posts               []Post              `json:"posts"`
+	Topics              []Topic             `json:"topics"`
 	GroupedSearchResult GroupedSearchResult `json:"grouped_search_result"`
 }
 
 // Post 帖子信息
 type Post struct {
-	ID            int       `json:"id"`
-	Name          string    `json:"name"`
-	Username      string    `json:"username"`
-	CreatedAt     string    `json:"created_at"`
-	LikeCount     int       `json:"like_count"`
-	Blurb         string    `json:"blurb"`
-	TopicID       int       `json:"topic_id"`
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	Username  string `json:"username"`
+	CreatedAt string `json:"created_at"`
+	LikeCount int    `json:"like_count"`
+	Blurb     string `json:"blurb"`
+	TopicID   int    `json:"topic_id"`
 }
 
 // Topic 主题信息
 type Topic struct {
-	ID          int      `json:"id"`
-	Title       string   `json:"title"`
-	FancyTitle  string   `json:"fancy_title"`
-	Tags        []string `json:"tags"`
-	PostsCount  int      `json:"posts_count"`
-	CreatedAt   string   `json:"created_at"`
-	CategoryID  int      `json:"category_id"`
+	ID         int      `json:"id"`
+	Title      string   `json:"title"`
+	FancyTitle string   `json:"fancy_title"`
+	Tags       []string `json:"tags"`
+	PostsCount int      `json:"posts_count"`
+	CreatedAt  string   `json:"created_at"`
+	CategoryID int      `json:"category_id"`
 }
 
 // GroupedSearchResult 搜索元数据
 type GroupedSearchResult struct {
-	Term         string `json:"term"`
-	PostIDs      []int  `json:"post_ids"`
-	MoreResults  bool   `json:"more_full_page_results"`
+	Term        string `json:"term"`
+	PostIDs     []int  `json:"post_ids"`
+	MoreResults bool   `json:"more_full_page_results"`
 }
 
 // DetailResponse 详情API响应结构
@@ -175,7 +175,7 @@ func (p *DiscourseAsyncPlugin) searchImpl(client *http.Client, keyword string, e
 			maxPages = int(maxPagesFloat)
 		}
 	}
-	
+
 	// 限制最大页数
 	if maxPages > maxAllowedPages {
 		maxPages = maxAllowedPages
@@ -194,12 +194,12 @@ func (p *DiscourseAsyncPlugin) searchImpl(client *http.Client, keyword string, e
 
 	// URL编码关键词
 	encodedKeyword := url.QueryEscape(keyword)
-	
+
 	// 存储所有结果
 	var allResults []model.SearchResult
 	seenPostIDs := make(map[int]bool) // 用于去重
-	fetchedPages := 0 // 实际获取的页数
-	
+	fetchedPages := 0                 // 实际获取的页数
+
 	// 循环获取多页
 	for currentPage := startPage; currentPage < startPage+maxPages; currentPage++ {
 		fetchedPages++
@@ -207,9 +207,9 @@ func (p *DiscourseAsyncPlugin) searchImpl(client *http.Client, keyword string, e
 		if currentPage > startPage {
 			time.Sleep(pageRequestDelay)
 		}
-		
+
 		searchURL := fmt.Sprintf(searchURLTemplate, encodedKeyword, currentPage)
-		
+
 		// 发送搜索请求
 		resp, err := p.scraper.Get(searchURL)
 		if err != nil {
@@ -257,36 +257,36 @@ func (p *DiscourseAsyncPlugin) searchImpl(client *http.Client, keyword string, e
 		if len(searchResp.Posts) == 0 {
 			break
 		}
-		
+
 		// 转换为SearchResult并去重
 		pageResults := p.convertToSearchResults(searchResp)
-		
+
 		// 添加结果（去重）
 		for _, result := range pageResults {
 			// 从 UniqueID 中提取帖子ID
 			var postID int
 			fmt.Sscanf(result.UniqueID, "discourse-%d", &postID)
-			
+
 			if !seenPostIDs[postID] {
 				seenPostIDs[postID] = true
 				allResults = append(allResults, result)
 			}
 		}
-		
+
 		// 如果 API 返回没有更多结果了，停止获取
 		if !searchResp.GroupedSearchResult.MoreResults {
 			break
 		}
-		
+
 		// 如果这一页没有新的结果，也停止
 		if len(pageResults) == 0 {
 			break
 		}
 	}
-	
+
 	// 如果启用了多页获取，在日志中显示获取的总结果数
 	if maxPages > 1 && len(allResults) > 0 {
-		fmt.Printf("[%s] Fetched %d unique results from %d pages for keyword: %s\n", 
+		fmt.Printf("[%s] Fetched %d unique results from %d pages for keyword: %s\n",
 			p.Name(), len(allResults), fetchedPages, keyword)
 	}
 
@@ -440,24 +440,24 @@ func (p *DiscourseAsyncPlugin) extractNetDiskLinksFromBlurb(blurb string) []mode
 // cleanContent 清理内容，移除HTML标签
 func (p *DiscourseAsyncPlugin) cleanContent(content string) string {
 	// 移除HTML标签
-	content = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(content, "")
-	
+	content = discourseRe1.ReplaceAllString(content, "")
+
 	// 解码HTML实体
 	content = strings.ReplaceAll(content, "&amp;", "&")
 	content = strings.ReplaceAll(content, "&lt;", "<")
 	content = strings.ReplaceAll(content, "&gt;", ">")
 	content = strings.ReplaceAll(content, "&quot;", "\"")
 	content = strings.ReplaceAll(content, "&#39;", "'")
-	
+
 	// 移除多余空白
-	content = regexp.MustCompile(`\s+`).ReplaceAllString(content, " ")
+	content = discourseRe2.ReplaceAllString(content, " ")
 	content = strings.TrimSpace(content)
-	
+
 	// 限制长度
 	if len(content) > 200 {
 		content = content[:200] + "..."
 	}
-	
+
 	return content
 }
 
@@ -501,7 +501,7 @@ func (p *DiscourseAsyncPlugin) GetTopicDetail(topicID int) ([]model.Link, error)
 	}
 
 	mainPost := detailResp.PostStream.Posts[0]
-	
+
 	// 从 link_counts 中提取网盘链接
 	var links []model.Link
 	for _, linkCount := range mainPost.LinkCounts {
@@ -509,7 +509,7 @@ func (p *DiscourseAsyncPlugin) GetTopicDetail(topicID int) ([]model.Link, error)
 		if linkCount.Internal {
 			continue
 		}
-		
+
 		// 判断是否为网盘链接并解析
 		link := p.parseNetDiskLink(linkCount.URL)
 		if link != nil {
@@ -592,3 +592,9 @@ func (p *DiscourseAsyncPlugin) parseNetDiskLink(linkURL string) *model.Link {
 	return nil
 }
 
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	discourseRe1 = regexp.MustCompile(`<[^>]+>`)
+	discourseRe2 = regexp.MustCompile(`\s+`)
+)

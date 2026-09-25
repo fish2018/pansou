@@ -125,7 +125,7 @@ func (p *ZXZJPlugin) fetchSearchResults(searchURL string) ([]searchItem, error) 
 			return
 		}
 
-		re := regexp.MustCompile(`/(voddetail|detail)/(\d+)\.html`)
+		re := zxzjRe1
 		matches := re.FindStringSubmatch(href)
 		if len(matches) < 3 {
 			return
@@ -376,7 +376,7 @@ type playerData struct {
 }
 
 func (p *ZXZJPlugin) parsePlayerData(body []byte) (string, string) {
-	re := regexp.MustCompile(`var\s+player_aaaa\s*=\s*(\{[^;]+\})`)
+	re := zxzjRe2
 	matches := re.FindSubmatch(body)
 	if len(matches) < 2 {
 		return "", ""
@@ -420,7 +420,7 @@ func (p *ZXZJPlugin) extractPassword(panURL string) string {
 		}
 	}
 
-	pwdRegex := regexp.MustCompile(`pwd=([a-zA-Z0-9]{4})`)
+	pwdRegex := zxzjRe3
 	if matches := pwdRegex.FindStringSubmatch(panURL); len(matches) > 1 {
 		return matches[1]
 	}
@@ -473,7 +473,7 @@ func (p *ZXZJPlugin) setHeaders(req *http.Request, referer string) {
 }
 
 func (p *ZXZJPlugin) parseUpdateTime(text string) time.Time {
-	updateRegex := regexp.MustCompile(`更新[：:]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}|\d{4}-\d{2}-\d{2})`)
+	updateRegex := zxzjRe4
 	matches := updateRegex.FindStringSubmatch(text)
 	if len(matches) < 2 {
 		return time.Time{}
@@ -519,3 +519,12 @@ func (p *ZXZJPlugin) doRequestWithRetry(req *http.Request, client *http.Client) 
 
 	return nil, fmt.Errorf("重试 %d 次后仍然失败: %w", maxRetries, lastErr)
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	zxzjRe1 = regexp.MustCompile(`/(voddetail|detail)/(\d+)\.html`)
+	zxzjRe2 = regexp.MustCompile(`var\s+player_aaaa\s*=\s*(\{[^;]+\})`)
+	zxzjRe3 = regexp.MustCompile(`pwd=([a-zA-Z0-9]{4})`)
+	zxzjRe4 = regexp.MustCompile(`更新[：:]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}|\d{4}-\d{2}-\d{2})`)
+)

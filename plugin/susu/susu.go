@@ -318,7 +318,7 @@ func (p *SusuAsyncPlugin) extractPostID(s *goquery.Selection) string {
 	// 方法2：从详情页链接提取
 	href, exists := s.Find(".post-info h2 a").Attr("href")
 	if exists {
-		re := regexp.MustCompile(`/(\d+)\.html`)
+		re := susuRe1
 		matches := re.FindStringSubmatch(href)
 		if len(matches) > 1 {
 			postID := matches[1]
@@ -696,3 +696,9 @@ func md5sum(s string) uint32 {
 	}
 	return h
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	susuRe1 = regexp.MustCompile(`/(\d+)\.html`)
+)

@@ -1504,12 +1504,12 @@ func (p *QQPDPlugin) extractLinksFromContent(content string) []model.Link {
 
 			// 提取密码
 			if strings.Contains(linkURL, "pwd=") {
-				pwdRe := regexp.MustCompile(`pwd=([a-zA-Z0-9]+)`)
+				pwdRe := qqpdRe1
 				if pwdMatch := pwdRe.FindStringSubmatch(linkURL); len(pwdMatch) > 1 {
 					password = pwdMatch[1]
 				}
 			} else if strings.Contains(linkURL, "password=") {
-				pwdRe := regexp.MustCompile(`password=([a-zA-Z0-9]+)`)
+				pwdRe := qqpdRe2
 				if pwdMatch := pwdRe.FindStringSubmatch(linkURL); len(pwdMatch) > 1 {
 					password = pwdMatch[1]
 				}
@@ -1624,7 +1624,7 @@ func (p *QQPDPlugin) extractLoginInfo(responseText string) (string, string, erro
 	}
 
 	// 简单解析，提取URL部分
-	re := regexp.MustCompile(`ptuiCB\('0','0','([^']+)'`)
+	re := qqpdRe3
 	matches := re.FindStringSubmatch(responseText)
 	if len(matches) < 2 {
 		return "", "", fmt.Errorf("无法解析响应")
@@ -1633,7 +1633,7 @@ func (p *QQPDPlugin) extractLoginInfo(responseText string) (string, string, erro
 	url := matches[1]
 
 	// 提取ptsigx
-	ptsigxRe := regexp.MustCompile(`ptsigx=([A-Za-z0-9]+)`)
+	ptsigxRe := qqpdRe4
 	ptsigxMatches := ptsigxRe.FindStringSubmatch(url)
 	if len(ptsigxMatches) < 2 {
 		return "", "", fmt.Errorf("未找到ptsigx")
@@ -1641,7 +1641,7 @@ func (p *QQPDPlugin) extractLoginInfo(responseText string) (string, string, erro
 	ptsigx := ptsigxMatches[1]
 
 	// 提取uin
-	uinRe := regexp.MustCompile(`uin=(\d+)`)
+	uinRe := qqpdRe5
 	uinMatches := uinRe.FindStringSubmatch(url)
 	if len(uinMatches) < 2 {
 		return "", "", fmt.Errorf("未找到uin")
@@ -2203,3 +2203,13 @@ func (p *QQPDPlugin) markInactiveUsers() int {
 
 	return markedCount
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	qqpdRe1 = regexp.MustCompile(`pwd=([a-zA-Z0-9]+)`)
+	qqpdRe2 = regexp.MustCompile(`password=([a-zA-Z0-9]+)`)
+	qqpdRe3 = regexp.MustCompile(`ptuiCB\('0','0','([^']+)'`)
+	qqpdRe4 = regexp.MustCompile(`ptsigx=([A-Za-z0-9]+)`)
+	qqpdRe5 = regexp.MustCompile(`uin=(\d+)`)
+)

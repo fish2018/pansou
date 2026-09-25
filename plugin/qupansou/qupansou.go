@@ -18,10 +18,10 @@ import (
 var (
 	// API响应缓存，键为关键词，值为缓存的响应
 	apiResponseCache = sync.Map{}
-	
+
 	// 最后一次清理缓存的时间
 	lastCacheCleanTime = time.Now()
-	
+
 	// 缓存有效期（1小时）
 	cacheTTL = 1 * time.Hour
 )
@@ -30,7 +30,7 @@ var (
 func init() {
 	// 使用全局超时时间创建插件实例并注册
 	plugin.RegisterGlobalPlugin(NewQuPanSouPlugin())
-	
+
 	// 启动缓存清理goroutine
 	go startCacheCleaner()
 }
@@ -40,7 +40,7 @@ func startCacheCleaner() {
 	// 每小时清理一次缓存
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
-	
+
 	for range ticker.C {
 		// 清空所有缓存
 		apiResponseCache = sync.Map{}
@@ -51,10 +51,10 @@ func startCacheCleaner() {
 const (
 	// API端点
 	ApiURL = "https://v.funletu.com/search"
-	
+
 	// 默认超时时间
 	DefaultTimeout = 6 * time.Second
-	
+
 	// 默认页大小
 	DefaultPageSize = 1000
 )
@@ -68,7 +68,7 @@ type QuPanSouAsyncPlugin struct {
 // NewQuPanSouPlugin 创建新的趣盘搜异步插件
 func NewQuPanSouPlugin() *QuPanSouAsyncPlugin {
 	timeout := DefaultTimeout
-	
+
 	return &QuPanSouAsyncPlugin{
 		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin("qupansou", 3),
 		timeout:         timeout,
@@ -109,10 +109,10 @@ func (p *QuPanSouAsyncPlugin) doSearch(client *http.Client, keyword string, ext 
 	if err != nil {
 		return nil, fmt.Errorf("qupansou API error: %w", err)
 	}
-	
+
 	// 转换为标准格式
 	results := p.convertResults(items)
-	
+
 	return results, nil
 }
 
@@ -126,91 +126,91 @@ type cachedResponse struct {
 func (p *QuPanSouAsyncPlugin) searchAPI(keyword string, client *http.Client) ([]QuPanSouItem, error) {
 	// 构建请求体
 	reqBody := map[string]interface{}{
-		"style": "get",
+		"style":   "get",
 		"datasrc": "search",
 		"query": map[string]interface{}{
-			"id": "",
-			"datetime": "",
-			"courseid": 1,
+			"id":         "",
+			"datetime":   "",
+			"courseid":   1,
 			"categoryid": "",
 			"filetypeid": "",
-			"filetype": "",
-			"reportid": "",
-			"validid": "",
+			"filetype":   "",
+			"reportid":   "",
+			"validid":    "",
 			"searchtext": keyword,
 		},
 		"page": map[string]interface{}{
-			"pageSize": DefaultPageSize,
+			"pageSize":  DefaultPageSize,
 			"pageIndex": 1,
 		},
 		"order": map[string]interface{}{
-			"prop": "sort",
+			"prop":  "sort",
 			"order": "desc",
 		},
 		"message": "请求资源列表数据",
 	}
-	
+
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request failed: %w", err)
 	}
-	
+
 	req, err := http.NewRequest("POST", ApiURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
 	}
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 	req.Header.Set("Referer", "https://pan.funletu.com/")
-	
+
 	// 发送请求
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	// 读取响应体
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read response body failed: %w", err)
 	}
-	
+
 	// 解析响应
 	var apiResp QuPanSouResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
 		return nil, fmt.Errorf("decode response failed: %w", err)
 	}
-	
+
 	// 检查响应状态
 	if apiResp.Status != 200 {
 		return nil, fmt.Errorf("API returned error: %s", apiResp.Message)
 	}
-	
+
 	return apiResp.Data, nil
 }
 
 // convertResults 将API响应转换为标准SearchResult格式
 func (p *QuPanSouAsyncPlugin) convertResults(items []QuPanSouItem) []model.SearchResult {
 	results := make([]model.SearchResult, 0, len(items))
-	
+
 	for _, item := range items {
 		// 跳过无效的URL
 		if item.URL == "" {
 			continue
 		}
-		
+
 		// 创建链接
 		link := model.Link{
 			URL:      item.URL,
 			Type:     p.determineLinkType(item.URL),
 			Password: "", // 趣盘搜API不返回密码
 		}
-		
+
 		// 创建唯一ID
 		uniqueID := fmt.Sprintf("qupansou-%d", item.ID)
-		
+
 		// 解析时间
 		var datetime time.Time
 		if item.UpdateTime != "" {
@@ -220,34 +220,34 @@ func (p *QuPanSouAsyncPlugin) convertResults(items []QuPanSouItem) []model.Searc
 				datetime = parsedTime
 			}
 		}
-		
+
 		// 如果时间解析失败，使用零值
 		if datetime.IsZero() {
 			datetime = time.Time{}
 		}
-		
+
 		// 清理标题中的HTML标签
 		title := cleanHTML(item.Title)
-		
+
 		// 创建搜索结果
 		result := model.SearchResult{
-			UniqueID:  uniqueID,
-			Title:     title,
-			Content:   fmt.Sprintf("类别: %s, 文件类型: %s, 大小: %s", item.Category, item.FileType, item.Size),
-			Datetime:  datetime,
-			Links:     []model.Link{link},
+			UniqueID: uniqueID,
+			Title:    title,
+			Content:  fmt.Sprintf("类别: %s, 文件类型: %s, 大小: %s", item.Category, item.FileType, item.Size),
+			Datetime: datetime,
+			Links:    []model.Link{link},
 		}
-		
+
 		results = append(results, result)
 	}
-	
+
 	return results
 }
 
 // determineLinkType 根据URL确定链接类型
 func (p *QuPanSouAsyncPlugin) determineLinkType(url string) string {
 	lowerURL := strings.ToLower(url)
-	
+
 	if strings.Contains(lowerURL, "pan.baidu.com") {
 		return "baidu"
 	} else if strings.Contains(lowerURL, "aliyundrive.com") || strings.Contains(lowerURL, "alipan.com") {
@@ -279,21 +279,21 @@ func (p *QuPanSouAsyncPlugin) determineLinkType(url string) string {
 func cleanHTML(html string) string {
 	// 一次性替换所有常见HTML标签
 	replacements := map[string]string{
-		"<em>": "",
-		"</em>": "",
-		"<b>": "",
-		"</b>": "",
-		"<strong>": "",
+		"<em>":      "",
+		"</em>":     "",
+		"<b>":       "",
+		"</b>":      "",
+		"<strong>":  "",
 		"</strong>": "",
-		"<i>": "",
-		"</i>": "",
+		"<i>":       "",
+		"</i>":      "",
 	}
-	
+
 	result := html
 	for tag, replacement := range replacements {
 		result = strings.Replace(result, tag, replacement, -1)
 	}
-	
+
 	// 移除多余的空格
 	return strings.TrimSpace(result)
 }
@@ -334,4 +334,4 @@ type QuPanSouItem struct {
 	Sort         int    `json:"sort"`
 	Top          int    `json:"top"`
 	Valid        int    `json:"valid"`
-} 
+}

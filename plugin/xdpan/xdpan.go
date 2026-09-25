@@ -205,14 +205,14 @@ func (p *XdpanPlugin) parseSearchResult(s *goquery.Selection) model.SearchResult
 	}
 
 	// 使用正则表达式提取时间和格式
-	timeRegex := regexp.MustCompile(`时间:\s*(\d{4}-\d{1,2}-\d{1,2})`)
+	timeRegex := xdpanRe1
 	if matches := timeRegex.FindStringSubmatch(bottomText); len(matches) > 1 {
 		shareTime = matches[1]
 	}
 
 	fileType = strings.TrimSpace(s.Find("template b").First().Text())
 	if fileType == "" {
-		formatRegex := regexp.MustCompile(`格式:\s*([^\s]+)`)
+		formatRegex := xdpanRe2
 		if matches := formatRegex.FindStringSubmatch(bottomText); len(matches) > 1 {
 			fileType = matches[1]
 		}
@@ -351,8 +351,8 @@ func (p *XdpanPlugin) extractDetailPageLinks(doc *goquery.Document) []model.Link
 
 		// 兼容 window.open 和 location.href 两种详情页跳转写法。
 		patterns := []*regexp.Regexp{
-			regexp.MustCompile(`window\.open\(\s*["']([^"']*pan\.baidu\.com[^"']*)["']`),
-			regexp.MustCompile(`(?:window\.)?location\.href\s*=\s*["']([^"']*pan\.baidu\.com[^"']*)["']`),
+			xdpanRe3,
+			xdpanRe4,
 		}
 		for _, pattern := range patterns {
 			matches := pattern.FindStringSubmatch(scriptContent)
@@ -389,7 +389,7 @@ func (p *XdpanPlugin) extractDetailPageLinks(doc *goquery.Document) []model.Link
 // extractDetailURLFromContent 从Content中提取详情页URL
 func (p *XdpanPlugin) extractDetailURLFromContent(content string) string {
 	// 查找详情URL模式
-	re := regexp.MustCompile(`详情:\s*(https?://[^\s]+)`)
+	re := xdpanRe5
 	matches := re.FindStringSubmatch(content)
 	if len(matches) > 1 {
 		return matches[1]
@@ -491,3 +491,13 @@ func init() {
 	p := NewXdpanPlugin()
 	plugin.RegisterGlobalPlugin(p)
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	xdpanRe1 = regexp.MustCompile(`时间:\s*(\d{4}-\d{1,2}-\d{1,2})`)
+	xdpanRe2 = regexp.MustCompile(`格式:\s*([^\s]+)`)
+	xdpanRe3 = regexp.MustCompile(`window\.open\(\s*["']([^"']*pan\.baidu\.com[^"']*)["']`)
+	xdpanRe4 = regexp.MustCompile(`(?:window\.)?location\.href\s*=\s*["']([^"']*pan\.baidu\.com[^"']*)["']`)
+	xdpanRe5 = regexp.MustCompile(`详情:\s*(https?://[^\s]+)`)
+)

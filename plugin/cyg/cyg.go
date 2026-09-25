@@ -443,7 +443,7 @@ func (p *CygPlugin) cleanHTML(htmlContent string) string {
 	text = strings.TrimSpace(text)
 
 	// 替换多个空白字符为单个空格
-	text = regexp.MustCompile(`\s+`).ReplaceAllString(text, " ")
+	text = cygRe1.ReplaceAllString(text, " ")
 
 	return text
 }
@@ -471,3 +471,9 @@ func (p *CygPlugin) parseDateTime(dateStr string) time.Time {
 	// 解析失败时返回当前时间
 	return time.Now()
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	cygRe1 = regexp.MustCompile(`\s+`)
+)

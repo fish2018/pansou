@@ -453,7 +453,7 @@ func cleanLingjiText(text string) string {
 	text = strings.ReplaceAll(text, "\u00a0", " ")
 	text = strings.ReplaceAll(text, "\n", " ")
 	text = strings.ReplaceAll(text, "\r", " ")
-	return strings.TrimSpace(regexp.MustCompile(`\s+`).ReplaceAllString(text, " "))
+	return strings.TrimSpace(lingjispRe1.ReplaceAllString(text, " "))
 }
 
 func parseLingjiTime(candidates ...string) time.Time {
@@ -477,3 +477,9 @@ func parseLingjiTime(candidates ...string) time.Time {
 
 	return time.Now()
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	lingjispRe1 = regexp.MustCompile(`\s+`)
+)

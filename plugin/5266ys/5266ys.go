@@ -313,7 +313,7 @@ func extractMagnets(doc *goquery.Document) []magnetItem {
 }
 
 func magnetHash(raw string) string {
-	match := regexp.MustCompile(`(?i)btih:([a-z0-9]+)`).FindStringSubmatch(raw)
+	match := re5266ysRe1.FindStringSubmatch(raw)
 	if len(match) > 1 {
 		return strings.ToLower(match[1])
 	}
@@ -379,3 +379,9 @@ func fnv32(value string) uint32 {
 	}
 	return hash
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	re5266ysRe1 = regexp.MustCompile(`(?i)btih:([a-z0-9]+)`)
+)

@@ -20,16 +20,16 @@ import (
 var (
 	// 详情页缓存
 	detailPageCache = sync.Map{}
-	
+
 	// 搜索结果缓存
 	searchResultCache = sync.Map{}
-	
+
 	// 链接类型判断缓存
 	linkTypeCache = sync.Map{}
-	
+
 	// 最后一次清理缓存的时间
 	lastCacheCleanTime = time.Now()
-	
+
 	// 缓存有效期
 	cacheTTL = 1 * time.Hour
 )
@@ -53,10 +53,10 @@ type cachedResponse struct {
 func init() {
 	// 注册插件
 	plugin.RegisterGlobalPlugin(NewHdr4kAsyncPlugin())
-	
+
 	// 启动缓存清理
 	go startCacheCleaner()
-	
+
 	// 初始化随机数种子
 	rand.Seed(time.Now().UnixNano())
 }
@@ -66,7 +66,7 @@ func startCacheCleaner() {
 	// 每小时清理一次缓存
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
-	
+
 	for range ticker.C {
 		// 清空所有缓存
 		detailPageCache = sync.Map{}
@@ -131,53 +131,53 @@ func (p *Hdr4kAsyncPlugin) doSearch(client *http.Client, keyword string, ext map
 			searchKeyword = titleEn
 		}
 	}
-	
+
 	// 构建POST请求数据
 	data := url.Values{}
 	data.Set("srchtxt", searchKeyword)
 	data.Set("searchsubmit", "yes")
-	
+
 	// 发送POST请求
 	req, err := http.NewRequest("POST", SearchURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
-	
+
 	// 设置请求头
 	req.Header.Set("User-Agent", getRandomUA())
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Referer", "https://www.4khdr.cn/")
-	
+
 	// 发送请求（带重试）
 	resp, err := p.doRequestWithRetry(client, req, MaxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	// 解析HTML
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("解析HTML失败: %w", err)
 	}
-	
+
 	// 提取搜索结果
 	var wg sync.WaitGroup
 	resultChan := make(chan model.SearchResult, 20)
 	errorChan := make(chan error, 20)
-	
+
 	// 创建信号量控制并发数
 	semaphore := make(chan struct{}, MaxConcurrency)
-	
+
 	// 预先收集所有需要处理的项
 	var items []*goquery.Selection
-	
+
 	// 将关键词转为小写，用于不区分大小写的比较
 	lowerKeyword := strings.ToLower(keyword)
-	
+
 	// 将关键词按空格分割，用于支持多关键词搜索
 	keywords := strings.Fields(lowerKeyword)
-	
+
 	// 预先过滤不包含关键词的帖子
 	doc.Find(".slst.mtw ul li.pbw").Each(func(i int, s *goquery.Selection) {
 		// 提取帖子ID
@@ -185,23 +185,23 @@ func (p *Hdr4kAsyncPlugin) doSearch(client *http.Client, keyword string, ext map
 		if !exists || postID == "" {
 			return
 		}
-		
+
 		// 提取标题
 		titleElement := s.Find("h3.xs3 a")
 		title := p.cleanHTML(titleElement.Text())
 		title = strings.TrimSpace(title)
 		lowerTitle := strings.ToLower(title)
-		
+
 		if title == "" {
 			return
 		}
-		
+
 		// 提取内容描述
 		contentElement := s.Find("p").First()
 		content := p.cleanHTML(contentElement.Text())
 		content = strings.TrimSpace(content)
 		lowerContent := strings.ToLower(content)
-		
+
 		// 检查每个关键词是否在标题或内容中
 		matched := true
 		for _, kw := range keywords {
@@ -211,41 +211,41 @@ func (p *Hdr4kAsyncPlugin) doSearch(client *http.Client, keyword string, ext map
 				break
 			}
 		}
-		
+
 		// 只添加匹配的帖子
 		if matched {
 			items = append(items, s)
 		}
 	})
-	
+
 	// 并发处理每个搜索结果项
 	for i, s := range items {
 		wg.Add(1)
-		
+
 		go func(index int, s *goquery.Selection) {
 			defer wg.Done()
-			
+
 			// 获取信号量
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			
+
 			// 提取帖子ID
 			postID, exists := s.Attr("id")
 			if !exists || postID == "" {
 				errorChan <- fmt.Errorf("无法提取帖子ID: index=%d", index)
 				return
 			}
-			
+
 			// 提取标题
 			titleElement := s.Find("h3.xs3 a")
 			title := p.cleanHTML(titleElement.Text())
 			title = strings.TrimSpace(title)
-			
+
 			// 提取内容描述
 			contentElement := s.Find("p").First()
 			content := p.cleanHTML(contentElement.Text())
 			content = strings.TrimSpace(content)
-			
+
 			// 提取日期时间
 			var datetime time.Time
 			dateElements := s.Find("p span")
@@ -258,7 +258,7 @@ func (p *Hdr4kAsyncPlugin) doSearch(client *http.Client, keyword string, ext map
 					}
 				}
 			}
-			
+
 			// 提取分类标签
 			var tags []string
 			categoryElement := s.Find("p span a.xi1")
@@ -268,51 +268,51 @@ func (p *Hdr4kAsyncPlugin) doSearch(client *http.Client, keyword string, ext map
 					tags = append(tags, category)
 				}
 			}
-			
+
 			// 获取详情页链接，并尝试获取下载链接
 			links, detailContent, err := p.getLinksFromDetail(client, postID)
 			if err != nil {
 				// 如果获取链接失败，仍然返回结果，但没有链接
 				links = []model.Link{}
 			}
-			
+
 			// 如果从详情页获取到了更详细的内容，使用详情页的内容
 			if detailContent != "" {
 				content = detailContent
 			}
-			
+
 			// 检查是否是无意义的求片帖（没有实际资源的求片帖）
 			if p.isEmptyRequestPost(title, links) {
 				return
 			}
-			
+
 			// 创建搜索结果
 			result := model.SearchResult{
-				UniqueID:  fmt.Sprintf("hdr4k-%s", postID),
-				Title:     title,
-				Content:   content,
-				Datetime:  datetime,
-				Links:     links,
-				Tags:      tags,
+				UniqueID: fmt.Sprintf("hdr4k-%s", postID),
+				Title:    title,
+				Content:  content,
+				Datetime: datetime,
+				Links:    links,
+				Tags:     tags,
 			}
-			
+
 			resultChan <- result
 		}(i, s)
 	}
-	
+
 	// 等待所有goroutine完成
 	go func() {
 		wg.Wait()
 		close(resultChan)
 		close(errorChan)
 	}()
-	
+
 	// 收集结果
 	var results []model.SearchResult
 	for result := range resultChan {
 		results = append(results, result)
 	}
-	
+
 	// 由于我们已经在前面过滤了不匹配的帖子，这里不需要再次过滤
 	return results, nil
 }
@@ -320,12 +320,12 @@ func (p *Hdr4kAsyncPlugin) doSearch(client *http.Client, keyword string, ext map
 // isEmptyRequestPost 判断是否是没有实际资源的求片帖子
 func (p *Hdr4kAsyncPlugin) isEmptyRequestPost(title string, links []model.Link) bool {
 	lowerTitle := strings.ToLower(title)
-	
+
 	// 如果有实际的下载链接，不过滤
 	if len(links) > 0 {
 		return false
 	}
-	
+
 	// 只过滤明确的无资源求片关键词
 	emptyRequestKeywords := []string{
 		"求片",
@@ -334,29 +334,29 @@ func (p *Hdr4kAsyncPlugin) isEmptyRequestPost(title string, links []model.Link) 
 		"跪求",
 		"求资源",
 	}
-	
+
 	for _, keyword := range emptyRequestKeywords {
 		if strings.Contains(lowerTitle, keyword) {
 			return true
 		}
 	}
-	
+
 	// 对于求网盘的帖子，如果没有链接才过滤
 	cloudRequestKeywords := []string{
-		"求阿里云盘", 
+		"求阿里云盘",
 		"求百度网盘",
 		"求夸克网盘",
 		"求迅雷网盘",
 		"求天翼云盘",
 	}
-	
+
 	for _, keyword := range cloudRequestKeywords {
 		if strings.Contains(lowerTitle, keyword) {
 			// 只有当没有实际链接时才过滤
 			return len(links) == 0
 		}
 	}
-	
+
 	// 检查是否以"求"开头，但要排除正常的电影名称
 	if strings.HasPrefix(lowerTitle, "求") {
 		// 如果标题很短且以"求"开头，且没有链接，很可能是求片帖
@@ -364,7 +364,7 @@ func (p *Hdr4kAsyncPlugin) isEmptyRequestPost(title string, links []model.Link) 
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -372,7 +372,7 @@ func (p *Hdr4kAsyncPlugin) isEmptyRequestPost(title string, links []model.Link) 
 func (p *Hdr4kAsyncPlugin) getLinksFromDetail(client *http.Client, postID string) ([]model.Link, string, error) {
 	// 生成缓存键
 	cacheKey := fmt.Sprintf("detail:%s", postID)
-	
+
 	// 检查缓存中是否已有结果
 	if cachedData, ok := detailPageCache.Load(cacheKey); ok {
 		// 检查缓存是否过期
@@ -385,50 +385,50 @@ func (p *Hdr4kAsyncPlugin) getLinksFromDetail(client *http.Client, postID string
 			return data.Links, data.Content, nil
 		}
 	}
-	
+
 	// 构建详情页URL
 	detailURL := fmt.Sprintf(ThreadURLPattern, postID)
-	
+
 	// 发送GET请求获取详情页
 	req, err := http.NewRequest("GET", detailURL, nil)
 	if err != nil {
 		return []model.Link{}, "", fmt.Errorf("创建请求失败: %w", err)
 	}
-	
+
 	// 设置请求头
 	req.Header.Set("User-Agent", getRandomUA())
 	req.Header.Set("Referer", "https://www.4khdr.cn/")
-	
+
 	// 发送请求（带重试）
 	resp, err := p.doRequestWithRetry(client, req, MaxRetries)
 	if err != nil {
 		return []model.Link{}, "", fmt.Errorf("请求失败: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	// 解析HTML
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		return []model.Link{}, "", fmt.Errorf("解析HTML失败: %w", err)
 	}
-	
+
 	// 提取详情页内容
 	var links []model.Link
 	var detailContent string
-	
+
 	// 查找帖子内容区域和回复区域
 	contentSelectors := []string{
-		".t_f",           // 主帖内容
+		".t_f",               // 主帖内容
 		"[id^=postmessage_]", // 回复内容（以postmessage_开头的id）
 	}
-	
+
 	for _, selector := range contentSelectors {
 		doc.Find(selector).Each(func(i int, contentArea *goquery.Selection) {
 			// 如果还没有提取到详细内容，提取剧情简介等
 			if detailContent == "" {
 				content := p.cleanHTML(contentArea.Text())
 				content = strings.TrimSpace(content)
-				
+
 				// 提取前500个字符作为详细描述
 				if len(content) > 500 {
 					detailContent = content[:500] + "..."
@@ -436,14 +436,14 @@ func (p *Hdr4kAsyncPlugin) getLinksFromDetail(client *http.Client, postID string
 					detailContent = content
 				}
 			}
-			
+
 			// 提取下载链接
 			contentArea.Find("a").Each(func(j int, linkElement *goquery.Selection) {
 				href, exists := linkElement.Attr("href")
 				if !exists || href == "" {
 					return
 				}
-				
+
 				// 检查是否是网盘链接
 				linkType := p.determineLinkType(href, "")
 				if linkType != "others" {
@@ -455,7 +455,7 @@ func (p *Hdr4kAsyncPlugin) getLinksFromDetail(client *http.Client, postID string
 							break
 						}
 					}
-					
+
 					if !exists {
 						link := model.Link{
 							URL:      href,
@@ -468,7 +468,7 @@ func (p *Hdr4kAsyncPlugin) getLinksFromDetail(client *http.Client, postID string
 			})
 		})
 	}
-	
+
 	// 缓存结果
 	cacheData := struct {
 		Links   []model.Link
@@ -477,12 +477,12 @@ func (p *Hdr4kAsyncPlugin) getLinksFromDetail(client *http.Client, postID string
 		Links:   links,
 		Content: detailContent,
 	}
-	
+
 	detailPageCache.Store(cacheKey, cachedResponse{
 		data:      cacheData,
 		timestamp: time.Now(),
 	})
-	
+
 	return links, detailContent, nil
 }
 
@@ -490,17 +490,17 @@ func (p *Hdr4kAsyncPlugin) getLinksFromDetail(client *http.Client, postID string
 func (p *Hdr4kAsyncPlugin) determineLinkType(url, name string) string {
 	// 生成缓存键
 	cacheKey := fmt.Sprintf("%s:%s", url, name)
-	
+
 	// 检查缓存
 	if cachedType, ok := linkTypeCache.Load(cacheKey); ok {
 		return cachedType.(string)
 	}
-	
+
 	lowerURL := strings.ToLower(url)
 	lowerName := strings.ToLower(name)
-	
+
 	var linkType string
-	
+
 	// 根据URL判断
 	switch {
 	case strings.Contains(lowerURL, "pan.quark.cn"):
@@ -566,10 +566,10 @@ func (p *Hdr4kAsyncPlugin) determineLinkType(url, name string) string {
 			linkType = "others"
 		}
 	}
-	
+
 	// 缓存结果
 	linkTypeCache.Store(cacheKey, linkType)
-	
+
 	return linkType
 }
 
@@ -577,7 +577,7 @@ func (p *Hdr4kAsyncPlugin) determineLinkType(url, name string) string {
 func (p *Hdr4kAsyncPlugin) doRequestWithRetry(client *http.Client, req *http.Request, maxRetries int) (*http.Response, error) {
 	var resp *http.Response
 	var err error
-	
+
 	for i := 0; i <= maxRetries; i++ {
 		// 如果不是第一次尝试，等待一段时间
 		if i > 0 {
@@ -588,19 +588,19 @@ func (p *Hdr4kAsyncPlugin) doRequestWithRetry(client *http.Client, req *http.Req
 			}
 			time.Sleep(backoff)
 		}
-		
+
 		// 克隆请求，避免重用同一个请求对象
 		reqClone := req.Clone(req.Context())
-		
+
 		// 发送请求
 		resp, err = client.Do(reqClone)
-		
+
 		// 如果请求成功或者是不可重试的错误，则退出循环
 		if err == nil || !p.isRetriableError(err) {
 			break
 		}
 	}
-	
+
 	return resp, err
 }
 
@@ -609,17 +609,17 @@ func (p *Hdr4kAsyncPlugin) isRetriableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	// 判断是否是网络错误或超时错误
 	if netErr, ok := err.(net.Error); ok {
 		return netErr.Timeout() || netErr.Temporary()
 	}
-	
+
 	// 其他可能需要重试的错误类型
 	errStr := err.Error()
 	return strings.Contains(errStr, "connection refused") ||
-		   strings.Contains(errStr, "connection reset") ||
-		   strings.Contains(errStr, "EOF")
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "EOF")
 }
 
 // parseDateTime 解析日期时间字符串
@@ -631,13 +631,13 @@ func (p *Hdr4kAsyncPlugin) parseDateTime(dateStr string) (time.Time, error) {
 		"2006-1-2 15:04:05",
 		"2006-01-02 15:04",
 	}
-	
+
 	for _, layout := range layouts {
 		if t, err := time.Parse(layout, dateStr); err == nil {
 			return t, nil
 		}
 	}
-	
+
 	return time.Time{}, fmt.Errorf("无法解析日期时间: %s", dateStr)
 }
 
@@ -645,38 +645,45 @@ func (p *Hdr4kAsyncPlugin) parseDateTime(dateStr string) (time.Time, error) {
 func (p *Hdr4kAsyncPlugin) cleanHTML(html string) string {
 	// 替换常见HTML标签和实体
 	replacements := map[string]string{
-		"<strong>":                     "",
-		"</strong>":                    "",
-		"<font color=\"#ff0000\">":     "",
-		"</font>":                      "",
-		"<em>":                         "",
-		"</em>":                        "",
-		"<b>":                          "",
-		"</b>":                         "",
-		"<br>":                         "\n",
-		"<br/>":                        "\n",
-		"<br />":                       "\n",
-		"&nbsp;":                       " ",
-		"&hellip;":                     "...",
-		"&amp;":                        "&",
-		"&lt;":                         "<",
-		"&gt;":                         ">",
-		"&quot;":                       "\"",
-		"&#039;":                       "'",
+		"<strong>":                 "",
+		"</strong>":                "",
+		"<font color=\"#ff0000\">": "",
+		"</font>":                  "",
+		"<em>":                     "",
+		"</em>":                    "",
+		"<b>":                      "",
+		"</b>":                     "",
+		"<br>":                     "\n",
+		"<br/>":                    "\n",
+		"<br />":                   "\n",
+		"&nbsp;":                   " ",
+		"&hellip;":                 "...",
+		"&amp;":                    "&",
+		"&lt;":                     "<",
+		"&gt;":                     ">",
+		"&quot;":                   "\"",
+		"&#039;":                   "'",
 	}
-	
+
 	result := html
 	for old, new := range replacements {
 		result = strings.ReplaceAll(result, old, new)
 	}
-	
+
 	// 移除其他HTML标签（简单的正则表达式）
-	re := regexp.MustCompile(`<[^>]*>`)
+	re := hdr4kRe1
 	result = re.ReplaceAllString(result, "")
-	
+
 	// 清理多余的空白字符
-	re = regexp.MustCompile(`\s+`)
+	re = hdr4kRe2
 	result = re.ReplaceAllString(result, " ")
-	
+
 	return strings.TrimSpace(result)
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	hdr4kRe1 = regexp.MustCompile(`<[^>]*>`)
+	hdr4kRe2 = regexp.MustCompile(`\s+`)
+)

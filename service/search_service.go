@@ -668,7 +668,7 @@ func extractLinkTitlePairsWithNewlines(content string) map[string]string {
 	lines := strings.Split(content, "\n")
 
 	// 链接正则表达式
-	linkRegex := regexp.MustCompile(`https?://[^\s"']+`)
+	linkRegex := search_serviceRe1
 
 	// 第一遍扫描：识别标题-链接对
 	var lastTitle string
@@ -889,7 +889,7 @@ func extractTitleBeforeLink(text string) string {
 	}
 
 	// 尝试匹配常见的标题模式
-	titlePattern := regexp.MustCompile(`([^链地资网\s]+?(?:\([^)]+\))?(?:\s*\d+K)?(?:\s*臻彩)?(?:\s*MAX)?(?:\s*HDR)?(?:\s*更(?:新)?\d+集))$`)
+	titlePattern := search_serviceRe2
 	matches := titlePattern.FindStringSubmatch(text)
 	if len(matches) > 1 {
 		return cleanTitle(matches[1])
@@ -998,7 +998,7 @@ func cleanTitle(title string) string {
 	title = strings.TrimPrefix(title, "片名:")
 
 	// 移除表情符号和特殊字符
-	emojiRegex := regexp.MustCompile(`[\p{So}\p{Sk}]`)
+	emojiRegex := search_serviceRe3
 	title = emojiRegex.ReplaceAllString(title, "")
 
 	return strings.TrimSpace(title)
@@ -1282,52 +1282,40 @@ func (s *SearchService) searchTG(keyword string, channels []string, forceRefresh
 		})
 	}
 
-	// 批任务软截止：到点先返回已收集结果，不为了个别慢频道把整个兜底请求
-	// 拖到单请求超时；未完成的频道随后由后台补齐并覆盖缓存。
+	// 批任务收集窗口：默认跟随单频道请求的超时（即"等最后一个请求结束"），
+	// 保持项目原有行为；TG_CHANNEL_TIMEOUT_SECONDS 只在实测确认不丢结果时才收紧。
 	batchTimeout := config.AppConfig.TGChannelTimeout
 	if batchTimeout <= 0 {
-		batchTimeout = 3 * time.Second
+		batchTimeout = config.AppConfig.TGChannelRequestTimeout
+	}
+	if batchTimeout <= 0 {
+		batchTimeout = 4 * time.Second
 	}
 	taskResults := pool.ExecuteBatchWithTimeout(tasks, len(channels), batchTimeout)
 
 	// 合并所有频道的结果，并统计成功、失败与超时未完成的数量
-	succeeded := 0
-	failed := 0
-	returned := make(map[string]bool, len(taskResults))
-	missing := make([]string, 0)
+	outcome := newBatchSearchOutcome(len(channels))
 
 	for _, result := range taskResults {
 		channelResult, ok := result.(*tgChannelResult)
 		if !ok {
 			continue
 		}
-		returned[channelResult.channel] = true
-		if channelResult.err != nil {
-			failed++
-			continue
-		}
-		succeeded++
-		results = append(results, channelResult.results...)
-	}
-
-	for _, channel := range channels {
-		if !returned[channel] {
-			missing = append(missing, channel)
+		outcome.observe(channelResult.channel, channelResult.err)
+		if channelResult.err == nil {
+			results = append(results, channelResult.results...)
 		}
 	}
 
-	// 缓存写入策略：
-	// - 没有任何频道成功：不写，避免空结果在缓存周期内被反复命中；
-	// - 有频道超时未完成：只写短TTL，让后续请求能较快重新拿到完整结果；
-	// - 其余情况：写正常TTL，并由后台补齐任务覆盖为完整结果。
+	outcome.finalize(channels)
+	outcome.logSummary("searchTG", keyword)
+
+	// 缓存写入按完整度分流：全失败不写、有超时写短TTL、其余写正常TTL。
 	if cacheInitialized && config.AppConfig.CacheEnabled {
-		if succeeded > 0 {
-			ttl := time.Duration(config.AppConfig.CacheTTLMinutes) * time.Minute
-			if len(missing) > 0 {
-				ttl = time.Duration(config.AppConfig.CachePartialTTLMinutes) * time.Minute
-				fmt.Printf("[searchTG] %s：%d/%d 个频道超时未完成，结果按 %.0f 分钟短缓存写入\n",
-					keyword, len(missing), len(channels), ttl.Minutes())
-			}
+		fullTTL := time.Duration(config.AppConfig.CacheTTLMinutes) * time.Minute
+		partialTTL := time.Duration(config.AppConfig.CachePartialTTLMinutes) * time.Minute
+
+		if ttl, write := outcome.cacheTTL(fullTTL, partialTTL); write {
 			go func(res []model.SearchResult, cacheTTL time.Duration) {
 				// 使用增强版缓存
 				if enhancedTwoLevelCache != nil {
@@ -1338,29 +1326,22 @@ func (s *SearchService) searchTG(keyword string, channels []string, forceRefresh
 					enhancedTwoLevelCache.Set(cacheKey, data, cacheTTL)
 				}
 			}(results, ttl)
-		} else {
-			fmt.Printf("[searchTG] %s：%d 个频道全部失败（失败 %d 个），跳过缓存写入\n",
-				keyword, len(channels), failed)
 		}
 	}
 
 	// 后台补齐超时未完成的频道，用完整结果覆盖缓存
-	if len(missing) > 0 && succeeded > 0 && config.AppConfig.TGBackfillEnabled &&
+	if outcome.shouldBackfill(config.AppConfig.TGBackfillEnabled) &&
 		cacheInitialized && config.AppConfig.CacheEnabled {
-		go s.backfillTGChannels(cacheKey, keyword, missing, len(channels), results)
+		go s.backfillTGChannels(cacheKey, keyword, outcome.missingIDs(), len(channels), results)
 	}
 
 	return results, nil
 }
 
 // backfillTGChannels 在后台补搜批任务超时未返回的频道，并把合并后的完整结果写入缓存。
-// 只在缺失比例不高时触发：缺失过多说明上游整体变慢，补齐只会把请求量再放大一倍。
+// 触发条件（缺失比例、开关）由 batchSearchOutcome.shouldBackfill 统一判断。
 func (s *SearchService) backfillTGChannels(cacheKey, keyword string, missing []string, total int, collected []model.SearchResult) {
-	if len(missing) == 0 || total == 0 {
-		return
-	}
-	if len(missing)*3 > total {
-		fmt.Printf("[searchTG] %s：超时频道占比过高（%d/%d），跳过后台补齐\n", keyword, len(missing), total)
+	if len(missing) == 0 {
 		return
 	}
 
@@ -1519,6 +1500,7 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 	tasks := make([]pool.Task, 0, len(availablePlugins))
 	for _, p := range availablePlugins {
 		plugin := p // 创建副本，避免闭包问题
+		pluginName := plugin.Name()
 		tasks = append(tasks, func(ctx context.Context) interface{} {
 			// 设置主缓存键和当前关键词
 			plugin.SetMainCacheKey(cacheKey)
@@ -1527,57 +1509,184 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 			// 插件的Search方法已经负责异步调度、插件缓存和后台刷新。
 			// 这里直接调用，避免再包一层AsyncSearch导致嵌套等待和重复超时。
 			// 批任务的超时时间通过 ext 传给插件，插件基类据此在到点后立刻返回。
-			results, err := plugin.Search(keyword, pluginExtWithContext(ext, ctx))
+			pluginResults, err := plugin.Search(keyword, pluginExtWithContext(ext, ctx))
 
-			if err != nil {
-				return nil
-			}
-			return results
+			return &pluginBatchResult{name: pluginName, results: pluginResults, err: err}
 		})
 	}
 
-	// 执行搜索任务并获取结果
-	results := pool.ExecuteBatchWithTimeout(tasks, concurrency, config.AppConfig.PluginTimeout)
+	// 插件批任务的软截止：默认沿用 PluginTimeout 语义（PLUGIN_BATCH_TIMEOUT_SECONDS
+	// 为 0 时），避免截掉磁力搜索这类本身较慢的插件结果。
+	batchTimeout := config.AppConfig.PluginBatchTimeout
+	if batchTimeout <= 0 {
+		batchTimeout = config.AppConfig.PluginTimeout
+	}
+	if batchTimeout <= 0 {
+		batchTimeout = 30 * time.Second
+	}
+	results := pool.ExecuteBatchWithTimeout(tasks, concurrency, batchTimeout)
 
-	// 合并所有插件的结果，过滤掉无链接的结果
+	// 合并所有插件的结果，过滤掉无链接的结果，并统计完整度
 	var allResults []model.SearchResult
+	outcome := newBatchSearchOutcome(len(availablePlugins))
+	submitted := make([]string, 0, len(availablePlugins))
+
+	for _, p := range availablePlugins {
+		submitted = append(submitted, p.Name())
+	}
+
 	for _, result := range results {
-		if result != nil {
-			pluginResults := result.([]model.SearchResult)
-			// 只添加有链接的结果到最终结果中
-			for _, pluginResult := range pluginResults {
-				if len(pluginResult.Links) > 0 {
-					allResults = append(allResults, pluginResult)
-				}
+		pluginResult, ok := result.(*pluginBatchResult)
+		if !ok {
+			continue
+		}
+		outcome.observe(pluginResult.name, pluginResult.err)
+		if pluginResult.err != nil {
+			continue
+		}
+		// 只添加有链接的结果到最终结果中
+		for _, r := range pluginResult.results {
+			if len(r.Links) > 0 {
+				allResults = append(allResults, r)
 			}
 		}
 	}
 
-	// 恢复主程序缓存更新：确保最终合并结果被正确缓存
+	outcome.finalize(submitted)
+	outcome.logSummary("searchPlugins", keyword)
+
+	// 缓存写入按完整度分流，与频道路径同一套判定：
+	// 全失败不写、有插件超时写短TTL、其余写正常TTL。
 	if cacheInitialized && config.AppConfig.CacheEnabled {
-		go func(res []model.SearchResult, kw string, key string) {
-			ttl := time.Duration(config.AppConfig.CacheTTLMinutes) * time.Minute
+		fullTTL := time.Duration(config.AppConfig.CacheTTLMinutes) * time.Minute
+		partialTTL := time.Duration(config.AppConfig.CachePartialTTLMinutes) * time.Minute
 
-			// 使用增强版缓存，确保与异步插件使用相同的序列化器
-			if enhancedTwoLevelCache != nil {
-				data, err := enhancedTwoLevelCache.GetSerializer().Serialize(res)
-				if err != nil {
-					fmt.Printf("[主程序] 缓存序列化失败: %s | 错误: %v\n", key, err)
-					return
-				}
+		if ttl, write := outcome.cacheTTL(fullTTL, partialTTL); write {
+			go func(res []model.SearchResult, kw string, key string, cacheTTL time.Duration) {
+				// 使用增强版缓存，确保与异步插件使用相同的序列化器
+				if enhancedTwoLevelCache != nil {
+					data, err := enhancedTwoLevelCache.GetSerializer().Serialize(res)
+					if err != nil {
+						fmt.Printf("[主程序] 缓存序列化失败: %s | 错误: %v\n", key, err)
+						return
+					}
 
-				// 主程序最后更新，覆盖可能有问题的异步插件缓存
-				// 使用同步方式确保数据写入磁盘
-				enhancedTwoLevelCache.SetBothLevels(key, data, ttl)
-				if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
-					fmt.Printf("[主程序] 缓存更新完成: %s | 结果数: %d",
-						key, len(res))
+					// 主程序最后更新，覆盖可能有问题的异步插件缓存
+					// 使用同步方式确保数据写入磁盘
+					enhancedTwoLevelCache.SetBothLevels(key, data, cacheTTL)
+					if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
+						fmt.Printf("[主程序] 缓存更新完成: %s | 结果数: %d | TTL: %.0f分钟",
+							key, len(res), cacheTTL.Minutes())
+					}
 				}
-			}
-		}(allResults, keyword, cacheKey)
+			}(allResults, keyword, cacheKey, ttl)
+		}
+	}
+
+	// 后台补齐超时未返回的插件，用完整结果覆盖缓存
+	if outcome.shouldBackfill(config.AppConfig.PluginBackfillEnabled) &&
+		cacheInitialized && config.AppConfig.CacheEnabled {
+		go s.backfillPlugins(cacheKey, keyword, outcome.missingIDs(), allResults, ext, concurrency)
 	}
 
 	return allResults, nil
+}
+
+// pluginBatchResult 携带插件名的批任务结果，理由同 tgChannelResult：
+// 池按完成顺序返回结果，必须由任务自己带回标识才能准确统计完整度。
+type pluginBatchResult struct {
+	name    string
+	results []model.SearchResult
+	err     error
+}
+
+// backfillPlugins 在后台补搜批任务超时未返回的插件，并把合并后的结果写入缓存。
+// 触发条件（缺失比例、开关）由 batchSearchOutcome.shouldBackfill 统一判断。
+func (s *SearchService) backfillPlugins(cacheKey, keyword string, missing []string, collected []model.SearchResult, ext map[string]interface{}, concurrency int) {
+	if len(missing) == 0 || s.pluginManager == nil {
+		return
+	}
+
+	pluginMap := make(map[string]bool, len(missing))
+	for _, name := range missing {
+		pluginMap[strings.ToLower(name)] = true
+	}
+
+	var availablePlugins []plugin.AsyncSearchPlugin
+	for _, p := range s.pluginManager.GetPlugins() {
+		if pluginMap[strings.ToLower(p.Name())] {
+			availablePlugins = append(availablePlugins, p)
+		}
+	}
+	if len(availablePlugins) == 0 {
+		return
+	}
+
+	// 补齐批次独立预算，取批截止与插件自身响应超时的较大者，给慢插件留出生路。
+	batchTimeout := config.AppConfig.PluginTimeout
+	if batchTimeout <= 0 {
+		batchTimeout = 30 * time.Second
+	}
+
+	tasks := make([]pool.Task, 0, len(availablePlugins))
+	for _, p := range availablePlugins {
+		plugin := p
+		tasks = append(tasks, func(ctx context.Context) interface{} {
+			plugin.SetMainCacheKey(cacheKey)
+			plugin.SetCurrentKeyword(keyword)
+			pluginResults, err := plugin.Search(keyword, pluginExtWithContext(ext, ctx))
+			if err != nil {
+				return nil
+			}
+			return pluginResults
+		})
+	}
+
+	if concurrency < len(availablePlugins) {
+		concurrency = len(availablePlugins)
+	}
+	backfillResults := pool.ExecuteBatchWithTimeout(tasks, concurrency, batchTimeout)
+
+	added := 0
+	extra := make([][]model.SearchResult, 0, len(backfillResults))
+	for _, result := range backfillResults {
+		pluginResults, ok := result.([]model.SearchResult)
+		if !ok {
+			continue
+		}
+		added++
+		extra = append(extra, pluginResults)
+	}
+	if added == 0 {
+		return
+	}
+
+	merged := mergeResults([][]model.SearchResult{collected, flattenPluginResults(extra)})
+	if enhancedTwoLevelCache == nil {
+		return
+	}
+
+	ttl := time.Duration(config.AppConfig.CacheTTLMinutes) * time.Minute
+	data, err := enhancedTwoLevelCache.GetSerializer().Serialize(merged)
+	if err != nil {
+		return
+	}
+	enhancedTwoLevelCache.SetBothLevels(cacheKey, data, ttl)
+	fmt.Printf("[searchPlugins] %s：后台补齐 %d/%d 个超时插件，缓存已更新（%d 条）\n",
+		keyword, added, len(missing), len(merged))
+}
+
+// flattenPluginResults 把多个插件的结果摊平，并保持"只保留有链接的结果"的既有口径。
+func flattenPluginResults(groups [][]model.SearchResult) []model.SearchResult {
+	out := make([]model.SearchResult, 0)
+	for _, group := range groups {
+		for _, r := range group {
+			if len(r.Links) > 0 {
+				out = append(out, r)
+			}
+		}
+	}
+	return out
 }
 
 // GetPluginManager 获取插件管理器
@@ -1700,3 +1809,11 @@ func calculateTimeScore(datetime time.Time) float64 {
 		return 20 // 1年以上
 	}
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	search_serviceRe1 = regexp.MustCompile(`https?://[^\s"']+`)
+	search_serviceRe2 = regexp.MustCompile(`([^链地资网\s]+?(?:\([^)]+\))?(?:\s*\d+K)?(?:\s*臻彩)?(?:\s*MAX)?(?:\s*HDR)?(?:\s*更(?:新)?\d+集))$`)
+	search_serviceRe3 = regexp.MustCompile(`[\p{So}\p{Sk}]`)
+)

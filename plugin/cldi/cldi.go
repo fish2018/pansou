@@ -240,7 +240,7 @@ func (p *CldiPlugin) extractSearchResults(doc *goquery.Document) []model.SearchR
 				WorkTitle: title,
 			}},
 		}
-		if dateMatch := regexp.MustCompile(`添加时间[:：]\s*(\d{4}-\d{2}-\d{2})`).FindStringSubmatch(content); len(dateMatch) > 1 {
+		if dateMatch := cldiRe1.FindStringSubmatch(content); len(dateMatch) > 1 {
 			if parsed, err := time.ParseInLocation("2006-01-02", dateMatch[1], time.Local); err == nil {
 				result.Datetime = parsed
 			}
@@ -383,7 +383,14 @@ func (p *CldiPlugin) cleanTitle(title string) string {
 
 	// 清理多余的空格
 	cleaned = strings.TrimSpace(cleaned)
-	cleaned = regexp.MustCompile(`\s+`).ReplaceAllString(cleaned, " ")
+	cleaned = cldiRe2.ReplaceAllString(cleaned, " ")
 
 	return cleaned
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	cldiRe1 = regexp.MustCompile(`添加时间[:：]\s*(\d{4}-\d{2}-\d{2})`)
+	cldiRe2 = regexp.MustCompile(`\s+`)
+)

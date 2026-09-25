@@ -52,9 +52,9 @@ type APIResponse struct {
 type DataItem struct {
 	ID          string     `json:"id"`
 	Name        string     `json:"name"`
-	URL         string     `json:"url"`          // 加密的网盘链接
+	URL         string     `json:"url"` // 加密的网盘链接
 	Type        string     `json:"type"`
-	From        string     `json:"from"`         // 网盘类型: quark/xunlei/aliyun/baidu
+	From        string     `json:"from"` // 网盘类型: quark/xunlei/aliyun/baidu
 	Content     *string    `json:"content"`
 	GmtCreate   string     `json:"gmtCreate"`
 	GmtShare    string     `json:"gmtShare"`
@@ -139,21 +139,21 @@ func (p *SDSOPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 
 	totalTasks := len(SupportedCloudTypes) * pagesPerType
 	if DebugLog {
-		fmt.Printf("[%s] 将分别搜索 %d 种网盘类型，每种 %d 页，总计 %d 个并发任务\n", 
+		fmt.Printf("[%s] 将分别搜索 %d 种网盘类型，每种 %d 页，总计 %d 个并发任务\n",
 			p.Name(), len(SupportedCloudTypes), pagesPerType, totalTasks)
 	}
 
 	// 2. 并发请求多个网盘类型的多页数据
 	var wg sync.WaitGroup
 	resultsChan := make(chan PageResult, totalTasks)
-	
+
 	// 启动并发任务：遍历网盘类型和页数
 	for _, cloudType := range SupportedCloudTypes {
 		for pageNo := 1; pageNo <= pagesPerType; pageNo++ {
 			wg.Add(1)
 			go func(fromType string, page int) {
 				defer wg.Done()
-				
+
 				results, err := p.fetchSinglePageWithType(client, keyword, page, fromType)
 				resultsChan <- PageResult{
 					pageNo:   page,
@@ -176,7 +176,7 @@ func (p *SDSOPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 	successTasks := 0
 	errorTasks := 0
 	resultsByType := make(map[string]int) // 统计各网盘类型的结果数
-	
+
 	for pageResult := range resultsChan {
 		if pageResult.err != nil {
 			errorTasks++
@@ -185,7 +185,7 @@ func (p *SDSOPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 			}
 			continue
 		}
-		
+
 		successTasks++
 		allResults = append(allResults, pageResult.results...)
 		resultsByType[pageResult.fromType] += len(pageResult.results)
@@ -195,7 +195,7 @@ func (p *SDSOPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 	}
 
 	if DebugLog {
-		fmt.Printf("[%s] 分类搜索完成: 成功%d任务, 失败%d任务, 总结果%d个\n", 
+		fmt.Printf("[%s] 分类搜索完成: 成功%d任务, 失败%d任务, 总结果%d个\n",
 			p.Name(), successTasks, errorTasks, len(allResults))
 		for cloudType, count := range resultsByType {
 			fmt.Printf("[%s]   - %s网盘: %d个结果\n", p.Name(), cloudType, count)
@@ -210,9 +210,9 @@ func (p *SDSOPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 	// 5. 关键词过滤
 	beforeFilterCount := len(allResults)
 	filteredResults := plugin.FilterResultsByKeyword(allResults, keyword)
-	
+
 	if DebugLog {
-		fmt.Printf("[%s] 关键词过滤: 过滤前%d项 -> 过滤后%d项\n", 
+		fmt.Printf("[%s] 关键词过滤: 过滤前%d项 -> 过滤后%d项\n",
 			p.Name(), beforeFilterCount, len(filteredResults))
 	}
 
@@ -222,7 +222,7 @@ func (p *SDSOPlugin) searchImpl(client *http.Client, keyword string, ext map[str
 // fetchSinglePageWithType 获取指定网盘类型的单页数据
 func (p *SDSOPlugin) fetchSinglePageWithType(client *http.Client, keyword string, pageNo int, fromType string) ([]model.SearchResult, error) {
 	// 1. 构建搜索URL，添加from参数指定网盘类型
-	searchURL := fmt.Sprintf("https://sdso.top/api/sd/search?name=%s&pageNo=%d&from=%s", 
+	searchURL := fmt.Sprintf("https://sdso.top/api/sd/search?name=%s&pageNo=%d&from=%s",
 		url.QueryEscape(keyword), pageNo, fromType)
 	if DebugLog {
 		fmt.Printf("[%s] 请求%s网盘第%d页: %s\n", p.Name(), fromType, pageNo, searchURL)
@@ -276,7 +276,7 @@ func (p *SDSOPlugin) fetchSinglePageWithType(client *http.Client, keyword string
 	results := make([]model.SearchResult, 0, len(apiResp.Data.List))
 	processedCount := 0
 	skippedCount := 0
-	
+
 	for i, item := range apiResp.Data.List {
 		// 解密网盘链接
 		decryptedURL, err := DecryptURL(item.URL)
@@ -322,13 +322,13 @@ func (p *SDSOPlugin) fetchSinglePageWithType(client *http.Client, keyword string
 
 		// 构建搜索结果，UniqueID包含网盘类型和页码避免重复
 		result := model.SearchResult{
-			UniqueID:  fmt.Sprintf("%s-%s-%s-%d", p.Name(), item.ID, fromType, pageNo),
-			Title:     title,
-			Content:   fmt.Sprintf("分享者: %s | 文件数量: %d | 网盘类型: %s", item.CreatorName, item.FileCount, fromType),
-			Links:     []model.Link{link},
-			Tags:      []string{item.From, item.Type},
-			Channel:   "", // 插件搜索结果必须为空字符串
-			Datetime:  datetime,
+			UniqueID: fmt.Sprintf("%s-%s-%s-%d", p.Name(), item.ID, fromType, pageNo),
+			Title:    title,
+			Content:  fmt.Sprintf("分享者: %s | 文件数量: %d | 网盘类型: %s", item.CreatorName, item.FileCount, fromType),
+			Links:    []model.Link{link},
+			Tags:     []string{item.From, item.Type},
+			Channel:  "", // 插件搜索结果必须为空字符串
+			Datetime: datetime,
 		}
 
 		results = append(results, result)
@@ -336,7 +336,7 @@ func (p *SDSOPlugin) fetchSinglePageWithType(client *http.Client, keyword string
 	}
 
 	if DebugLog {
-		fmt.Printf("[%s] %s网盘第%d页处理完成: 原始%d项 -> 有效%d项 -> 跳过%d项\n", 
+		fmt.Printf("[%s] %s网盘第%d页处理完成: 原始%d项 -> 有效%d项 -> 跳过%d项\n",
 			p.Name(), fromType, pageNo, len(apiResp.Data.List), processedCount, skippedCount)
 	}
 
@@ -451,13 +451,13 @@ func removePKCS7Padding(data []byte) ([]byte, error) {
 // cleanHTMLTags 清理HTML标签
 func cleanHTMLTags(text string) string {
 	// 移除高亮标签 <span style="color: red;">...</span>
-	re := regexp.MustCompile(`<span[^>]*>(.*?)</span>`)
+	re := sdsoRe1
 	cleaned := re.ReplaceAllString(text, "$1")
-	
+
 	// 移除其他可能的HTML标签
-	re2 := regexp.MustCompile(`<[^>]*>`)
+	re2 := sdsoRe2
 	cleaned = re2.ReplaceAllString(cleaned, "")
-	
+
 	return strings.TrimSpace(cleaned)
 }
 
@@ -469,7 +469,7 @@ func mapPanType(from string) string {
 	case "xunlei":
 		return "xunlei"
 	case "aliyun", "ali":
-		return "aliyun"  // PanSou内部仍使用aliyun标识
+		return "aliyun" // PanSou内部仍使用aliyun标识
 	case "baidu":
 		return "baidu"
 	default:
@@ -482,7 +482,7 @@ func isValidPanURL(url string) bool {
 	if url == "" {
 		return false
 	}
-	
+
 	// 检查是否包含网盘域名特征
 	validDomains := []string{
 		"pan.quark.cn",
@@ -491,13 +491,20 @@ func isValidPanURL(url string) bool {
 		"alipan.com",
 		"pan.baidu.com",
 	}
-	
+
 	urlLower := strings.ToLower(url)
 	for _, domain := range validDomains {
 		if strings.Contains(urlLower, domain) {
 			return true
 		}
 	}
-	
+
 	return false
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	sdsoRe1 = regexp.MustCompile(`<span[^>]*>(.*?)</span>`)
+	sdsoRe2 = regexp.MustCompile(`<[^>]*>`)
+)

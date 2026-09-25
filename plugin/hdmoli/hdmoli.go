@@ -400,19 +400,19 @@ func (p *HdmoliPlugin) extractCategoryInfo(s *goquery.Selection) (category, regi
 					// 提取分类，可能包含地区和年份信息
 					info := strings.TrimSpace(parts[i+1])
 					// 按分隔符分割
-					infoParts := regexp.MustCompile(`[，,\s]+`).Split(info, -1)
+					infoParts := hdmoliRe1.Split(info, -1)
 					if len(infoParts) > 0 && infoParts[0] != "" {
 						category = infoParts[0]
 					}
 				} else if strings.HasSuffix(parts[i], "地区") && i+1 < len(parts) {
 					regionPart := strings.TrimSpace(parts[i+1])
-					regionParts := regexp.MustCompile(`[，,\s]+`).Split(regionPart, -1)
+					regionParts := hdmoliRe1.Split(regionPart, -1)
 					if len(regionParts) > 0 && regionParts[0] != "" {
 						region = regionParts[0]
 					}
 				} else if strings.HasSuffix(parts[i], "年份") && i+1 < len(parts) {
 					yearPart := strings.TrimSpace(parts[i+1])
-					yearParts := regexp.MustCompile(`[，,\s]+`).Split(yearPart, -1)
+					yearParts := hdmoliRe1.Split(yearPart, -1)
 					if len(yearParts) > 0 && yearParts[0] != "" {
 						year = yearParts[0]
 					}
@@ -661,7 +661,7 @@ func (p *HdmoliPlugin) parseNetworkDiskLinksWithRegex(htmlContent string) []mode
 	var links []model.Link
 
 	// 夸克网盘链接模式
-	quarkPattern := regexp.MustCompile(`<b>夸\s*克：</b><a[^>]*href\s*=\s*["']([^"']*pan\.quark\.cn[^"']*)["'][^>]*>`)
+	quarkPattern := hdmoliRe2
 	quarkMatches := quarkPattern.FindAllStringSubmatch(htmlContent, -1)
 	for _, match := range quarkMatches {
 		if len(match) > 1 {
@@ -675,7 +675,7 @@ func (p *HdmoliPlugin) parseNetworkDiskLinksWithRegex(htmlContent string) []mode
 	}
 
 	// 百度网盘链接模式
-	baiduPattern := regexp.MustCompile(`<b>百\s*度：</b><a[^>]*href\s*=\s*["']([^"']*pan\.baidu\.com[^"']*)["'][^>]*>`)
+	baiduPattern := hdmoliRe3
 	baiduMatches := baiduPattern.FindAllStringSubmatch(htmlContent, -1)
 	for _, match := range baiduMatches {
 		if len(match) > 1 {
@@ -715,3 +715,11 @@ func (p *HdmoliPlugin) extractPasswordFromBaiduURL(panURL string) string {
 	}
 	return ""
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	hdmoliRe1 = regexp.MustCompile(`[，,\s]+`)
+	hdmoliRe2 = regexp.MustCompile(`<b>夸\s*克：</b><a[^>]*href\s*=\s*["']([^"']*pan\.quark\.cn[^"']*)["'][^>]*>`)
+	hdmoliRe3 = regexp.MustCompile(`<b>百\s*度：</b><a[^>]*href\s*=\s*["']([^"']*pan\.baidu\.com[^"']*)["'][^>]*>`)
+)

@@ -69,7 +69,7 @@ func (p *HunhepanAsyncPlugin) SearchWithResult(keyword string, ext map[string]in
 // doSearch 实际的搜索实现
 func (p *HunhepanAsyncPlugin) doSearch(client *http.Client, keyword string, ext map[string]interface{}) ([]model.SearchResult, error) {
 	debugLog("开始搜索，关键词: %s", keyword)
-	
+
 	// 创建结果通道和错误通道
 	resultChan := make(chan []HunhepanItem, 4)
 	errChan := make(chan error, 4)

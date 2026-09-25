@@ -1415,7 +1415,7 @@ func extractAliyunShareID(rawURL string) string {
 }
 
 func extractQuarkShareIDAndPassword(rawURL string) (string, string) {
-	re := regexp.MustCompile(`/s/([A-Za-z0-9]+)`)
+	re := check_serviceRe1
 	matches := re.FindStringSubmatch(rawURL)
 	if len(matches) < 2 {
 		return "", ""
@@ -1477,7 +1477,7 @@ func extractTianyiShareInfo(rawURL string, fallbackPassword string) (string, str
 	}
 
 	password := fallbackPassword
-	re := regexp.MustCompile(`（访问码[：:]\s*([a-zA-Z0-9]+)）`)
+	re := check_serviceRe2
 	matches := re.FindStringSubmatch(rawURL)
 	if len(matches) >= 2 && matches[1] != "" {
 		password = matches[1]
@@ -1514,7 +1514,7 @@ func extract123ShareKey(rawURL string) string {
 }
 
 func extractXunleiShareInfo(rawURL string) (string, string) {
-	re := regexp.MustCompile(`pan\.xunlei\.com/s/([^?/#]+)`)
+	re := check_serviceRe3
 	matches := re.FindStringSubmatch(rawURL)
 	if len(matches) < 2 {
 		return "", ""
@@ -1572,3 +1572,11 @@ func extractMobileShareID(rawURL string) string {
 
 	return ""
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	check_serviceRe1 = regexp.MustCompile(`/s/([A-Za-z0-9]+)`)
+	check_serviceRe2 = regexp.MustCompile(`（访问码[：:]\s*([a-zA-Z0-9]+)）`)
+	check_serviceRe3 = regexp.MustCompile(`pan\.xunlei\.com/s/([^?/#]+)`)
+)

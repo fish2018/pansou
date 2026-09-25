@@ -22,7 +22,7 @@ type JutoushePlugin struct {
 
 func init() {
 	p := &JutoushePlugin{
-		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin("jutoushe", 1), 
+		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin("jutoushe", 1),
 	}
 	plugin.RegisterGlobalPlugin(p)
 }
@@ -89,7 +89,7 @@ func (p *JutoushePlugin) searchImpl(client *http.Client, keyword string, ext map
 		linkElem := s.Find(".a a.main")
 		title := strings.TrimSpace(linkElem.Text())
 		detailPath, exists := linkElem.Attr("href")
-		
+
 		if !exists || title == "" {
 			return // 跳过无效项
 		}
@@ -106,13 +106,13 @@ func (p *JutoushePlugin) searchImpl(client *http.Client, keyword string, ext map
 
 		// 创建搜索结果（先不获取下载链接）
 		result := model.SearchResult{
-			UniqueID:  uniqueID,
-			Title:     title,
-			Content:   fmt.Sprintf("剧透社影视资源：%s", title),
-			Datetime:  publishTime,
-			Tags:      p.extractTags(title),
-			Links:     []model.Link{}, // 稍后从详情页获取
-			Channel:   "",             // 插件搜索结果必须为空字符串
+			UniqueID: uniqueID,
+			Title:    title,
+			Content:  fmt.Sprintf("剧透社影视资源：%s", title),
+			Datetime: publishTime,
+			Tags:     p.extractTags(title),
+			Links:    []model.Link{}, // 稍后从详情页获取
+			Channel:  "",             // 插件搜索结果必须为空字符串
 		}
 
 		// 异步获取详情页的下载链接
@@ -124,7 +124,7 @@ func (p *JutoushePlugin) searchImpl(client *http.Client, keyword string, ext map
 
 	// 9. 关键词过滤
 	filteredResults := plugin.FilterResultsByKeyword(results, keyword)
-	
+
 	return filteredResults, nil
 }
 
@@ -249,13 +249,13 @@ func (p *JutoushePlugin) determineCloudType(url string) string {
 func (p *JutoushePlugin) extractPassword(url string) string {
 	// 处理百度网盘的pwd参数
 	if strings.Contains(url, "pan.baidu.com") && strings.Contains(url, "pwd=") {
-		re := regexp.MustCompile(`pwd=([^&]+)`)
+		re := jutousheRe1
 		matches := re.FindStringSubmatch(url)
 		if len(matches) > 1 {
 			return matches[1]
 		}
 	}
-	
+
 	// 其他网盘暂不处理提取码
 	return ""
 }
@@ -273,9 +273,9 @@ func (p *JutoushePlugin) isValidNetworkDriveURL(url string) bool {
 
 	// 检查是否包含已知网盘域名
 	knownDomains := []string{
-		"pan.quark.cn", "drive.uc.cn", "pan.baidu.com", 
+		"pan.quark.cn", "drive.uc.cn", "pan.baidu.com",
 		"aliyundrive.com", "alipan.com", "pan.xunlei.com",
-		"cloud.189.cn", "115.com", "123pan.com", 
+		"cloud.189.cn", "115.com", "123pan.com",
 		"caiyun.139.com", "mypikpak.com",
 	}
 
@@ -291,12 +291,12 @@ func (p *JutoushePlugin) isValidNetworkDriveURL(url string) bool {
 // extractIDFromURL 从URL路径中提取ID
 func (p *JutoushePlugin) extractIDFromURL(urlPath string) string {
 	// 从 /dm/8100.html 提取 8100
-	re := regexp.MustCompile(`/([^/]+)/(\d+)\.html`)
+	re := jutousheRe2
 	matches := re.FindStringSubmatch(urlPath)
 	if len(matches) > 2 {
 		return matches[2]
 	}
-	
+
 	// 如果无法提取，使用完整路径作为ID
 	return strings.ReplaceAll(urlPath, "/", "_")
 }
@@ -304,21 +304,21 @@ func (p *JutoushePlugin) extractIDFromURL(urlPath string) string {
 // extractTags 从标题中提取标签
 func (p *JutoushePlugin) extractTags(title string) []string {
 	var tags []string
-	
+
 	// 提取分类标签
-	categoryPattern := regexp.MustCompile(`【([^】]+)】`)
+	categoryPattern := jutousheRe3
 	matches := categoryPattern.FindAllStringSubmatch(title, -1)
 	for _, match := range matches {
 		if len(match) > 1 {
 			tags = append(tags, match[1])
 		}
 	}
-	
+
 	// 如果没有提取到分类，添加默认标签
 	if len(tags) == 0 {
 		tags = append(tags, "影视资源")
 	}
-	
+
 	return tags
 }
 
@@ -334,7 +334,7 @@ func (p *JutoushePlugin) parseDate(dateStr string) time.Time {
 	}
 
 	// 尝试解析 YYYY年MM月DD日 格式
-	re := regexp.MustCompile(`(\d{4})年(\d{1,2})月(\d{1,2})日`)
+	re := jutousheRe4
 	matches := re.FindStringSubmatch(dateStr)
 	if len(matches) == 4 {
 		year, _ := strconv.Atoi(matches[1])
@@ -346,3 +346,12 @@ func (p *JutoushePlugin) parseDate(dateStr string) time.Time {
 	// 解析失败，返回当前时间
 	return time.Now()
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	jutousheRe1 = regexp.MustCompile(`pwd=([^&]+)`)
+	jutousheRe2 = regexp.MustCompile(`/([^/]+)/(\d+)\.html`)
+	jutousheRe3 = regexp.MustCompile(`【([^】]+)】`)
+	jutousheRe4 = regexp.MustCompile(`(\d{4})年(\d{1,2})月(\d{1,2})日`)
+)

@@ -17,40 +17,40 @@ import (
 )
 
 const (
-	PrimaryBaseURL   = "https://www.panwiki.com"
-	BackupBaseURL    = "https://pan666.net"
-	SearchPath       = "/search.php?mod=forum&srchtxt=%s&searchsubmit=yes&orderby=lastpost"
-	UserAgent        = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
-	MaxConcurrency   = 40 // 详情页最大并发数
-	MaxPages         = 2  // 最大搜索页数
+	PrimaryBaseURL = "https://www.panwiki.com"
+	BackupBaseURL  = "https://pan666.net"
+	SearchPath     = "/search.php?mod=forum&srchtxt=%s&searchsubmit=yes&orderby=lastpost"
+	UserAgent      = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+	MaxConcurrency = 40 // 详情页最大并发数
+	MaxPages       = 2  // 最大搜索页数
 )
 
 // PanwikiPlugin Panwiki插件结构
 type PanwikiPlugin struct {
 	*plugin.BaseAsyncPlugin
-	detailCache sync.Map // 详情页缓存
-	cacheTTL    time.Duration
-	debugMode   bool     // debug模式开关
+	detailCache    sync.Map // 详情页缓存
+	cacheTTL       time.Duration
+	debugMode      bool   // debug模式开关
 	currentBaseURL string // 当前使用的域名
 }
 
 // NewPanwikiPlugin 创建Panwiki插件实例
 func NewPanwikiPlugin() *PanwikiPlugin {
-	
+
 	// 检查调试模式
 	debugMode := false
-	
+
 	p := &PanwikiPlugin{
 		BaseAsyncPlugin: plugin.NewBaseAsyncPluginWithFilter("panwiki", 3, true),
-		cacheTTL:       30 * time.Minute,
-		debugMode:      debugMode,
-		currentBaseURL: PrimaryBaseURL, // 默认使用主域名
+		cacheTTL:        30 * time.Minute,
+		debugMode:       debugMode,
+		currentBaseURL:  PrimaryBaseURL, // 默认使用主域名
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] Debug模式已启用")
 	}
-	
+
 	return p
 }
 
@@ -99,10 +99,10 @@ func (p *PanwikiPlugin) searchImpl(client *http.Client, keyword string, ext map[
 				defer wg.Done()
 				semaphore <- struct{}{}
 				defer func() { <-semaphore }()
-				
+
 				// 添加延时避免请求过快
 				time.Sleep(time.Duration(pageNum%3) * 100 * time.Millisecond)
-				
+
 				currentPageResults, err := p.searchPage(client, keyword, pageNum)
 				if err == nil && len(currentPageResults) > 0 {
 					mu.Lock()
@@ -125,9 +125,9 @@ func (p *PanwikiPlugin) searchImpl(client *http.Client, keyword string, ext map[
 	if p.debugMode {
 		log.Printf("[Panwiki] 开始获取详情页链接前，结果数: %d", len(allResults))
 	}
-	
+
 	p.enrichWithDetailLinks(client, allResults, keyword)
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 获取详情页链接后，结果数: %d", len(allResults))
 		for i, result := range allResults {
@@ -140,9 +140,9 @@ func (p *PanwikiPlugin) searchImpl(client *http.Client, keyword string, ext map[
 	if p.debugMode {
 		log.Printf("[Panwiki] 开始关键词过滤，关键词: %s", keyword)
 	}
-	
+
 	filteredResults := plugin.FilterResultsByKeyword(allResults, keyword)
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 关键词过滤完成，过滤前: %d，过滤后: %d", len(allResults), len(filteredResults))
 		for i, result := range filteredResults {
@@ -158,19 +158,19 @@ func (p *PanwikiPlugin) searchImpl(client *http.Client, keyword string, ext map[
 func (p *PanwikiPlugin) searchPage(client *http.Client, keyword string, page int) ([]model.SearchResult, error) {
 	// Step 1: 发起初始搜索请求获取重定向URL
 	initialURL := p.getSearchURL(keyword, page)
-	
+
 	req, err := http.NewRequest("GET", initialURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建初始请求失败: %w", err)
 	}
-	
+
 	p.setRequestHeaders(req)
-	
+
 	// 不自动跟随重定向
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		// 如果主域名失败，尝试切换到备用域名
@@ -179,7 +179,7 @@ func (p *PanwikiPlugin) searchPage(client *http.Client, keyword string, page int
 				log.Printf("[Panwiki] 主域名请求失败，尝试备用域名: %v", err)
 			}
 			p.switchToBackupDomain()
-			
+
 			// 重新构建URL并重试
 			initialURL = p.getSearchURL(keyword, page)
 			req, err = http.NewRequest("GET", initialURL, nil)
@@ -187,7 +187,7 @@ func (p *PanwikiPlugin) searchPage(client *http.Client, keyword string, page int
 				return nil, fmt.Errorf("创建备用域名请求失败: %w", err)
 			}
 			p.setRequestHeaders(req)
-			
+
 			resp, err = client.Do(req)
 			if err != nil {
 				return nil, fmt.Errorf("备用域名请求也失败: %w", err)
@@ -197,16 +197,16 @@ func (p *PanwikiPlugin) searchPage(client *http.Client, keyword string, page int
 		}
 	}
 	defer resp.Body.Close()
-	
+
 	// 重置重定向策略
 	client.CheckRedirect = nil
-	
+
 	// 获取重定向URL
 	location := resp.Header.Get("Location")
 	if location == "" {
 		return nil, fmt.Errorf("未获取到重定向URL")
 	}
-	
+
 	// 构建完整的重定向URL
 	var searchURL string
 	if strings.HasPrefix(location, "http") {
@@ -214,12 +214,12 @@ func (p *PanwikiPlugin) searchPage(client *http.Client, keyword string, page int
 	} else {
 		searchURL = p.currentBaseURL + "/" + strings.TrimPrefix(location, "/")
 	}
-	
+
 	// 如果不是第一页，修改URL中的page参数
 	if page > 1 {
 		if strings.Contains(searchURL, "searchid=") {
 			// 提取searchid并构建分页URL
-			re := regexp.MustCompile(`searchid=(\d+)`)
+			re := panwikiRe1
 			matches := re.FindStringSubmatch(searchURL)
 			if len(matches) > 1 {
 				searchid := matches[1]
@@ -227,31 +227,31 @@ func (p *PanwikiPlugin) searchPage(client *http.Client, keyword string, page int
 			}
 		}
 	}
-	
+
 	// Step 2: 请求实际的搜索结果页面
 	req2, err := http.NewRequest("GET", searchURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建搜索请求失败: %w", err)
 	}
-	
+
 	p.setRequestHeaders(req2)
-	
+
 	resp2, err := client.Do(req2)
 	if err != nil {
 		return nil, fmt.Errorf("搜索请求失败: %w", err)
 	}
 	defer resp2.Body.Close()
-	
+
 	if resp2.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("搜索请求返回状态码: %d", resp2.StatusCode)
 	}
-	
+
 	// 解析搜索结果
 	doc, err := goquery.NewDocumentFromReader(resp2.Body)
 	if err != nil {
 		return nil, fmt.Errorf("解析HTML失败: %w", err)
 	}
-	
+
 	return p.extractSearchResults(doc), nil
 }
 
@@ -268,7 +268,7 @@ func (p *PanwikiPlugin) setRequestHeaders(req *http.Request) {
 // extractSearchResults 提取搜索结果
 func (p *PanwikiPlugin) extractSearchResults(doc *goquery.Document) []model.SearchResult {
 	var results []model.SearchResult
-	
+
 	doc.Find(".slst ul li.pbw").Each(func(i int, s *goquery.Selection) {
 		result := p.parseSearchResult(s)
 		if result.Title != "" {
@@ -282,11 +282,11 @@ func (p *PanwikiPlugin) extractSearchResults(doc *goquery.Document) []model.Sear
 			}
 		}
 	})
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 共解析出 %d 个有效搜索结果", len(results))
 	}
-	
+
 	return results
 }
 
@@ -296,7 +296,7 @@ func (p *PanwikiPlugin) parseSearchResult(s *goquery.Selection) model.SearchResu
 	titleLink := s.Find("h3.xs3 a").First()
 	title := p.cleanTitle(titleLink.Text())
 	detailPath, _ := titleLink.Attr("href")
-	
+
 	var detailURL string
 	if detailPath != "" {
 		if strings.HasPrefix(detailPath, "http") {
@@ -305,7 +305,7 @@ func (p *PanwikiPlugin) parseSearchResult(s *goquery.Selection) model.SearchResu
 			detailURL = p.currentBaseURL + "/" + strings.TrimPrefix(detailPath, "/")
 		}
 	}
-	
+
 	// 提取内容摘要
 	var content string
 	s.Find("p").Each(func(i int, p *goquery.Selection) {
@@ -313,12 +313,12 @@ func (p *PanwikiPlugin) parseSearchResult(s *goquery.Selection) model.SearchResu
 			content = strings.TrimSpace(p.Text())
 		}
 	})
-	
+
 	// 提取统计信息（回复数和查看数）
 	statsText := s.Find("p.xg1").First().Text()
 	var replyCount, viewCount int
 	parseStats(statsText, &replyCount, &viewCount)
-	
+
 	// 提取时间、作者、分类信息
 	var publishTime, author, category string
 	lastP := s.Find("p").Last()
@@ -328,10 +328,10 @@ func (p *PanwikiPlugin) parseSearchResult(s *goquery.Selection) model.SearchResu
 		author = strings.TrimSpace(spans.Eq(1).Find("a").Text())
 		category = strings.TrimSpace(spans.Eq(2).Find("a").Text())
 	}
-	
+
 	// 转换时间格式
 	parsedTime := parseTime(publishTime)
-	
+
 	// 将详情页URL、作者、分类等信息包含在Content中
 	enrichedContent := content
 	if author != "" || category != "" {
@@ -339,22 +339,22 @@ func (p *PanwikiPlugin) parseSearchResult(s *goquery.Selection) model.SearchResu
 	} else if detailURL != "" {
 		enrichedContent = fmt.Sprintf("%s | 详情: %s", content, detailURL)
 	}
-	
+
 	// 从详情页URL中提取帖子ID
 	var postID string
 	if detailURL != "" {
-		re := regexp.MustCompile(`tid=(\d+)`)
+		re := panwikiRe2
 		matches := re.FindStringSubmatch(detailURL)
 		if len(matches) > 1 {
 			postID = matches[1]
 		}
 	}
-	
+
 	// 如果没有找到帖子ID，使用时间戳
 	if postID == "" {
 		postID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
-	
+
 	return model.SearchResult{
 		MessageID: fmt.Sprintf("%s-%s", p.Name(), postID),
 		UniqueID:  fmt.Sprintf("%s-%s", p.Name(), postID),
@@ -369,19 +369,19 @@ func (p *PanwikiPlugin) parseSearchResult(s *goquery.Selection) model.SearchResu
 // cleanTitle 清理标题中的广告内容
 func (p *PanwikiPlugin) cleanTitle(title string) string {
 	title = strings.TrimSpace(title)
-	
+
 	// 移除【】和[]中的广告内容（保留有用的分类信息）
 	// 只移除明显的广告，保留如【国漫】这样的分类标签
 	adPatterns := []string{
 		`【[^】]*(?:论坛|网站|\.com|\.net|\.cn)[^】]*】`,
 		`\[[^\]]*(?:论坛|网站|\.com|\.net|\.cn)[^\]]*\]`,
 	}
-	
+
 	for _, pattern := range adPatterns {
 		re := regexp.MustCompile(pattern)
 		title = re.ReplaceAllString(title, "")
 	}
-	
+
 	return strings.TrimSpace(title)
 }
 
@@ -393,24 +393,24 @@ func (p *PanwikiPlugin) enrichWithDetailLinks(client *http.Client, results []mod
 		}
 		return
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 开始为 %d 个结果获取详情页链接", len(results))
 	}
-	
+
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, MaxConcurrency)
-	
+
 	for i := range results {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			
+
 			// 添加延时避免请求过快
 			time.Sleep(time.Duration(index%3) * 50 * time.Millisecond)
-			
+
 			// 从Content中提取详情页URL
 			detailURL := p.extractDetailURLFromContent(results[index].Content)
 			if detailURL != "" {
@@ -435,9 +435,9 @@ func (p *PanwikiPlugin) enrichWithDetailLinks(client *http.Client, results []mod
 			}
 		}(i)
 	}
-	
+
 	wg.Wait()
-	
+
 	if p.debugMode {
 		totalLinks := 0
 		for i, result := range results {
@@ -456,11 +456,11 @@ func (p *PanwikiPlugin) fetchDetailPageLinksWithKeyword(client *http.Client, det
 		}
 		return []model.Link{}
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 开始获取详情页链接: %s", detailURL)
 	}
-	
+
 	// 检查缓存
 	if cached, ok := p.detailCache.Load(detailURL); ok {
 		if cacheItem, ok := cached.(cacheItem); ok {
@@ -469,24 +469,24 @@ func (p *PanwikiPlugin) fetchDetailPageLinksWithKeyword(client *http.Client, det
 			}
 		}
 	}
-	
+
 	req, err := http.NewRequest("GET", detailURL, nil)
 	if err != nil {
 		return []model.Link{}
 	}
-	
+
 	p.setRequestHeaders(req)
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return []model.Link{}
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return []model.Link{}
 	}
-	
+
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		if p.debugMode {
@@ -494,44 +494,44 @@ func (p *PanwikiPlugin) fetchDetailPageLinksWithKeyword(client *http.Client, det
 		}
 		return []model.Link{}
 	}
-	
+
 	links := p.extractDetailPageLinksWithFilter(doc, keyword)
-	
+
 	// 缓存结果
 	p.detailCache.Store(detailURL, cacheItem{
 		links:     links,
 		timestamp: time.Now(),
 	})
-	
+
 	return links
 }
 
 // extractDetailPageLinksWithFilter 智能过滤版的详情页链接提取
 func (p *PanwikiPlugin) extractDetailPageLinksWithFilter(doc *goquery.Document, keyword string) []model.Link {
 	var allLinks []model.Link
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] ==================== 开始智能过滤详情页链接 ====================")
 		log.Printf("[Panwiki] 关键词: %s", keyword)
 	}
-	
+
 	// 查找主要内容区域
 	contentArea := doc.Find(".t_f[id^=\"postmessage_\"]").First()
 	if contentArea.Length() == 0 {
 		contentArea = doc.Find(".t_msgfont, .plhin, .message, [id^='postmessage_']")
 	}
-	
+
 	if contentArea.Length() == 0 {
 		return allLinks
 	}
-	
+
 	// 先直接提取所有链接，看有多少个
 	allFoundLinks := p.extractAllLinksDirectly(contentArea)
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 提取到链接总数: %d", len(allFoundLinks))
 	}
-	
+
 	// 核心策略：4个或以下链接直接返回，超过4个才进行内容匹配
 	if len(allFoundLinks) <= 4 {
 		if p.debugMode {
@@ -539,16 +539,16 @@ func (p *PanwikiPlugin) extractDetailPageLinksWithFilter(doc *goquery.Document, 
 		}
 		return allFoundLinks
 	}
-	
+
 	// 超过4个链接，需要精确匹配
 	if p.debugMode {
 		log.Printf("[Panwiki] 链接数>4，需要精确匹配")
 	}
-	
+
 	// 获取HTML内容进行分析
 	htmlContent, _ := contentArea.Html()
 	lines := strings.Split(htmlContent, "\n")
-	
+
 	// 检查是否是单行格式
 	if p.isSingleLineFormat(lines, keyword) {
 		if p.debugMode {
@@ -556,7 +556,7 @@ func (p *PanwikiPlugin) extractDetailPageLinksWithFilter(doc *goquery.Document, 
 		}
 		return p.extractLinksFromSingleLineFormat(lines, keyword)
 	}
-	
+
 	// 非单行格式，使用分组逻辑
 	if p.debugMode {
 		log.Printf("[Panwiki] 非单行格式，使用分组逻辑")
@@ -569,15 +569,15 @@ func (p *PanwikiPlugin) filterLinksByContext(links []model.Link, htmlContent, ke
 	if len(links) == 0 {
 		return links
 	}
-	
+
 	var filtered []model.Link
 	cleanContent := p.cleanHtmlText(htmlContent)
 	lines := strings.Split(cleanContent, "\n")
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 开始上下文过滤，输入链接数: %d", len(links))
 	}
-	
+
 	for _, link := range links {
 		// 查找链接在内容中的位置
 		workName := ""
@@ -591,7 +591,7 @@ func (p *PanwikiPlugin) filterLinksByContext(links []model.Link, htmlContent, ke
 				break
 			}
 		}
-		
+
 		// 检查作品名是否与关键词相关
 		if workName != "" && p.isWorkTitleRelevant(workName, keyword) {
 			filtered = append(filtered, link)
@@ -602,11 +602,11 @@ func (p *PanwikiPlugin) filterLinksByContext(links []model.Link, htmlContent, ke
 			log.Printf("[Panwiki] ❌ 过滤不相关链接: %s", link.URL)
 		}
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 上下文过滤完成，输出链接数: %d", len(filtered))
 	}
-	
+
 	return filtered
 }
 
@@ -618,7 +618,7 @@ func (p *PanwikiPlugin) extractWorkNameForLinkInLine(line, url string) string {
 	if len(matches) > 1 {
 		return strings.TrimSpace(matches[1])
 	}
-	
+
 	// 处理合集格式
 	if strings.Contains(line, "合集：") && strings.Contains(line, url) {
 		parts := strings.Split(line, "：")
@@ -626,14 +626,14 @@ func (p *PanwikiPlugin) extractWorkNameForLinkInLine(line, url string) string {
 			return strings.TrimSpace(parts[0])
 		}
 	}
-	
+
 	return ""
 }
 
 // isSimpleCase 检查是否是简单情况（单一内容，无需分组）
 func (p *PanwikiPlugin) isSimpleCase(htmlContent, keyword string) bool {
 	lines := strings.Split(htmlContent, "\n")
-	
+
 	// 如果是单行格式，不应该作为简单情况处理
 	if p.isSingleLineFormat(lines, keyword) {
 		if p.debugMode {
@@ -641,45 +641,45 @@ func (p *PanwikiPlugin) isSimpleCase(htmlContent, keyword string) bool {
 		}
 		return false
 	}
-	
+
 	var titleCount int
 	var linkCount int
 	var hasRelevantTitle bool
 	var hasRelevantContent bool
-	
+
 	// 检查整个页面内容是否与关键词相关
 	hasRelevantContent = p.pageContentRelevant(htmlContent, keyword)
-	
+
 	for _, line := range lines {
 		cleanLine := p.cleanHtmlText(line)
 		if len(strings.TrimSpace(cleanLine)) < 5 {
 			continue
 		}
-		
+
 		if p.isNewWorkTitle(cleanLine) {
 			titleCount++
 			if p.isWorkTitleRelevant(cleanLine, keyword) {
 				hasRelevantTitle = true
 			}
 		}
-		
+
 		if strings.Contains(line, "http") && p.containsNetworkLink(line) {
 			linkCount++
 		}
 	}
-	
+
 	// 简单情况的判断条件：
 	// 大多数帖子都是简单情况（帖子标题已包含关键词，内容只有链接）
 	// 1. 标题数不多（<=2），或者
 	// 2. 只有少量链接（<=3）且没有多个标题
 	// 注：搜索结果本身就是相关的，不需要再次严格过滤
 	isSimple := titleCount <= 2 || (linkCount <= 3 && titleCount <= 1)
-	
+
 	if p.debugMode {
-		log.Printf("[Panwiki] 简单情况判断: 标题数=%d, 链接数=%d, 有相关标题=%v, 内容相关=%v, 结果=%v", 
+		log.Printf("[Panwiki] 简单情况判断: 标题数=%d, 链接数=%d, 有相关标题=%v, 内容相关=%v, 结果=%v",
 			titleCount, linkCount, hasRelevantTitle, hasRelevantContent, isSimple)
 	}
-	
+
 	return isSimple
 }
 
@@ -688,7 +688,7 @@ func (p *PanwikiPlugin) pageContentRelevant(htmlContent, keyword string) bool {
 	text := p.cleanHtmlText(htmlContent)
 	normalizedText := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(text, " ", ""), ".", ""))
 	normalizedKeyword := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(keyword, " ", ""), ".", ""))
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 内容相关性检查 - 原文本长度: %d", len(text))
 		if len(text) < 300 {
@@ -697,10 +697,10 @@ func (p *PanwikiPlugin) pageContentRelevant(htmlContent, keyword string) bool {
 		log.Printf("[Panwiki] 标准化文本: %s", normalizedText)
 		log.Printf("[Panwiki] 标准化关键词: %s", normalizedKeyword)
 	}
-	
+
 	// 基本匹配
 	basicMatch := strings.Contains(normalizedText, normalizedKeyword)
-	
+
 	// 对于"凡人修仙传"这样的关键词，还要检查分词匹配
 	keywordMatch := false
 	if keyword == "凡人修仙传" {
@@ -709,7 +709,7 @@ func (p *PanwikiPlugin) pageContentRelevant(htmlContent, keyword string) bool {
 			"凡人修仙传", "凡.人.修.仙.传", "凡人修仙", "修仙传",
 			"fanrenxiuxianchuan", "fanren", "xiuxian",
 		}
-		
+
 		for _, variant := range variants {
 			normalizedVariant := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(variant, " ", ""), ".", ""))
 			if strings.Contains(normalizedText, normalizedVariant) {
@@ -721,34 +721,34 @@ func (p *PanwikiPlugin) pageContentRelevant(htmlContent, keyword string) bool {
 			}
 		}
 	}
-	
+
 	result := basicMatch || keywordMatch
 	if p.debugMode {
 		log.Printf("[Panwiki] 内容相关性结果: 基本匹配=%v, 关键词匹配=%v, 最终结果=%v", basicMatch, keywordMatch, result)
 	}
-	
+
 	return result
 }
 
 // extractAllLinksDirectly 直接提取所有网盘链接（简单情况）
 func (p *PanwikiPlugin) extractAllLinksDirectly(contentArea *goquery.Selection) []model.Link {
 	var links []model.Link
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 开始直接提取链接（简单情况）")
 	}
-	
+
 	// 提取直接的链接
 	contentArea.Find("a").Each(func(i int, s *goquery.Selection) {
 		href, exists := s.Attr("href")
 		if !exists {
 			return
 		}
-		
+
 		if p.debugMode {
 			log.Printf("[Panwiki] 找到a标签链接: %s", href)
 		}
-		
+
 		linkType := p.determineLinkType(href)
 		if linkType != "" {
 			// 从内容文本中查找对应的密码
@@ -765,7 +765,7 @@ func (p *PanwikiPlugin) extractAllLinksDirectly(contentArea *goquery.Selection) 
 			log.Printf("[Panwiki] 不是支持的网盘链接: %s", href)
 		}
 	})
-	
+
 	// 提取文本中的链接
 	contentText := contentArea.Text()
 	if p.debugMode {
@@ -774,41 +774,41 @@ func (p *PanwikiPlugin) extractAllLinksDirectly(contentArea *goquery.Selection) 
 			log.Printf("[Panwiki] 内容文本: %s", contentText)
 		}
 	}
-	
+
 	textLinks := p.extractLinksFromText(contentText)
 	if p.debugMode {
 		log.Printf("[Panwiki] 从文本提取到 %d 个链接", len(textLinks))
 	}
 	links = append(links, textLinks...)
-	
+
 	deduplicatedLinks := p.deduplicateLinks(links)
 	if p.debugMode {
 		log.Printf("[Panwiki] 直接提取完成: 原始 %d 个, 去重后 %d 个", len(links), len(deduplicatedLinks))
 	}
-	
+
 	return deduplicatedLinks
 }
 
 // extractLinksWithGrouping 使用分组逻辑提取链接（复杂情况）
 func (p *PanwikiPlugin) extractLinksWithGrouping(htmlContent, keyword string) []model.Link {
 	var allLinks []model.Link
-	
+
 	// 按行分割并分组处理
 	lines := strings.Split(htmlContent, "\n")
-	
+
 	// 使用传统的分组逻辑
 	// 注意：单行格式已经在extractDetailPageLinksWithFilter中优先处理了
 	var currentGroup []string
 	var isRelevantGroup bool
-	
+
 	for _, line := range lines {
 		cleanLine := p.cleanHtmlText(line)
-		
+
 		// 跳过空行和无意义内容
 		if len(strings.TrimSpace(cleanLine)) < 5 {
 			continue
 		}
-		
+
 		// 检查是否是新的作品标题行
 		isTitle := p.isNewWorkTitle(cleanLine)
 		if p.debugMode {
@@ -823,11 +823,11 @@ func (p *PanwikiPlugin) extractLinksWithGrouping(htmlContent, keyword string) []
 					log.Printf("[Panwiki] 从相关组提取到 %d 个链接", len(groupLinks))
 				}
 			}
-			
+
 			// 开始新组
 			currentGroup = []string{line}
 			isRelevantGroup = p.isWorkTitleRelevant(cleanLine, keyword)
-			
+
 			if p.debugMode {
 				log.Printf("[Panwiki] 新作品组: %s, 相关性: %v, 关键词: %s", cleanLine, isRelevantGroup, keyword)
 			}
@@ -841,7 +841,7 @@ func (p *PanwikiPlugin) extractLinksWithGrouping(htmlContent, keyword string) []
 			}
 		}
 	}
-	
+
 	// 处理最后一组
 	if len(currentGroup) > 0 && isRelevantGroup {
 		groupLinks := p.extractLinksFromGroup(currentGroup)
@@ -850,11 +850,11 @@ func (p *PanwikiPlugin) extractLinksWithGrouping(htmlContent, keyword string) []
 			log.Printf("[Panwiki] 从最后相关组提取到 %d 个链接", len(groupLinks))
 		}
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 分组过滤完成，共提取 %d 个相关链接", len(allLinks))
 	}
-	
+
 	return p.deduplicateLinks(allLinks)
 }
 
@@ -862,106 +862,106 @@ func (p *PanwikiPlugin) extractLinksWithGrouping(htmlContent, keyword string) []
 func (p *PanwikiPlugin) isSingleLineFormat(lines []string, keyword string) bool {
 	var validLineCount int
 	var matchingLineCount int
-	
+
 	// 检查有多少行符合"作品名丨网盘：链接"或"作品名：子标题丨网盘：链接"格式
 	// 支持两种格式：
 	// 1. "斗破苍穹年番丨夸克：https://..."
 	// 2. "凡人修仙传：再临天南丨夸克：https://..."
-	singleLinePattern := regexp.MustCompile(`[^丨]*丨[^：]*：https?://[^\s]+`)
-	
+	singleLinePattern := panwikiRe3
+
 	for _, line := range lines {
 		cleanLine := p.cleanHtmlText(line)
 		if len(strings.TrimSpace(cleanLine)) < 10 {
 			continue
 		}
-		
+
 		// 检查是否符合单行格式
 		if singleLinePattern.MatchString(cleanLine) {
 			validLineCount++
-			
+
 			// 检查是否与关键词相关
 			if p.isLineTitleRelevant(cleanLine, keyword) {
 				matchingLineCount++
 			}
-			
+
 			if p.debugMode {
 				log.Printf("[Panwiki] 单行格式检查: '%s', 相关性: %v", cleanLine, p.isLineTitleRelevant(cleanLine, keyword))
 			}
 		}
 	}
-	
+
 	// 如果有至少2行符合单行格式，且有匹配的行，就认为是单行格式
 	isMatch := validLineCount >= 2 && matchingLineCount > 0
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 单行格式判断: 有效行=%d, 匹配行=%d, 结果=%v", validLineCount, matchingLineCount, isMatch)
 	}
-	
+
 	return isMatch
 }
 
 // extractLinksFromSingleLineFormat 从单行格式中提取链接
 func (p *PanwikiPlugin) extractLinksFromSingleLineFormat(lines []string, keyword string) []model.Link {
 	var allLinks []model.Link
-	
+
 	for _, line := range lines {
 		cleanLine := p.cleanHtmlText(line)
 		if len(strings.TrimSpace(cleanLine)) < 10 {
 			continue
 		}
-		
+
 		// 检查是否包含"丨"和"："的单行格式
 		if strings.Contains(cleanLine, "丨") && strings.Contains(cleanLine, "：") {
 			if p.debugMode {
 				log.Printf("[Panwiki] 处理单行格式: %s", cleanLine)
 			}
-			
+
 			// 精确提取相关作品的链接
 			relevantLinks := p.extractLinksFromSingleLine(cleanLine, keyword)
 			allLinks = append(allLinks, relevantLinks...)
 		}
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 单行格式处理完成，共提取 %d 个链接", len(allLinks))
 	}
-	
+
 	return p.deduplicateLinks(allLinks)
 }
 
 // extractLinksFromSingleLine 从单行中提取"作品名丨网盘：链接"格式的相关链接
 func (p *PanwikiPlugin) extractLinksFromSingleLine(line, keyword string) []model.Link {
 	var results []model.Link
-	
+
 	// 使用正则表达式匹配 "作品名丨网盘：链接" 的完整模式
-	pattern := regexp.MustCompile(`([^丨]+)丨([^：]+)：(https?://[a-zA-Z0-9\.\-\_\?\=\&\/]+)`)
+	pattern := panwikiRe4
 	matches := pattern.FindAllStringSubmatch(line, -1)
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 单行匹配到 %d 个模式", len(matches))
 	}
-	
+
 	for _, match := range matches {
 		if len(match) >= 4 {
 			workName := strings.TrimSpace(match[1])
 			netdisk := strings.TrimSpace(match[2])
 			url := strings.TrimSpace(match[3])
-			
+
 			if p.debugMode {
 				log.Printf("[Panwiki] 作品: '%s', 网盘: '%s', 链接: '%s'", workName, netdisk, url)
 			}
-			
+
 			if p.isWorkTitleRelevant(workName, keyword) {
 				linkType := p.determineLinkType(url)
 				if linkType != "" {
 					_, password := p.extractPasswordFromURL(url)
-					
+
 					results = append(results, model.Link{
 						URL:      url,
 						Type:     linkType,
 						Password: password,
 					})
-					
+
 					if p.debugMode {
 						log.Printf("[Panwiki] ✅ 相关作品链接: %s -> %s", workName, url)
 					}
@@ -971,7 +971,7 @@ func (p *PanwikiPlugin) extractLinksFromSingleLine(line, keyword string) []model
 			}
 		}
 	}
-	
+
 	return results
 }
 
@@ -979,13 +979,13 @@ func (p *PanwikiPlugin) extractLinksFromSingleLine(line, keyword string) []model
 func (p *PanwikiPlugin) isLineTitleRelevant(line, keyword string) bool {
 	// 改进版：处理一行多个作品的情况
 	// 使用正则表达式找到所有的"作品名丨网盘："模式
-	workPattern := regexp.MustCompile(`([^丨]+)丨[^：]+：`)
+	workPattern := panwikiRe5
 	matches := workPattern.FindAllStringSubmatch(line, -1)
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 单行标题相关性检查: 原行='%s', 关键词='%s'", line, keyword)
 	}
-	
+
 	for _, match := range matches {
 		if len(match) > 1 {
 			workTitle := strings.TrimSpace(match[1])
@@ -1000,11 +1000,11 @@ func (p *PanwikiPlugin) isLineTitleRelevant(line, keyword string) bool {
 			}
 		}
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 单行标题相关性结果: false")
 	}
-	
+
 	return false
 }
 
@@ -1015,7 +1015,7 @@ func (p *PanwikiPlugin) containsNetworkLink(text string) bool {
 		"pan.xunlei.com", "drive.uc.cn", "www.123684.com", "115cdn.com",
 		"cloud.189.cn", "pan.uc.cn", "www.123pan.com", "pan.pikpak.com",
 	}
-	
+
 	for _, domain := range networkDomains {
 		if strings.Contains(text, domain) {
 			return true
@@ -1027,7 +1027,7 @@ func (p *PanwikiPlugin) containsNetworkLink(text string) bool {
 // cleanHtmlText 清理HTML文本
 func (p *PanwikiPlugin) cleanHtmlText(html string) string {
 	// 移除HTML标签
-	re := regexp.MustCompile(`<[^>]*>`)
+	re := panwikiRe6
 	text := re.ReplaceAllString(html, "")
 	// 清理HTML实体
 	text = strings.ReplaceAll(text, "&nbsp;", " ")
@@ -1038,7 +1038,7 @@ func (p *PanwikiPlugin) cleanHtmlText(html string) string {
 // isNewWorkTitle 检查是否是新作品标题
 func (p *PanwikiPlugin) isNewWorkTitle(text string) bool {
 	text = strings.TrimSpace(text)
-	
+
 	// 如果文本太短，不太可能是标题
 	if len(text) < 3 {
 		if p.debugMode {
@@ -1046,7 +1046,7 @@ func (p *PanwikiPlugin) isNewWorkTitle(text string) bool {
 		}
 		return false
 	}
-	
+
 	// 1. 包含年份 (2025)
 	if matched, _ := regexp.MatchString(`\(\d{4}\)`, text); matched {
 		if p.debugMode {
@@ -1054,7 +1054,7 @@ func (p *PanwikiPlugin) isNewWorkTitle(text string) bool {
 		}
 		return true
 	}
-	
+
 	// 2. 包含分类标签 [剧情]、[古装]等 或 【作品名】格式
 	if matched, _ := regexp.MatchString(`\[[^\]]*\]|【[^\]]*】`, text); matched {
 		if p.debugMode {
@@ -1062,8 +1062,8 @@ func (p *PanwikiPlugin) isNewWorkTitle(text string) bool {
 		}
 		return true
 	}
-	
-	// 3. 包含明显的作品信息  
+
+	// 3. 包含明显的作品信息
 	indicators := []string{
 		"4K持续更新", "集完结", "完结", "4K高码", "持续更新",
 		"全集", "集】", "更新", "剧版", "真人版", "动画版",
@@ -1076,7 +1076,7 @@ func (p *PanwikiPlugin) isNewWorkTitle(text string) bool {
 			return true
 		}
 	}
-	
+
 	// 4. 检查集数格式：【全30集】、【40全】、[全36集]等
 	if matched, _ := regexp.MatchString(`【[全\d]+[集\d]*】|【\d+[全集]】|\[\d+[全集]\]|【完结】`, text); matched {
 		if p.debugMode {
@@ -1084,10 +1084,10 @@ func (p *PanwikiPlugin) isNewWorkTitle(text string) bool {
 		}
 		return true
 	}
-	
+
 	// 排除明显不是标题的内容
 	nonTitlePrefixes := []string{
-		"导演:", "编剧:", "主演:", "类型:", "制片国家", "语言:", "首播:", 
+		"导演:", "编剧:", "主演:", "类型:", "制片国家", "语言:", "首播:",
 		"集数:", "单集片长:", "评分:", "简介:", "链接：", "链接:",
 		"夸克网盘：", "百度网盘：", "阿里云盘：", "迅雷网盘：",
 	}
@@ -1099,14 +1099,14 @@ func (p *PanwikiPlugin) isNewWorkTitle(text string) bool {
 			return false
 		}
 	}
-	
+
 	// 5. 检查是否是常见作品名称格式（仅包含中文、英文、数字、少量符号）
 	// 且不包含HTML标记或URL
 	if !strings.Contains(text, "http") && !strings.Contains(text, "<") && !strings.Contains(text, ">") {
 		// 优先检查短标题（3-6个字符，如"定风波"、"锦月如歌"）
 		runeText := []rune(text)
 		textLength := len(runeText)
-		
+
 		if textLength >= 3 && textLength <= 6 {
 			// 短标题：主要是中文字符
 			chineseCount := 0
@@ -1116,11 +1116,11 @@ func (p *PanwikiPlugin) isNewWorkTitle(text string) bool {
 				}
 			}
 			chineseRatio := float64(chineseCount) / float64(textLength)
-			
+
 			if p.debugMode {
 				log.Printf("[Panwiki] 标题检查 '%s': 短标题检查 - 长度=%d, 中文字符数=%d, 中文比例=%.1f%%", text, textLength, chineseCount, chineseRatio*100)
 			}
-			
+
 			// 如果主要是中文字符，认为是短标题
 			if chineseRatio >= 0.8 { // 至少80%是中文
 				if p.debugMode {
@@ -1129,7 +1129,7 @@ func (p *PanwikiPlugin) isNewWorkTitle(text string) bool {
 				return true
 			}
 		}
-		
+
 		// 检查是否包含常见的作品名称特征
 		if matched, _ := regexp.MatchString(`^[A-Za-z]*[^\s]*(?:传|剧|版|之|的|与|和|：|丨|\s)+`, text); matched {
 			if p.debugMode {
@@ -1137,7 +1137,7 @@ func (p *PanwikiPlugin) isNewWorkTitle(text string) bool {
 			}
 			return true
 		}
-		
+
 		// 长标题检查（7-50个字符）
 		if textLength >= 7 && textLength <= 50 {
 			if matched, _ := regexp.MatchString(`^[\u4e00-\u9fff\w\s\-\(\)（）]+$`, text); matched {
@@ -1148,7 +1148,7 @@ func (p *PanwikiPlugin) isNewWorkTitle(text string) bool {
 			}
 		}
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 标题检查 '%s': 不符合任何标题规则", text)
 	}
@@ -1160,12 +1160,12 @@ func (p *PanwikiPlugin) isWorkTitleRelevant(title, keyword string) bool {
 	// 标准化 - 移除空格和点号
 	normalizedTitle := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(title, " ", ""), ".", ""))
 	normalizedKeyword := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(keyword, " ", ""), ".", ""))
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 相关性检查 - 原标题: %s, 原关键词: %s", title, keyword)
 		log.Printf("[Panwiki] 相关性检查 - 标准化标题: %s, 标准化关键词: %s", normalizedTitle, normalizedKeyword)
 	}
-	
+
 	// 针对"凡人修仙传"的严格检查
 	if normalizedKeyword == "凡人修仙传" {
 		// 只有真正包含"凡人修仙传"相关内容的标题才算相关
@@ -1173,7 +1173,7 @@ func (p *PanwikiPlugin) isWorkTitleRelevant(title, keyword string) bool {
 			"凡人修仙传", "凡.人.修.仙.传", "凡人修仙", "修仙传",
 			"fanrenxiuxianchuan", "fanren", "xiuxian",
 		}
-		
+
 		for _, pattern := range relevantPatterns {
 			normalizedPattern := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(pattern, " ", ""), ".", ""))
 			if strings.Contains(normalizedTitle, normalizedPattern) {
@@ -1183,13 +1183,13 @@ func (p *PanwikiPlugin) isWorkTitleRelevant(title, keyword string) bool {
 				return true
 			}
 		}
-		
+
 		if p.debugMode {
 			log.Printf("[Panwiki] 凡人修仙传检查：不相关")
 		}
 		return false
 	}
-	
+
 	// 对于其他关键词，进行精确匹配
 	if strings.Contains(normalizedTitle, normalizedKeyword) {
 		if p.debugMode {
@@ -1197,32 +1197,32 @@ func (p *PanwikiPlugin) isWorkTitleRelevant(title, keyword string) bool {
 		}
 		return true
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 不相关")
 	}
-	
+
 	return false
 }
 
 // extractLinksFromGroup 从作品组中提取链接
 func (p *PanwikiPlugin) extractLinksFromGroup(group []string) []model.Link {
 	var links []model.Link
-	
+
 	// 将组合并成HTML文档进行解析
 	groupHTML := strings.Join(group, "\n")
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader("<div>" + groupHTML + "</div>"))
 	if err != nil {
 		return links
 	}
-	
+
 	// 提取链接
 	doc.Find("a").Each(func(i int, s *goquery.Selection) {
 		href, exists := s.Attr("href")
 		if !exists {
 			return
 		}
-		
+
 		linkType := p.determineLinkType(href)
 		if linkType != "" {
 			links = append(links, model.Link{
@@ -1232,51 +1232,51 @@ func (p *PanwikiPlugin) extractLinksFromGroup(group []string) []model.Link {
 			})
 		}
 	})
-	
+
 	// 从文本中提取链接
 	text := doc.Text()
 	textLinks := p.extractLinksFromText(text)
 	links = append(links, textLinks...)
-	
+
 	return links
 }
 
 // determineLinkType 确定链接类型
 func (p *PanwikiPlugin) determineLinkType(url string) string {
 	linkPatterns := map[string]string{
-		`pan\.quark\.cn`:          "quark",
-		`pan\.baidu\.com`:         "baidu",
-		`www\.alipan\.com`:        "aliyun",
-		`pan\.xunlei\.com`:        "xunlei",
-		`cloud\.189\.cn`:          "tianyi",
-		`pan\.uc\.cn`:             "uc",
-		`www\.123pan\.com`:        "123",
-		`www\.123684\.com`:        "123",
-		`115cdn\.com`:             "115",
-		`pan\.pikpak\.com`:        "pikpak",
-		`caiyun\.139\.cn`:         "mobile",
+		`pan\.quark\.cn`:   "quark",
+		`pan\.baidu\.com`:  "baidu",
+		`www\.alipan\.com`: "aliyun",
+		`pan\.xunlei\.com`: "xunlei",
+		`cloud\.189\.cn`:   "tianyi",
+		`pan\.uc\.cn`:      "uc",
+		`www\.123pan\.com`: "123",
+		`www\.123684\.com`: "123",
+		`115cdn\.com`:      "115",
+		`pan\.pikpak\.com`: "pikpak",
+		`caiyun\.139\.cn`:  "mobile",
 	}
-	
+
 	for pattern, linkType := range linkPatterns {
 		matched, _ := regexp.MatchString(pattern, url)
 		if matched {
 			return linkType
 		}
 	}
-	
+
 	return ""
 }
 
 // extractLinksFromText 从文本中提取链接
 func (p *PanwikiPlugin) extractLinksFromText(text string) []model.Link {
 	var links []model.Link
-	
+
 	// 网盘链接正则模式 (修复迅雷链接截断问题，添加下划线和连字符支持)
 	patterns := []string{
 		`https://pan\.quark\.cn/s/[a-zA-Z0-9_-]+`,
 		`https://pan\.baidu\.com/s/[a-zA-Z0-9_-]+`,
 		`https://www\.alipan\.com/s/[a-zA-Z0-9_-]+`,
-		`https://pan\.xunlei\.com/s/[a-zA-Z0-9_-]+`,  // 修复：添加下划线和连字符
+		`https://pan\.xunlei\.com/s/[a-zA-Z0-9_-]+`, // 修复：添加下划线和连字符
 		`https://cloud\.189\.cn/[a-zA-Z0-9_-]+`,
 		`https://pan\.uc\.cn/s/[a-zA-Z0-9_-]+`,
 		`https://www\.123pan\.com/s/[a-zA-Z0-9_-]+`,
@@ -1285,11 +1285,11 @@ func (p *PanwikiPlugin) extractLinksFromText(text string) []model.Link {
 		`https://pan\.pikpak\.com/s/[a-zA-Z0-9_-]+`,
 		`https://caiyun\.139\.cn/s/[a-zA-Z0-9_-]+`,
 	}
-	
+
 	for _, pattern := range patterns {
 		re := regexp.MustCompile(pattern)
 		matches := re.FindAllString(text, -1)
-		
+
 		for _, match := range matches {
 			linkType := p.determineLinkType(match)
 			if linkType != "" {
@@ -1301,25 +1301,25 @@ func (p *PanwikiPlugin) extractLinksFromText(text string) []model.Link {
 			}
 		}
 	}
-	
+
 	return links
 }
 
 // deduplicateLinks 智能去重链接（合并相同资源的不同版本）
 func (p *PanwikiPlugin) deduplicateLinks(links []model.Link) []model.Link {
 	linkMap := make(map[string]model.Link)
-	
+
 	for _, link := range links {
 		// 提取和设置密码
 		normalizedURL, password := p.extractPasswordFromURL(link.URL)
-		
+
 		// 创建带密码信息的新链接
 		newLink := model.Link{
 			URL:      link.URL,
 			Type:     link.Type,
 			Password: password,
 		}
-		
+
 		// 使用标准化URL作为key进行去重
 		if existingLink, exists := linkMap[normalizedURL]; exists {
 			// 如果已存在，保留更完整的版本（优先带密码的）
@@ -1336,17 +1336,17 @@ func (p *PanwikiPlugin) deduplicateLinks(links []model.Link) []model.Link {
 			linkMap[normalizedURL] = newLink
 		}
 	}
-	
+
 	// 转换为切片
 	var result []model.Link
 	for _, link := range linkMap {
 		result = append(result, link)
 	}
-	
+
 	if p.debugMode {
 		log.Printf("[Panwiki] 去重前: %d 个链接, 去重后: %d 个链接", len(links), len(result))
 	}
-	
+
 	return result
 }
 
@@ -1357,10 +1357,10 @@ func (p *PanwikiPlugin) extractPasswordFromURL(rawURL string) (normalizedURL str
 	if err != nil {
 		return rawURL, ""
 	}
-	
+
 	// 获取查询参数
 	query := parsedURL.Query()
-	
+
 	// 检查常见的密码参数
 	passwordKeys := []string{"pwd", "password", "pass", "code"}
 	for _, key := range passwordKeys {
@@ -1369,20 +1369,20 @@ func (p *PanwikiPlugin) extractPasswordFromURL(rawURL string) (normalizedURL str
 			break
 		}
 	}
-	
+
 	// 构建标准化URL（去除密码参数）
 	for _, key := range passwordKeys {
 		query.Del(key)
 	}
-	
+
 	parsedURL.RawQuery = query.Encode()
 	normalizedURL = parsedURL.String()
-	
+
 	// 如果查询参数为空，去掉问号
 	if parsedURL.RawQuery == "" {
 		normalizedURL = strings.TrimSuffix(normalizedURL, "?")
 	}
-	
+
 	return normalizedURL, password
 }
 
@@ -1395,7 +1395,7 @@ type cacheItem struct {
 // extractDetailURLFromContent 从Content中提取详情页URL
 func (p *PanwikiPlugin) extractDetailURLFromContent(content string) string {
 	// 查找详情URL模式
-	re := regexp.MustCompile(`详情:\s*(https?://[^\s]+)`)
+	re := panwikiRe7
 	matches := re.FindStringSubmatch(content)
 	if len(matches) > 1 {
 		return matches[1]
@@ -1406,7 +1406,7 @@ func (p *PanwikiPlugin) extractDetailURLFromContent(content string) string {
 // 辅助函数
 func parseStats(statsText string, replyCount, viewCount *int) {
 	// 解析如 "1 个回复 - 87 次查看" 格式
-	re := regexp.MustCompile(`(\d+)\s*个回复\s*-\s*(\d+)\s*次查看`)
+	re := panwikiRe8
 	matches := re.FindStringSubmatch(statsText)
 	if len(matches) >= 3 {
 		if reply, err := strconv.Atoi(matches[1]); err == nil {
@@ -1421,20 +1421,20 @@ func parseStats(statsText string, replyCount, viewCount *int) {
 func parseTime(timeStr string) time.Time {
 	// 解析如 "2025-8-14 21:21" 格式
 	timeStr = strings.TrimSpace(timeStr)
-	
+
 	formats := []string{
 		"2006-1-2 15:04",
 		"2006-1-2 15:04:05",
 		"2025-1-2 15:04",
 		"2025-1-2 15:04:05",
 	}
-	
+
 	for _, format := range formats {
 		if t, err := time.Parse(format, timeStr); err == nil {
 			return t
 		}
 	}
-	
+
 	// 如果解析失败，返回当前时间
 	return time.Now()
 }
@@ -1460,7 +1460,7 @@ func (p *PanwikiPlugin) extractPasswordFromContent(content, linkURL string) stri
 	if linkIndex == -1 {
 		return ""
 	}
-	
+
 	// 提取链接周围的文本（前20字符，后100字符）- 缩小范围避免错误匹配
 	start := linkIndex - 20
 	if start < 0 {
@@ -1470,9 +1470,9 @@ func (p *PanwikiPlugin) extractPasswordFromContent(content, linkURL string) stri
 	if end > len(content) {
 		end = len(content)
 	}
-	
+
 	surroundingText := content[start:end]
-	
+
 	// 查找密码模式
 	passwordPatterns := []string{
 		`提取码[：:]\s*([A-Za-z0-9]+)`,
@@ -1480,7 +1480,7 @@ func (p *PanwikiPlugin) extractPasswordFromContent(content, linkURL string) stri
 		`pwd[：:=]\s*([A-Za-z0-9]+)`,
 		`password[：:=]\s*([A-Za-z0-9]+)`,
 	}
-	
+
 	for _, pattern := range passwordPatterns {
 		re := regexp.MustCompile(pattern)
 		matches := re.FindStringSubmatch(surroundingText)
@@ -1491,7 +1491,7 @@ func (p *PanwikiPlugin) extractPasswordFromContent(content, linkURL string) stri
 			return matches[1]
 		}
 	}
-	
+
 	// 也尝试从URL查询参数中提取
 	_, urlPassword := p.extractPasswordFromURL(linkURL)
 	return urlPassword
@@ -1501,3 +1501,16 @@ func init() {
 	p := NewPanwikiPlugin()
 	plugin.RegisterGlobalPlugin(p)
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	panwikiRe1 = regexp.MustCompile(`searchid=(\d+)`)
+	panwikiRe2 = regexp.MustCompile(`tid=(\d+)`)
+	panwikiRe3 = regexp.MustCompile(`[^丨]*丨[^：]*：https?://[^\s]+`)
+	panwikiRe4 = regexp.MustCompile(`([^丨]+)丨([^：]+)：(https?://[a-zA-Z0-9\.\-\_\?\=\&\/]+)`)
+	panwikiRe5 = regexp.MustCompile(`([^丨]+)丨[^：]+：`)
+	panwikiRe6 = regexp.MustCompile(`<[^>]*>`)
+	panwikiRe7 = regexp.MustCompile(`详情:\s*(https?://[^\s]+)`)
+	panwikiRe8 = regexp.MustCompile(`(\d+)\s*个回复\s*-\s*(\d+)\s*次查看`)
+)

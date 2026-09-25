@@ -17,12 +17,12 @@ import (
 )
 
 const (
-	BaseURL       = "https://www.cilixiong.org"
-	SearchURL     = "https://www.cilixiong.org/e/search/index.php"
-	UserAgent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-	MaxRetries    = 3
-	RetryDelay    = 2 * time.Second
-	MaxResults    = 30
+	BaseURL    = "https://www.cilixiong.org"
+	SearchURL  = "https://www.cilixiong.org/e/search/index.php"
+	UserAgent  = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+	MaxRetries = 3
+	RetryDelay = 2 * time.Second
+	MaxResults = 30
 )
 
 // DetailPageInfo 详情页信息结构体
@@ -41,7 +41,7 @@ type ClxiongPlugin struct {
 
 func init() {
 	p := &ClxiongPlugin{
-		BaseAsyncPlugin: plugin.NewBaseAsyncPluginWithFilter("clxiong", 2, true), 
+		BaseAsyncPlugin: plugin.NewBaseAsyncPluginWithFilter("clxiong", 2, true),
 		debugMode:       false, // 开启调试模式检查磁力链接提取问题
 	}
 	plugin.RegisterGlobalPlugin(p)
@@ -115,10 +115,10 @@ func (p *ClxiongPlugin) getSearchID(keyword string) (string, error) {
 
 	// 准备POST数据
 	formData := url.Values{}
-	formData.Set("classid", "1,2")      // 1=电影，2=剧集
-	formData.Set("show", "title")       // 搜索字段
-	formData.Set("tempid", "1")         // 模板ID
-	formData.Set("keyboard", keyword)   // 搜索关键词
+	formData.Set("classid", "1,2")    // 1=电影，2=剧集
+	formData.Set("show", "title")     // 搜索字段
+	formData.Set("tempid", "1")       // 模板ID
+	formData.Set("keyboard", keyword) // 搜索关键词
 
 	req, err := http.NewRequest("POST", SearchURL, strings.NewReader(formData.Encode()))
 	if err != nil {
@@ -179,7 +179,7 @@ func (p *ClxiongPlugin) getSearchID(keyword string) (string, error) {
 // extractSearchIDFromLocation 从Location头部提取searchid
 func (p *ClxiongPlugin) extractSearchIDFromLocation(location string) string {
 	// location格式: "result/?searchid=7549"
-	re := regexp.MustCompile(`searchid=(\d+)`)
+	re := clxiongRe1
 	matches := re.FindStringSubmatch(location)
 	if len(matches) > 1 {
 		return matches[1]
@@ -315,7 +315,7 @@ func (p *ClxiongPlugin) parseSearchResults(html string) ([]model.SearchResult, e
 			Content:  content,
 			Channel:  "", // 插件搜索结果必须为空
 			Tags:     []string{"磁力链接", "影视"},
-			Datetime: time.Now(), // 搜索时间
+			Datetime: time.Now(),     // 搜索时间
 			Links:    []model.Link{}, // 初始为空，后续异步获取
 			UniqueID: uniqueID,
 		}
@@ -333,7 +333,7 @@ func (p *ClxiongPlugin) parseSearchResults(html string) ([]model.SearchResult, e
 // extractImageFromStyle 从style属性中提取背景图片URL
 func (p *ClxiongPlugin) extractImageFromStyle(style string) string {
 	// style格式: "background-image: url('https://i.nacloud.cc/2024/12154.webp');"
-	re := regexp.MustCompile(`url\(['"]?([^'"]+)['"]?\)`)
+	re := clxiongRe2
 	matches := re.FindStringSubmatch(style)
 	if len(matches) > 1 {
 		return matches[1]
@@ -353,9 +353,9 @@ func (p *ClxiongPlugin) fetchDetailLinksSync(results []model.SearchResult) []mod
 
 	// 使用WaitGroup确保所有请求完成后再返回
 	var wg sync.WaitGroup
-	var mu sync.Mutex // 保护results切片的互斥锁
+	var mu sync.Mutex                          // 保护results切片的互斥锁
 	var additionalResults []model.SearchResult // 存储额外创建的搜索结果
-	
+
 	// 限制并发数，避免过多请求
 	semaphore := make(chan struct{}, 5) // 最多5个并发请求
 
@@ -363,18 +363,18 @@ func (p *ClxiongPlugin) fetchDetailLinksSync(results []model.SearchResult) []mod
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			
+
 			// 获取信号量
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			
+
 			detailURL := p.extractDetailURLFromContent(results[index].Content)
 			if detailURL != "" {
 				detailInfo := p.fetchDetailPageInfo(detailURL, results[index].Title)
 				if detailInfo != nil && len(detailInfo.MagnetLinks) > 0 {
 					// 为每个磁力链接创建独立的搜索结果，这样每个链接都有自己的note
 					baseResult := results[index]
-					
+
 					// 第一个链接更新原结果
 					if len(detailInfo.FileNames) > 0 {
 						results[index].Title = fmt.Sprintf("%s-%s", baseResult.Title, detailInfo.FileNames[0])
@@ -383,7 +383,7 @@ func (p *ClxiongPlugin) fetchDetailLinksSync(results []model.SearchResult) []mod
 					if !detailInfo.UpdateTime.IsZero() {
 						results[index].Datetime = detailInfo.UpdateTime
 					}
-					
+
 					// 其他链接创建新的搜索结果
 					var newResults []model.SearchResult
 					for i := 1; i < len(detailInfo.MagnetLinks); i++ {
@@ -396,30 +396,30 @@ func (p *ClxiongPlugin) fetchDetailLinksSync(results []model.SearchResult) []mod
 							Images:    baseResult.Images,
 							Links:     []model.Link{detailInfo.MagnetLinks[i]},
 						}
-						
+
 						// 设置独特的标题和时间
 						if i < len(detailInfo.FileNames) {
 							newResult.Title = fmt.Sprintf("%s-%s", baseResult.Title, detailInfo.FileNames[i])
 						} else {
 							newResult.Title = baseResult.Title
 						}
-						
+
 						if !detailInfo.UpdateTime.IsZero() {
 							newResult.Datetime = detailInfo.UpdateTime
 						} else {
 							newResult.Datetime = baseResult.Datetime
 						}
-						
+
 						newResults = append(newResults, newResult)
 					}
-					
+
 					// 使用锁保护切片的修改
 					if len(newResults) > 0 {
 						mu.Lock()
 						additionalResults = append(additionalResults, newResults...)
 						mu.Unlock()
 					}
-					
+
 					if p.debugMode {
 						log.Printf("[CLXIONG] 为结果 %d 获取到 %d 个磁力链接，创建了 %d 个搜索结果", index+1, len(detailInfo.MagnetLinks), len(detailInfo.MagnetLinks))
 					}
@@ -427,13 +427,13 @@ func (p *ClxiongPlugin) fetchDetailLinksSync(results []model.SearchResult) []mod
 			}
 		}(i)
 	}
-	
+
 	// 等待所有goroutine完成
 	wg.Wait()
-	
+
 	// 合并额外创建的搜索结果
 	results = append(results, additionalResults...)
-	
+
 	if p.debugMode {
 		totalLinks := 0
 		for _, result := range results {
@@ -441,14 +441,14 @@ func (p *ClxiongPlugin) fetchDetailLinksSync(results []model.SearchResult) []mod
 		}
 		log.Printf("[CLXIONG] 所有磁力链接获取完成，共获得 %d 个磁力链接，总搜索结果 %d 个", totalLinks, len(results))
 	}
-	
+
 	return results
 }
 
 // extractDetailURLFromContent 从content中提取详情页URL
 func (p *ClxiongPlugin) extractDetailURLFromContent(content string) string {
 	// 查找"详情页: URL"模式
-	re := regexp.MustCompile(`详情页: (https?://[^\s|]+)`)
+	re := clxiongRe3
 	matches := re.FindStringSubmatch(content)
 	if len(matches) > 1 {
 		return matches[1]
@@ -526,7 +526,7 @@ func (p *ClxiongPlugin) parseDetailPageInfo(html string, movieTitle string) *Det
 	detailInfo.FileNames = fileNames
 
 	if p.debugMode {
-		log.Printf("[CLXIONG] 详情页解析完成: 磁力链接 %d 个，更新时间: %v", 
+		log.Printf("[CLXIONG] 详情页解析完成: 磁力链接 %d 个，更新时间: %v",
 			len(detailInfo.MagnetLinks), detailInfo.UpdateTime)
 	}
 
@@ -537,14 +537,14 @@ func (p *ClxiongPlugin) parseDetailPageInfo(html string, movieTitle string) *Det
 func (p *ClxiongPlugin) parseUpdateTimeFromDetail(doc *goquery.Document) time.Time {
 	// 查找"最后更新于：2025-08-16"这样的文本
 	var updateTime time.Time
-	
+
 	doc.Find(".mv_detail p").Each(func(i int, s *goquery.Selection) {
 		text := strings.TrimSpace(s.Text())
 		if strings.Contains(text, "最后更新于：") {
 			// 提取日期部分
 			dateStr := strings.Replace(text, "最后更新于：", "", 1)
 			dateStr = strings.TrimSpace(dateStr)
-			
+
 			// 解析日期，支持多种格式
 			layouts := []string{
 				"2006-01-02",
@@ -552,7 +552,7 @@ func (p *ClxiongPlugin) parseUpdateTimeFromDetail(doc *goquery.Document) time.Ti
 				"2006/01/02",
 				"2006/1/2",
 			}
-			
+
 			for _, layout := range layouts {
 				if t, err := time.Parse(layout, dateStr); err == nil {
 					updateTime = t
@@ -562,13 +562,13 @@ func (p *ClxiongPlugin) parseUpdateTimeFromDetail(doc *goquery.Document) time.Ti
 					return
 				}
 			}
-			
+
 			if p.debugMode {
 				log.Printf("[CLXIONG] 无法解析更新时间: %s", dateStr)
 			}
 		}
 	})
-	
+
 	return updateTime
 }
 
@@ -581,11 +581,11 @@ func (p *ClxiongPlugin) parseMagnetLinksFromDetailDoc(doc *goquery.Document, mov
 		// 调试：检查是否找到磁力下载区域
 		mvDown := doc.Find(".mv_down")
 		log.Printf("[CLXIONG] 找到 .mv_down 区域数量: %d", mvDown.Length())
-		
+
 		// 调试：检查磁力链接数量
 		magnetLinks := doc.Find(".mv_down a[href^='magnet:']")
 		log.Printf("[CLXIONG] 找到磁力链接数量: %d", magnetLinks.Length())
-		
+
 		// 如果没找到，尝试其他可能的选择器
 		if magnetLinks.Length() == 0 {
 			allMagnetLinks := doc.Find("a[href^='magnet:']")
@@ -599,7 +599,7 @@ func (p *ClxiongPlugin) parseMagnetLinksFromDetailDoc(doc *goquery.Document, mov
 		if exists && href != "" {
 			// 获取文件名（链接文本）
 			fileName := strings.TrimSpace(s.Text())
-			
+
 			link := model.Link{
 				URL:  href,
 				Type: "magnet",
@@ -627,12 +627,12 @@ func (p *ClxiongPlugin) parseMagnetLinksFromDetailDoc(doc *goquery.Document, mov
 // generateUniqueID 生成唯一ID
 func (p *ClxiongPlugin) generateUniqueID(detailPath string) string {
 	// 从路径中提取ID，如 "/drama/4466.html" -> "4466"
-	re := regexp.MustCompile(`/(?:drama|movie)/(\d+)\.html`)
+	re := clxiongRe4
 	matches := re.FindStringSubmatch(detailPath)
 	if len(matches) > 1 {
 		return fmt.Sprintf("clxiong-%s", matches[1])
 	}
-	
+
 	// 备用方案：使用完整路径生成哈希
 	hash := 0
 	for _, char := range detailPath {
@@ -643,3 +643,12 @@ func (p *ClxiongPlugin) generateUniqueID(detailPath string) string {
 	}
 	return fmt.Sprintf("clxiong-%d", hash)
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	clxiongRe1 = regexp.MustCompile(`searchid=(\d+)`)
+	clxiongRe2 = regexp.MustCompile(`url\(['"]?([^'"]+)['"]?\)`)
+	clxiongRe3 = regexp.MustCompile(`详情页: (https?://[^\s|]+)`)
+	clxiongRe4 = regexp.MustCompile(`/(?:drama|movie)/(\d+)\.html`)
+)

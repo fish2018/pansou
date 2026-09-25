@@ -26,14 +26,13 @@ import (
 )
 
 const (
-	MaxConcurrentUsers = 10  // 最多同时搜索多少个微博用户
-	MaxConcurrentWeibo = 30  // 最多同时处理多少条微博（获取评论）
-	MaxComments        = 1   // 每条微博最多获取多少条评论
+	MaxConcurrentUsers = 10 // 最多同时搜索多少个微博用户
+	MaxConcurrentWeibo = 30 // 最多同时处理多少条微博（获取评论）
+	MaxComments        = 1  // 每条微博最多获取多少条评论
 	DebugLog           = false
 )
 
 var StorageDir string
-
 
 const HTMLTemplate = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -470,7 +469,7 @@ func (p *WeiboPlugin) RegisterWebRoutes(router *gin.RouterGroup) {
 	weibo := router.Group("/weibo")
 	weibo.GET("/:param", p.handleManagePage)
 	weibo.POST("/:param", p.handleManagePagePOST)
-	
+
 	fmt.Printf("[Weibo] Web路由已注册: /weibo/:param\n")
 }
 
@@ -588,7 +587,7 @@ func (p *WeiboPlugin) getActiveUsers() []*User {
 
 	p.users.Range(func(key, value interface{}) bool {
 		user := value.(*User)
-		
+
 		if user.Status != "active" {
 			return true
 		}
@@ -677,8 +676,8 @@ func (p *WeiboPlugin) handleGetStatus(c *gin.Context, hash string) {
 	if user.Status == "active" && user.Cookie != "" {
 		loggedIn = true
 	}
-	
-	fmt.Printf("[Weibo DEBUG] handleGetStatus - hash: %s, Status: %s, Cookie长度: %d, loggedIn: %v\n", 
+
+	fmt.Printf("[Weibo DEBUG] handleGetStatus - hash: %s, Status: %s, Cookie长度: %d, loggedIn: %v\n",
 		hash, user.Status, len(user.Cookie), loggedIn)
 
 	var qrcodeBase64 string
@@ -715,9 +714,9 @@ func (p *WeiboPlugin) handleGetStatus(c *gin.Context, hash string) {
 		"user_ids":        user.UserIDs,
 		"qrcode_base64":   qrcodeBase64,
 	}
-	
+
 	fmt.Printf("[Weibo DEBUG] handleGetStatus响应 - logged_in: %v, status: %s\n", loggedIn, user.Status)
-	
+
 	respondSuccess(c, "获取成功", responseData)
 }
 
@@ -789,20 +788,20 @@ func (p *WeiboPlugin) handleCheckLogin(c *gin.Context, hash string) {
 
 	if loginResult.Status == "success" {
 		fmt.Printf("[Weibo DEBUG] 登录成功! 开始更新用户状态...\n")
-		
+
 		user.Cookie = loginResult.Cookie
 		user.Status = "active"
 		user.LoginAt = time.Now()
 		user.ExpireAt = time.Now().AddDate(0, 0, 30)
 		user.Qrsig = ""
 		user.QRCodeCache = nil
-		
+
 		fmt.Printf("[Weibo DEBUG] 更新后 - Status: %s, Cookie长度: %d\n", user.Status, len(user.Cookie))
 
 		// 保存到内存和文件
 		p.users.Store(hash, user)
 		fmt.Printf("[Weibo DEBUG] 已保存到内存\n")
-		
+
 		if err := p.persistUser(user); err != nil {
 			fmt.Printf("[Weibo DEBUG] 持久化失败: %v\n", err)
 			respondError(c, "保存失败: "+err.Error())
@@ -975,7 +974,7 @@ func (p *WeiboPlugin) buildUserTasks(users []*User) []UserTask {
 				}
 			}
 		}
-		
+
 		tasks = append(tasks, UserTask{
 			UserID: uid,
 			Cookie: cookie,
@@ -992,7 +991,7 @@ func (p *WeiboPlugin) refreshCookie(cookieStr string) string {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
-	
+
 	// 访问PC端首页
 	reqPC, err := http.NewRequest("GET", "https://weibo.com/", nil)
 	if err != nil {
@@ -1000,13 +999,13 @@ func (p *WeiboPlugin) refreshCookie(cookieStr string) string {
 	}
 	reqPC.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
 	reqPC.Header.Set("Cookie", cookieStr)
-	
+
 	respPC, err := client.Do(reqPC)
 	if err != nil {
 		return cookieStr
 	}
 	respPC.Body.Close()
-	
+
 	// 访问移动端首页
 	reqMobile, err := http.NewRequest("GET", "https://m.weibo.cn/", nil)
 	if err != nil {
@@ -1014,16 +1013,16 @@ func (p *WeiboPlugin) refreshCookie(cookieStr string) string {
 	}
 	reqMobile.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15")
 	reqMobile.Header.Set("Cookie", cookieStr)
-	
+
 	respMobile, err := client.Do(reqMobile)
 	if err != nil {
 		return cookieStr
 	}
 	respMobile.Body.Close()
-	
+
 	// 合并响应中的新Cookie
 	cookieMap := make(map[string]string)
-	
+
 	// 解析原始Cookie
 	for _, item := range strings.Split(cookieStr, "; ") {
 		if idx := strings.Index(item, "="); idx > 0 {
@@ -1032,27 +1031,27 @@ func (p *WeiboPlugin) refreshCookie(cookieStr string) string {
 			cookieMap[key] = value
 		}
 	}
-	
+
 	// 更新PC端响应的Cookie
 	for _, cookie := range respPC.Cookies() {
 		if cookie.Value != "" {
 			cookieMap[cookie.Name] = cookie.Value
 		}
 	}
-	
+
 	// 更新移动端响应的Cookie
 	for _, cookie := range respMobile.Cookies() {
 		if cookie.Value != "" {
 			cookieMap[cookie.Name] = cookie.Value
 		}
 	}
-	
+
 	// 重新组合Cookie字符串
 	var parts []string
 	for k, v := range cookieMap {
 		parts = append(parts, fmt.Sprintf("%s=%s", k, v))
 	}
-	
+
 	return strings.Join(parts, "; ")
 }
 
@@ -1093,7 +1092,7 @@ func (p *WeiboPlugin) searchUserWeibo(uid, cookie, keyword string) []model.Searc
 
 	for page := 1; page <= maxPages; page++ {
 		apiURL := "https://weibo.com/ajax/profile/searchblog"
-		
+
 		req, err := http.NewRequest("GET", apiURL, nil)
 		if err != nil {
 			if DebugLog {
@@ -1162,16 +1161,16 @@ func (p *WeiboPlugin) searchUserWeibo(uid, cookie, keyword string) []model.Searc
 		// ok字段判断：支持多种类型（json.Number, float64, int, bool等）
 		okValue := apiResp["ok"]
 		isOK := false
-		
+
 		if okValue != nil {
 			okStr := fmt.Sprintf("%v", okValue)
 			isOK = (okStr == "1" || okStr == "true")
 		}
-		
+
 		if DebugLog {
 			fmt.Printf("[Weibo] ok字段: %v (类型:%T), 判断结果: %v\n", okValue, okValue, isOK)
 		}
-		
+
 		if !isOK {
 			if DebugLog {
 				fmt.Printf("[Weibo] API返回失败, msg=%v, 停止搜索\n", apiResp["msg"])
@@ -1186,7 +1185,7 @@ func (p *WeiboPlugin) searchUserWeibo(uid, cookie, keyword string) []model.Searc
 			}
 			break
 		}
-		
+
 		list, _ := data["list"].([]interface{})
 
 		if DebugLog {
@@ -1200,15 +1199,15 @@ func (p *WeiboPlugin) searchUserWeibo(uid, cookie, keyword string) []model.Searc
 		// 并发处理每条微博（获取评论）
 		var wg sync.WaitGroup
 		var mu sync.Mutex
-		
+
 		for i, item := range list {
 			itemMap, _ := item.(map[string]interface{})
 			wg.Add(1)
 			go func(index int, weiboData map[string]interface{}) {
 				defer wg.Done()
-				
+
 				result := p.parseWeibo(weiboData, uid)
-				
+
 				// 获取微博ID用于获取评论
 				weiboID := ""
 				if idStr, ok := weiboData["idstr"].(string); ok {
@@ -1216,23 +1215,23 @@ func (p *WeiboPlugin) searchUserWeibo(uid, cookie, keyword string) []model.Searc
 				} else if idNum, ok := weiboData["id"].(float64); ok {
 					weiboID = fmt.Sprintf("%.0f", idNum)
 				}
-				
+
 				if DebugLog {
 					fmt.Printf("[Weibo] 微博%d: 标题=%s, 正文链接数=%d\n", index+1, result.Title[:min(30, len(result.Title))], len(result.Links))
 				}
-				
+
 				// 如果正文没有网盘链接，才获取评论
 				if len(result.Links) == 0 && weiboID != "" {
 					if DebugLog {
 						fmt.Printf("[Weibo] 正文无链接，获取评论...\n")
 					}
 					comments := p.getComments(weiboID, cookie, MaxComments)
-					
+
 					commentLinkCount := 0
 					for _, comment := range comments {
 						// 1. 从评论文本直接提取网盘链接
 						commentLinks := extractNetworkDriveLinks(comment.Text, result.Datetime)
-						
+
 						// 2. 从评论中的URLs（已解码的sinaurl）提取网盘链接或抓取页面
 						for _, decodedURL := range comment.URLs {
 							// 先尝试直接匹配网盘链接
@@ -1248,29 +1247,29 @@ func (p *WeiboPlugin) searchUserWeibo(uid, cookie, keyword string) []model.Searc
 								commentLinks = append(commentLinks, pageLinks...)
 							}
 						}
-						
+
 						// 添加到结果
 						result.Links = append(result.Links, commentLinks...)
 						commentLinkCount += len(commentLinks)
 					}
-					
+
 					if DebugLog {
 						fmt.Printf("[Weibo] 获取%d条评论, 评论链接数=%d, 总链接数=%d\n", len(comments), commentLinkCount, len(result.Links))
 					}
 				}
-				
+
 				if len(result.Links) > 0 {
 					mu.Lock()
 					results = append(results, result)
 					mu.Unlock()
-					
+
 					if DebugLog {
 						fmt.Printf("[Weibo] ✓ 找到网盘链接: %s, 链接数: %d\n", result.Title, len(result.Links))
 					}
 				}
 			}(i, itemMap)
 		}
-		
+
 		wg.Wait()
 
 		time.Sleep(time.Second)
@@ -1286,14 +1285,14 @@ func (p *WeiboPlugin) getComments(weiboID, cookie string, maxComments int) []Com
 	var comments []Comment
 	maxID := 0
 	maxIDType := 0
-	
+
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
-	
+
 	for len(comments) < maxComments {
 		apiURL := "https://m.weibo.cn/comments/hotflow"
-		
+
 		req, err := http.NewRequest("GET", apiURL, nil)
 		if err != nil {
 			if DebugLog {
@@ -1301,23 +1300,23 @@ func (p *WeiboPlugin) getComments(weiboID, cookie string, maxComments int) []Com
 			}
 			break
 		}
-		
+
 		q := req.URL.Query()
 		q.Add("id", weiboID)
 		q.Add("mid", weiboID)
 		q.Add("max_id", fmt.Sprintf("%d", maxID))
 		q.Add("max_id_type", fmt.Sprintf("%d", maxIDType))
 		req.URL.RawQuery = q.Encode()
-		
+
 		req.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15")
 		req.Header.Set("Referer", "https://m.weibo.cn/")
 		req.Header.Set("Accept", "application/json, text/plain, */*")
 		req.Header.Set("Cookie", cookie)
-		
+
 		if DebugLog {
 			fmt.Printf("[Weibo] 获取评论: %s, max_id=%d\n", weiboID, maxID)
 		}
-		
+
 		resp, err := client.Do(req)
 		if err != nil {
 			if DebugLog {
@@ -1325,7 +1324,7 @@ func (p *WeiboPlugin) getComments(weiboID, cookie string, maxComments int) []Com
 			}
 			break
 		}
-		
+
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
@@ -1334,14 +1333,14 @@ func (p *WeiboPlugin) getComments(weiboID, cookie string, maxComments int) []Com
 			}
 			break
 		}
-		
+
 		if resp.StatusCode != 200 {
 			if DebugLog {
 				fmt.Printf("[Weibo] 评论API状态码错误: %d\n", resp.StatusCode)
 			}
 			break
 		}
-		
+
 		var apiResp map[string]interface{}
 		if err := json.Unmarshal(body, &apiResp); err != nil {
 			if DebugLog {
@@ -1349,55 +1348,55 @@ func (p *WeiboPlugin) getComments(weiboID, cookie string, maxComments int) []Com
 			}
 			break
 		}
-		
+
 		data, _ := apiResp["data"].(map[string]interface{})
 		if data == nil {
 			break
 		}
-		
+
 		commentList, _ := data["data"].([]interface{})
 		if len(commentList) == 0 {
 			break
 		}
-		
+
 		for _, item := range commentList {
 			commentMap, _ := item.(map[string]interface{})
 			rawText, _ := commentMap["text"].(string)
-			
+
 			cleanText := cleanHTML(rawText)
 			urls := extractURLsFromComment(rawText)
-			
+
 			comments = append(comments, Comment{
 				Text: cleanText,
 				URLs: urls,
 			})
-			
+
 			if len(comments) >= maxComments {
 				break
 			}
 		}
-		
+
 		newMaxID := 0
 		if maxIDVal, ok := data["max_id"].(float64); ok {
 			newMaxID = int(maxIDVal)
 		}
-		
+
 		if newMaxID == 0 || newMaxID == maxID {
 			break
 		}
-		
+
 		maxID = newMaxID
 		if maxIDTypeVal, ok := data["max_id_type"].(float64); ok {
 			maxIDType = int(maxIDTypeVal)
 		}
-		
+
 		time.Sleep(500 * time.Millisecond)
 	}
-	
+
 	if DebugLog && len(comments) > 0 {
 		fmt.Printf("[Weibo] 获取到%d条评论\n", len(comments))
 	}
-	
+
 	return comments
 }
 
@@ -1405,10 +1404,10 @@ func extractURLsFromComment(htmlText string) []string {
 	if htmlText == "" {
 		return []string{}
 	}
-	
-	pattern := regexp.MustCompile(`https://weibo\.cn/sinaurl\?u=([^"&\s]+)`)
+
+	pattern := weiboRe1
 	matches := pattern.FindAllStringSubmatch(htmlText, -1)
-	
+
 	var urls []string
 	for _, match := range matches {
 		if len(match) > 1 {
@@ -1418,7 +1417,7 @@ func extractURLsFromComment(htmlText string) []string {
 			}
 		}
 	}
-	
+
 	return urls
 }
 
@@ -1427,30 +1426,30 @@ func fetchPageAndExtractLinks(pageURL string, datetime time.Time) []model.Link {
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 	}
-	
+
 	req, err := http.NewRequest("GET", pageURL, nil)
 	if err != nil {
 		return nil
 	}
-	
+
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != 200 {
 		return nil
 	}
-	
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil
 	}
-	
+
 	// 从HTML中提取网盘链接
 	htmlContent := string(body)
 	return extractNetworkDriveLinks(htmlContent, datetime)
@@ -1467,13 +1466,13 @@ func (p *WeiboPlugin) parseWeibo(weibo map[string]interface{}, uid string) model
 	if textRaw == "" {
 		textRaw, _ = weibo["text"].(string)
 	}
-	
+
 	// 检查是否是长文本（需要额外请求获取完整内容）
 	isLongText := false
 	if longTextFlag, ok := weibo["isLongText"].(bool); ok && longTextFlag {
 		isLongText = true
 	}
-	
+
 	// 先获取发布时间
 	createdAt, _ := weibo["created_at"].(string)
 	publishTime := time.Now()
@@ -1482,9 +1481,9 @@ func (p *WeiboPlugin) parseWeibo(weibo map[string]interface{}, uid string) model
 			publishTime = t
 		}
 	}
-	
+
 	text := cleanHTML(textRaw)
-	
+
 	if DebugLog && len(text) > 0 {
 		truncated := ""
 		if isLongText {
@@ -1496,28 +1495,28 @@ func (p *WeiboPlugin) parseWeibo(weibo map[string]interface{}, uid string) model
 	// 1. 直接从文本中提取网盘链接
 	links := extractNetworkDriveLinks(text, publishTime)
 	fmt.Println(links)
-	
+
 	// 2. 处理url_struct字段中的链接（包含所有外部链接，已由微博API解码）
 	if urlStruct, ok := weibo["url_struct"].([]interface{}); ok && len(urlStruct) > 0 {
 		if DebugLog {
 			fmt.Printf("[Weibo DEBUG] 发现url_struct字段，包含%d个链接\n", len(urlStruct))
 		}
-		
+
 		for _, urlItem := range urlStruct {
 			if urlMap, ok := urlItem.(map[string]interface{}); ok {
 				if urlMap["url_title"] != "网页链接" {
 					continue
 				}
 				longURL, _ := urlMap["long_url"].(string)
-				
+
 				if longURL == "" {
 					continue
 				}
-				
+
 				if DebugLog {
 					fmt.Printf("[Weibo DEBUG] url_struct中的长链接: %s\n", longURL)
 				}
-				
+
 				// 先尝试直接匹配网盘链接
 				directLinks := extractNetworkDriveLinks(longURL, publishTime)
 				if len(directLinks) > 0 {
@@ -1541,7 +1540,7 @@ func (p *WeiboPlugin) parseWeibo(weibo map[string]interface{}, uid string) model
 			}
 		}
 	}
-	
+
 	if DebugLog {
 		fmt.Printf("[Weibo DEBUG] 最终共提取到%d个网盘链接\n", len(links))
 	}
@@ -1604,7 +1603,7 @@ func extractNetworkDriveLinks(text string, datetime time.Time) []model.Link {
 				continue
 			}
 			seenURLs[match] = true
-			
+
 			password := ""
 			start := strings.Index(text, match)
 			if start != -1 {
@@ -1647,10 +1646,10 @@ func min(a, b int) int {
 }
 
 func cleanHTML(html string) string {
-	re := regexp.MustCompile(`<[^>]+>`)
+	re := weiboRe2
 	text := re.ReplaceAllString(html, "")
 	text = strings.TrimSpace(text)
-	text = regexp.MustCompile(`\s+`).ReplaceAllString(text, " ")
+	text = weiboRe3.ReplaceAllString(text, " ")
 	return text
 }
 
@@ -1663,48 +1662,48 @@ type LoginResult struct {
 func (p *WeiboPlugin) checkQRLoginStatus(qrsig string) (*LoginResult, error) {
 	// 参考Python auto.py第80行的check_qrcode_status实现
 	// URL: https://passport.weibo.com/sso/v2/qrcode/check?entry=sso&qrid={qrid}&callback=STK_{timestamp}
-	
+
 	// 但我们使用qrsig而不是qrid，需要从session cookie中获取qrid
 	// 实际上Python实现中，qrsig是从get_qrcode的响应中提取的qrid
 	// 这里我们用qrsig作为qrid
-	
+
 	timestamp := time.Now().UnixMilli()
 	checkURL := fmt.Sprintf("https://passport.weibo.com/sso/v2/qrcode/check?entry=sso&qrid=%s&callback=STK_%d", qrsig, timestamp)
-	
+
 	fmt.Printf("[Weibo DEBUG] checkQRLoginStatus调用 - qrsig: %s\n", qrsig)
 	fmt.Printf("[Weibo DEBUG] checkURL: %s\n", checkURL)
-	
+
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	
+
 	req, err := http.NewRequest("GET", checkURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.111 Safari/537.36")
 	req.Header.Set("Referer", "https://weibo.com/")
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 响应可能是JSONP格式: STK_xxx({...}) 或纯JSON格式: {...}
 	responseText := string(body)
-	
+
 	fmt.Printf("[Weibo DEBUG] 原始响应: %s\n", responseText)
-	
+
 	// 提取JSON部分
 	var jsonStr string
 	if strings.HasPrefix(responseText, "STK_") {
@@ -1724,7 +1723,7 @@ func (p *WeiboPlugin) checkQRLoginStatus(qrsig string) (*LoginResult, error) {
 		fmt.Printf("[Weibo DEBUG] 未知响应格式\n")
 		return &LoginResult{Status: "waiting"}, nil
 	}
-	
+
 	var result struct {
 		Retcode int    `json:"retcode"`
 		Msg     string `json:"msg"`
@@ -1732,31 +1731,31 @@ func (p *WeiboPlugin) checkQRLoginStatus(qrsig string) (*LoginResult, error) {
 			URL string `json:"url"`
 		} `json:"data"`
 	}
-	
+
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
 		fmt.Printf("[Weibo DEBUG] JSON解析失败: %v, JSON字符串: %s\n", err, jsonStr)
 		return &LoginResult{Status: "waiting"}, nil
 	}
-	
+
 	fmt.Printf("[Weibo DEBUG] 解析后retcode: %d, msg: %s\n", result.Retcode, result.Msg)
-	
+
 	// 参考Python auto.py第93-108行的状态码处理
 	// 20000000: 扫码成功
 	// 50114001: 等待扫码
 	// 50114002: 已扫描，等待确认
 	// 50114004: 二维码已过期
-	
+
 	if result.Retcode == 20000000 {
 		// 登录成功，需要初始化Cookie
 		alt := result.Data.URL
 		fmt.Printf("[Weibo DEBUG] 登录成功! alt URL: %s\n", alt)
-		
+
 		cookieStr, err := p.initCookieFromAlt(alt)
 		if err != nil {
 			fmt.Printf("[Weibo DEBUG] 初始化Cookie失败: %v\n", err)
 			return nil, fmt.Errorf("初始化Cookie失败: %v", err)
 		}
-		
+
 		fmt.Printf("[Weibo DEBUG] Cookie初始化成功, Cookie长度: %d\n", len(cookieStr))
 		return &LoginResult{Status: "success", Cookie: cookieStr}, nil
 	} else if result.Retcode == 50114002 {
@@ -1768,7 +1767,7 @@ func (p *WeiboPlugin) checkQRLoginStatus(qrsig string) (*LoginResult, error) {
 		fmt.Printf("[Weibo DEBUG] 二维码已过期\n")
 		return &LoginResult{Status: "expired", Message: "二维码已过期"}, nil
 	}
-	
+
 	// 默认状态：等待扫码
 	fmt.Printf("[Weibo DEBUG] 等待扫码中, retcode: %d\n", result.Retcode)
 	return &LoginResult{Status: "waiting", Message: "等待扫码中"}, nil
@@ -1779,69 +1778,69 @@ func (p *WeiboPlugin) generateQRCodeWithSig() ([]byte, string, error) {
 	// 第一步：获取二维码信息（包含api_key和qrid）
 	timestamp := time.Now().UnixMilli()
 	infoURL := fmt.Sprintf("https://passport.weibo.com/sso/v2/qrcode/image?entry=miniblog&size=180&callback=STK_%d", timestamp)
-	
+
 	client := &http.Client{Timeout: 15 * time.Second}
-	
+
 	req, err := http.NewRequest("GET", infoURL, nil)
 	if err != nil {
 		return nil, "", err
 	}
-	
+
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.111 Safari/537.36")
 	req.Header.Set("Referer", "https://weibo.com/")
-	
+
 	infoResp, err := client.Do(req)
 	if err != nil {
 		return nil, "", err
 	}
 	defer infoResp.Body.Close()
-	
+
 	infoBody, err := io.ReadAll(infoResp.Body)
 	if err != nil {
 		return nil, "", err
 	}
-	
+
 	// 响应是JSONP格式，提取JSON部分
 	infoText := string(infoBody)
-	
+
 	// 提取api_key: 正则 api_key=(.*)"
-	apiKeyRegex := regexp.MustCompile(`api_key=([^"]+)`)
+	apiKeyRegex := weiboRe4
 	apiKeyMatch := apiKeyRegex.FindStringSubmatch(infoText)
 	if len(apiKeyMatch) < 2 {
 		return nil, "", fmt.Errorf("无法提取api_key")
 	}
 	apiKey := apiKeyMatch[1]
-	
+
 	// 提取qrid: 正则 "qrid":"(.*?)"
-	qridRegex := regexp.MustCompile(`"qrid":"([^"]+)"`)
+	qridRegex := weiboRe5
 	qridMatch := qridRegex.FindStringSubmatch(infoText)
 	if len(qridMatch) < 2 {
 		return nil, "", fmt.Errorf("无法提取qrid")
 	}
 	qrid := qridMatch[1]
-	
+
 	// 第二步：使用api_key获取二维码图片
 	qrImageURL := fmt.Sprintf("https://v2.qr.weibo.cn/inf/gen?api_key=%s", apiKey)
-	
+
 	qrReq, err := http.NewRequest("GET", qrImageURL, nil)
 	if err != nil {
 		return nil, "", err
 	}
-	
+
 	qrReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.111 Safari/537.36")
 	qrReq.Header.Set("Referer", "https://weibo.com/")
-	
+
 	qrResp, err := client.Do(qrReq)
 	if err != nil {
 		return nil, "", err
 	}
 	defer qrResp.Body.Close()
-	
+
 	qrcodeBytes, err := io.ReadAll(qrResp.Body)
 	if err != nil {
 		return nil, "", err
 	}
-	
+
 	// 返回二维码图片和qrid（用于后续的登录状态检查）
 	return qrcodeBytes, qrid, nil
 }
@@ -1849,15 +1848,15 @@ func (p *WeiboPlugin) generateQRCodeWithSig() ([]byte, string, error) {
 func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 	// 参考Python auto.py第118-146行的init_cookie实现
 	// 访问alt URL获取PC端Cookie，然后访问移动端获取移动端Cookie
-	
+
 	fmt.Printf("[Weibo DEBUG] initCookieFromAlt开始 - alt URL: %s\n", alt)
-	
+
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		fmt.Printf("[Weibo DEBUG] 创建cookiejar失败: %v\n", err)
 		return "", err
 	}
-	
+
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		Jar:     jar,
@@ -1866,7 +1865,7 @@ func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 			return nil
 		},
 	}
-	
+
 	// 第一步：访问alt URL（允许重定向）
 	req1, err := http.NewRequest("GET", alt, nil)
 	if err != nil {
@@ -1874,7 +1873,7 @@ func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 	}
 	req1.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.111 Safari/537.36")
 	req1.Header.Set("Referer", "https://weibo.com/")
-	
+
 	resp1, err := client.Do(req1)
 	if err != nil {
 		fmt.Printf("[Weibo DEBUG] 访问alt URL失败: %v\n", err)
@@ -1882,7 +1881,7 @@ func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 	}
 	resp1.Body.Close()
 	fmt.Printf("[Weibo DEBUG] 步骤1完成: 访问alt URL, 状态码: %d\n", resp1.StatusCode)
-	
+
 	// 第二步：访问weibo.com首页
 	req2, err := http.NewRequest("GET", "https://weibo.com/", nil)
 	if err != nil {
@@ -1890,7 +1889,7 @@ func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 	}
 	req2.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.111 Safari/537.36")
 	req2.Header.Set("Referer", "https://weibo.com/")
-	
+
 	resp2, err := client.Do(req2)
 	if err != nil {
 		fmt.Printf("[Weibo DEBUG] 访问weibo.com失败: %v\n", err)
@@ -1898,7 +1897,7 @@ func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 	}
 	resp2.Body.Close()
 	fmt.Printf("[Weibo DEBUG] 步骤2完成: 访问weibo.com, 状态码: %d\n", resp2.StatusCode)
-	
+
 	// 第三步：访问移动端首页
 	req3, err := http.NewRequest("GET", "https://m.weibo.cn/", nil)
 	if err != nil {
@@ -1906,7 +1905,7 @@ func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 	}
 	req3.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148")
 	req3.Header.Set("Referer", "https://m.weibo.cn/")
-	
+
 	resp3, err := client.Do(req3)
 	if err != nil {
 		fmt.Printf("[Weibo DEBUG] 访问m.weibo.cn失败: %v\n", err)
@@ -1914,7 +1913,7 @@ func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 	}
 	resp3.Body.Close()
 	fmt.Printf("[Weibo DEBUG] 步骤3完成: 访问m.weibo.cn, 状态码: %d\n", resp3.StatusCode)
-	
+
 	// 第四步：访问移动端profile页面
 	req4, err := http.NewRequest("GET", "https://m.weibo.cn/profile", nil)
 	if err != nil {
@@ -1922,7 +1921,7 @@ func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 	}
 	req4.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148")
 	req4.Header.Set("Referer", "https://m.weibo.cn/")
-	
+
 	resp4, err := client.Do(req4)
 	if err != nil {
 		fmt.Printf("[Weibo DEBUG] 访问m.weibo.cn/profile失败: %v\n", err)
@@ -1930,21 +1929,21 @@ func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 	}
 	resp4.Body.Close()
 	fmt.Printf("[Weibo DEBUG] 步骤4完成: 访问m.weibo.cn/profile, 状态码: %d\n", resp4.StatusCode)
-	
+
 	// 收集所有Cookie
 	allCookies := make(map[string]string)
-	
+
 	// 从cookie jar中提取所有Cookie
 	weiboURL, _ := url.Parse("https://weibo.com")
 	weiboCNURL, _ := url.Parse("https://m.weibo.cn")
-	
+
 	for _, cookie := range jar.Cookies(weiboURL) {
 		allCookies[cookie.Name] = cookie.Value
 	}
 	for _, cookie := range jar.Cookies(weiboCNURL) {
 		allCookies[cookie.Name] = cookie.Value
 	}
-	
+
 	fmt.Printf("[Weibo DEBUG] 收集到的Cookie字段: %v\n", func() []string {
 		keys := make([]string, 0, len(allCookies))
 		for k := range allCookies {
@@ -1952,7 +1951,7 @@ func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 		}
 		return keys
 	}())
-	
+
 	// 检查必需的Cookie字段
 	requiredFields := []string{"SUB", "SUBP"}
 	for _, field := range requiredFields {
@@ -1963,16 +1962,16 @@ func (p *WeiboPlugin) initCookieFromAlt(alt string) (string, error) {
 			fmt.Printf("[Weibo DEBUG] ✓ 找到必需字段: %s\n", field)
 		}
 	}
-	
+
 	// 构建Cookie字符串
 	cookieParts := make([]string, 0, len(allCookies))
 	for k, v := range allCookies {
 		cookieParts = append(cookieParts, fmt.Sprintf("%s=%s", k, v))
 	}
-	
+
 	cookieStr := strings.Join(cookieParts, "; ")
 	fmt.Printf("[Weibo DEBUG] Cookie初始化完成, 总长度: %d, 字段数: %d\n", len(cookieStr), len(allCookies))
-	
+
 	return cookieStr, nil
 }
 
@@ -2061,3 +2060,13 @@ func (p *WeiboPlugin) markInactiveUsers() int {
 
 	return markedCount
 }
+
+// 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
+// 提到包级后只编译一次，匹配行为不变。
+var (
+	weiboRe1 = regexp.MustCompile(`https://weibo\.cn/sinaurl\?u=([^"&\s]+)`)
+	weiboRe2 = regexp.MustCompile(`<[^>]+>`)
+	weiboRe3 = regexp.MustCompile(`\s+`)
+	weiboRe4 = regexp.MustCompile(`api_key=([^"]+)`)
+	weiboRe5 = regexp.MustCompile(`"qrid":"([^"]+)"`)
+)
