@@ -3,7 +3,6 @@ package dy4k
 import (
 	"context"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -418,7 +417,7 @@ func (p *Dy4kPlugin) searchPage(client *http.Client, encodedKeyword string, page
 	}
 
 	// 7. 读取并打印HTML响应
-	htmlBytes, err := io.ReadAll(resp.Body)
+	htmlBytes, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, 0, fmt.Errorf("[%s] 第%d页读取响应失败: %w", p.Name(), page, err)
 	}
@@ -1044,7 +1043,7 @@ func (p *Dy4kPlugin) doRequestWithRetry(req *http.Request, client *http.Client) 
 
 		// 读取响应体以便调试
 		if resp.Body != nil {
-			bodyBytes, readErr := io.ReadAll(resp.Body)
+			bodyBytes, readErr := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 			resp.Body.Close()
 			if readErr == nil && len(bodyBytes) > 0 {
 				bodyPreview := string(bodyBytes)

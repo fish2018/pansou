@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -276,7 +276,7 @@ func (p *XysPlugin) executeSearch(client *http.Client, token, keyword string) ([
 	}
 
 	// 读取响应体
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应体失败: %w", p.Name(), err)
 	}

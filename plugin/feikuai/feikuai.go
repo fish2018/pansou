@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -135,7 +134,7 @@ func (p *FeikuaiPlugin) searchImpl(client *http.Client, keyword string, ext map[
 	}
 
 	// 读取并解析JSON响应
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return p.searchWeb(client, keyword, fmt.Errorf("[%s] 读取 API 响应失败: %w", p.Name(), err))
 	}

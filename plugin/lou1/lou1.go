@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"hash/crc32"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -198,7 +197,7 @@ func (p *Lou1Plugin) fetchSearchResults(client *http.Client, keyword string) ([]
 		return nil, fmt.Errorf("[%s] 搜索返回状态码: %d", p.Name(), resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取搜索响应失败: %w", p.Name(), err)
 	}

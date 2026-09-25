@@ -3,10 +3,10 @@ package jikepan
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net/http"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"pansou/util/json"
 	"strings"
 	"time"
@@ -88,7 +88,7 @@ func (p *JikepanAsyncV2Plugin) doSearch(client *http.Client, keyword string, ext
 
 	// 解析响应
 	var apiResp JikepanResponse
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read response body failed: %w", err)
 	}

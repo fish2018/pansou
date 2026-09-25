@@ -2,11 +2,11 @@ package discourse
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"pansou/util/json"
 	"regexp"
 	"strings"
@@ -233,7 +233,7 @@ func (p *DiscourseAsyncPlugin) searchImpl(client *http.Client, keyword string, e
 		}
 
 		// 读取响应体
-		body, err := io.ReadAll(resp.Body)
+		body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		resp.Body.Close()
 		if err != nil {
 			if len(allResults) > 0 {
@@ -484,7 +484,7 @@ func (p *DiscourseAsyncPlugin) GetTopicDetail(topicID int) ([]model.Link, error)
 	}
 
 	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read response failed: %w", err)
 	}

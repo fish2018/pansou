@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
-	"io"
 	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -215,7 +215,7 @@ func (p *JavdbPlugin) executeSearchWithRateLimit(client *http.Client, keyword st
 	}
 
 	// 读取响应体用于调试
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取搜索结果失败: %w", p.Name(), err), false
 	}
@@ -843,7 +843,7 @@ func (p *JavdbPlugin) fetchDetailPageMagnetLinks(client *http.Client, detailURL 
 	}
 
 	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		if p.debugMode {
 			log.Printf("[JAVDB] 读取详情页响应失败: %v", err)

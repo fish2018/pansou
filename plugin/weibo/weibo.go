@@ -5,12 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"pansou/util"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1127,7 +1127,7 @@ func (p *WeiboPlugin) searchUserWeibo(uid, cookie, keyword string) []model.Searc
 			return results
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		resp.Body.Close()
 		if err != nil {
 			if DebugLog {
@@ -1325,7 +1325,7 @@ func (p *WeiboPlugin) getComments(weiboID, cookie string, maxComments int) []Com
 			break
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		resp.Body.Close()
 		if err != nil {
 			if DebugLog {
@@ -1445,7 +1445,7 @@ func fetchPageAndExtractLinks(pageURL string, datetime time.Time) []model.Link {
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil
 	}
@@ -1694,7 +1694,7 @@ func (p *WeiboPlugin) checkQRLoginStatus(qrsig string) (*LoginResult, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -1795,7 +1795,7 @@ func (p *WeiboPlugin) generateQRCodeWithSig() ([]byte, string, error) {
 	}
 	defer infoResp.Body.Close()
 
-	infoBody, err := io.ReadAll(infoResp.Body)
+	infoBody, err := util.ReadAllLimited(infoResp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1836,7 +1836,7 @@ func (p *WeiboPlugin) generateQRCodeWithSig() ([]byte, string, error) {
 	}
 	defer qrResp.Body.Close()
 
-	qrcodeBytes, err := io.ReadAll(qrResp.Body)
+	qrcodeBytes, err := util.ReadAllLimited(qrResp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, "", err
 	}

@@ -1009,7 +1009,7 @@ func (s *CheckService) doRequest(ctx context.Context, method, targetURL string, 
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}

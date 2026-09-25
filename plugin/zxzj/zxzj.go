@@ -3,7 +3,6 @@ package zxzj
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -350,7 +349,7 @@ func (p *ZXZJPlugin) fetchSinglePanLink(pl playLink) *model.Link {
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil
 	}

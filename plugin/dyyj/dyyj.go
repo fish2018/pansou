@@ -3,7 +3,6 @@ package dyyj
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -273,7 +272,7 @@ func (p *DyyjPlugin) executeSearchHTML(client *http.Client, keyword string) ([]m
 	}
 
 	// 读取响应体用于调试
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		if p.debugMode {
 			log.Printf("[DYYJ] 读取响应体失败: %v", err)
@@ -989,7 +988,7 @@ func (p *DyyjPlugin) fetchDetailPageLinks(client *http.Client, detailURL string)
 	}
 
 	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		if p.debugMode {
 			log.Printf("[DYYJ] 读取详情页响应失败: %v (URL: %s)", err, detailURL)

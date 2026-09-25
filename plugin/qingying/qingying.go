@@ -3,9 +3,9 @@ package qingying
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -234,7 +234,7 @@ func (p *QingYingPlugin) processDetailPage(item searchItem, client *http.Client)
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		debugPrintf("❌ 读取响应失败: %v\n", err)
 		return nil

@@ -5,7 +5,6 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -397,7 +396,7 @@ func (p *QiweiPlugin) solveVerification(client *http.Client, pageURL, verifyHTML
 		return fmt.Errorf("提交验证失败: %w", err)
 	}
 	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return fmt.Errorf("读取验证响应失败: %w", err)
 	}
@@ -630,7 +629,7 @@ func (p *QiweiPlugin) fetchBody(client *http.Client, requestURL, referer string,
 		return "", fmt.Errorf("[%s] HTTP状态码异常: %d url=%s", p.Name(), resp.StatusCode, requestURL)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return "", fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
 	}

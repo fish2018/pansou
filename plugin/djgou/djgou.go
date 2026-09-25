@@ -3,7 +3,6 @@ package djgou
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"pansou/model"
@@ -148,7 +147,7 @@ func (p *DjgouPlugin) searchImpl(client *http.Client, keyword string, ext map[st
 	}
 
 	// 6. 读取并解析搜索结果页面。部分节点先返回 BTWAF JS 跳转页。
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	resp.Body.Close()
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取搜索页面失败: %w", p.Name(), err)
@@ -168,7 +167,7 @@ func (p *DjgouPlugin) searchImpl(client *http.Client, keyword string, ext map[st
 				challengeReq.Header = req.Header.Clone()
 				challengeResp, doErr := p.doRequestWithRetry(challengeReq, client)
 				if doErr == nil {
-					challengeBody, readErr := io.ReadAll(challengeResp.Body)
+					challengeBody, readErr := util.ReadAllLimited(challengeResp.Body, util.MaxUpstreamResponseBytes)
 					challengeResp.Body.Close()
 					if readErr == nil {
 						doc, _ = goquery.NewDocumentFromReader(strings.NewReader(string(challengeBody)))

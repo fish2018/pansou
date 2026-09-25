@@ -4,10 +4,10 @@ import (
 	"crypto/md5"
 	"fmt"
 	"html"
-	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"sort"
 	"strings"
 	"time"
@@ -108,7 +108,7 @@ func (p *QuarksooAsyncPlugin) doSearch(client *http.Client, keyword string, ext 
 
 		// 这里不能用 defer：它在重试循环里会把每次响应都压到函数返回才关，
 		// 重试 N 次就有 N 个响应体（连同连接）一直不释放。读完立即关闭。
-		responseBody, err = io.ReadAll(resp.Body)
+		responseBody, err = util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		resp.Body.Close()
 		if err != nil {
 			if i == p.retries {

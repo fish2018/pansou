@@ -3,7 +3,6 @@ package panyq
 import (
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -667,7 +666,7 @@ func (p *PanyqPlugin) findPotentialActionIDs(client *http.Client) ([]string, err
 	// 检查状态码
 	if resp.StatusCode != http.StatusOK {
 		// 读取响应体以获取服务器返回的具体错误信息
-		bodyBytes, err := io.ReadAll(resp.Body)
+		bodyBytes, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		if err != nil {
 			// 如果连响应体都读取失败，则返回状态码错误并附上读取错误
 			return nil, fmt.Errorf("请求失败，状态码: %d，且读取响应体错误: %v", resp.StatusCode, err)
@@ -676,7 +675,7 @@ func (p *PanyqPlugin) findPotentialActionIDs(client *http.Client) ([]string, err
 		return nil, fmt.Errorf("请求失败，状态: %s, 详情: %s", resp.Status, string(bodyBytes))
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("读取响应失败: %w", err)
 	}
@@ -714,7 +713,7 @@ func (p *PanyqPlugin) findPotentialActionIDs(client *http.Client) ([]string, err
 			continue
 		}
 
-		jsBody, err := io.ReadAll(jsResp.Body)
+		jsBody, err := util.ReadAllLimited(jsResp.Body, util.MaxUpstreamResponseBytes)
 		jsResp.Body.Close() // 确保关闭body
 
 		if err != nil {
@@ -920,7 +919,7 @@ func (p *PanyqPlugin) getRawFinalLinkResponse(actionID, eid string, client *http
 	}
 
 	// 读取原始响应
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		// 读取错误时返回空字符串和错误
 		if DebugLog {
@@ -966,7 +965,7 @@ func (p *PanyqPlugin) getCredentials(query, actionID string, client *http.Client
 	defer resp.Body.Close()
 
 	// 读取响应
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -1023,7 +1022,7 @@ func (p *PanyqPlugin) getSearchResults(sign string, pageNum int, client *http.Cl
 	defer resp.Body.Close()
 
 	// 读取响应
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, 0, err
 	}

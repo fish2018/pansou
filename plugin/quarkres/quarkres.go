@@ -2,9 +2,9 @@ package quarkres
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"strings"
 	"time"
 
@@ -100,7 +100,7 @@ func (p *QuarkResPlugin) doSearch(client *http.Client, keyword string, ext map[s
 		return nil, fmt.Errorf("[quarkres] HTTP %d", resp.StatusCode)
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[quarkres] read response failed: %w", err)
 	}

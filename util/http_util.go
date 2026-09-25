@@ -3,7 +3,6 @@ package util
 import (
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -294,8 +293,8 @@ func FetchHTML(targetURL string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
+	// 读取响应体（上游量级由对方决定，必须封顶；本包内直接调用）
+	body, err := ReadAllLimited(resp.Body, MaxUpstreamResponseBytes)
 	if err != nil {
 		return "", err
 	}

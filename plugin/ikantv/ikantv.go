@@ -3,9 +3,9 @@ package ikantv
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"strings"
 	"time"
 
@@ -90,7 +90,7 @@ func (p *IkanTVAsyncPlugin) doSearch(client *http.Client, keyword string, ext ma
 		return nil, fmt.Errorf("[%s] 请求返回状态码: %d", p.Name(), resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
 	}

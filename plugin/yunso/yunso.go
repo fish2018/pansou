@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"html"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -176,7 +175,7 @@ func (p *YunsoAsyncPlugin) searchPage(client *http.Client, keyword string, page 
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read response failed: %w", err)
 	}

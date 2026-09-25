@@ -3,9 +3,9 @@ package hunhepan
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"pansou/util"
 	"strings"
 	"sync"
 	"time"
@@ -241,7 +241,7 @@ func (p *HunhepanAsyncPlugin) searchAPI(client *http.Client, apiURL, keyword str
 			debugLog("收到响应 (page %d), 状态码: %d", pageNum, resp.StatusCode)
 
 			// 读取响应体
-			respBody, err := io.ReadAll(resp.Body)
+			respBody, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 			if err != nil {
 				debugLog("读取响应失败 (page %d): %v", pageNum, err)
 				errChan <- fmt.Errorf("read response body failed (page %d): %w", pageNum, err)

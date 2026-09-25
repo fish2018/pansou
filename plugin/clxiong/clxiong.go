@@ -2,10 +2,10 @@ package clxiong
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -233,7 +233,7 @@ func (p *ClxiongPlugin) getSearchResults(searchID, keyword string) ([]model.Sear
 		return nil, fmt.Errorf("搜索结果请求失败，状态码: %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +492,7 @@ func (p *ClxiongPlugin) fetchDetailPageInfo(detailURL string, movieTitle string)
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		if p.debugMode {
 			log.Printf("[CLXIONG] 读取详情页响应失败: %v", err)

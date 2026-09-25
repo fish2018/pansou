@@ -2,10 +2,10 @@ package u3c3
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -169,7 +169,7 @@ func (p *U3c3Plugin) getSearch2Parameter() (string, error) {
 		if lastErr != nil || resp == nil || resp.StatusCode != 200 {
 			continue
 		}
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		resp.Body.Close()
 		if readErr != nil {
 			lastErr = readErr
@@ -297,7 +297,7 @@ func (p *U3c3Plugin) doSearch(keyword, search2 string) ([]model.SearchResult, er
 		return nil, fmt.Errorf("搜索请求失败，状态码: %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, err
 	}

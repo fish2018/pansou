@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -177,7 +176,7 @@ func (p *MelostAsyncPlugin) searchPage(client *http.Client, keyword string, page
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read response failed: %w", err)
 	}

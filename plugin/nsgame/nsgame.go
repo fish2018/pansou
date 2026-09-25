@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"pansou/util/json"
 	"regexp"
 	"strings"
@@ -167,7 +168,7 @@ func (p *NSGameAsyncPlugin) searchImpl(client *http.Client, keyword string, ext 
 	}
 
 	// 6. 读取响应体
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
 	}
@@ -364,7 +365,7 @@ func (p *NSGameAsyncPlugin) postSessionRaw(client *http.Client, path string, bod
 		return nil, fmt.Errorf("[%s] 会话请求失败: %w", p.Name(), err)
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	data, _ := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("[%s] 会话返回状态码: %d", p.Name(), resp.StatusCode)
 	}

@@ -3,7 +3,6 @@ package wanou
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -146,7 +145,7 @@ func (p *WanouAsyncPlugin) searchImpl(client *http.Client, keyword string, ext m
 	defer resp.Body.Close()
 
 	// 解析JSON响应
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
 	}

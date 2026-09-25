@@ -3,10 +3,10 @@ package hdmoli
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -579,7 +579,7 @@ func (p *HdmoliPlugin) fetchDetailPageLinks(client *http.Client, detailURL strin
 	}
 
 	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		if p.debugMode {
 			log.Printf("[HDMOLI] 读取详情页响应失败: %v", err)

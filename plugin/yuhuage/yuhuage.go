@@ -3,10 +3,10 @@ package yuhuage
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -114,7 +114,7 @@ func (p *YuhuagePlugin) searchImpl(client *http.Client, keyword string, ext map[
 	}
 
 	// 读取响应
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
 	}
@@ -267,7 +267,7 @@ func (p *YuhuagePlugin) fetchDetailLinks(detailURL string) []model.Link {
 			break
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		resp.Body.Close()
 
 		if err != nil {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strconv"
 	"strings"
@@ -287,7 +288,7 @@ func (p *QupanshePlugin) postSearchRequest(client *http.Client, keyword, formhas
 
 	// 读取响应体用于调试（非重定向状态码时）
 	if resp.StatusCode != 302 && resp.StatusCode != 301 && DebugLog {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		if readErr == nil {
 			bodyStr := string(body)
 			if len(bodyStr) > 1000 {

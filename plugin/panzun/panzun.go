@@ -2,7 +2,6 @@ package panzun
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -137,7 +136,7 @@ func (p *PanzunPlugin) searchImpl(client *http.Client, keyword string, ext map[s
 			return nil, fmt.Errorf("[%s] unexpected status code: %d on page %d", p.Name(), resp.StatusCode, page)
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		resp.Body.Close()
 		if err != nil {
 			if len(allResults) > 0 {
@@ -283,7 +282,7 @@ func (p *PanzunPlugin) fetchDiscussionLinks(client *http.Client, discussionID st
 		return nil, "", nil, time.Time{}, fmt.Errorf("detail status=%d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, "", nil, time.Time{}, err
 	}

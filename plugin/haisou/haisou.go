@@ -3,9 +3,9 @@ package haisou
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -348,7 +348,7 @@ func (p *HaisouPlugin) fetchSearchPage(client *http.Client, keyword string, page
 	}
 
 	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] %s网盘第%d页读取响应失败: %w", p.Name(), panType, pageNo, err)
 	}
@@ -410,7 +410,7 @@ func (p *HaisouPlugin) fetchShareLink(client *http.Client, hsid string, platform
 	}
 
 	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return "", "", fmt.Errorf("[%s] hsid=%s读取响应失败: %w", p.Name(), hsid, err)
 	}

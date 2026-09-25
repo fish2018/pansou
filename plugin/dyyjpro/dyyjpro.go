@@ -3,7 +3,6 @@ package dyyjpro
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -406,7 +405,7 @@ func fetchBody(client *http.Client, requestURL string, timeout time.Duration, re
 		resp, err := client.Do(req)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			defer resp.Body.Close()
-			data, readErr := io.ReadAll(resp.Body)
+			data, readErr := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 			cancel()
 			return data, readErr
 		}

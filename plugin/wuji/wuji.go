@@ -3,9 +3,9 @@ package wuji
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -197,7 +197,7 @@ func (p *WujiPlugin) searchPage(client *http.Client, keyword string, page int) (
 	}
 
 	// 读取响应体内容
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
 	}
@@ -323,7 +323,7 @@ func (p *WujiPlugin) fetchMagnetLink(client *http.Client, detailURL string) (str
 	}
 
 	// 读取响应体内容
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return "", fmt.Errorf("读取详情页响应失败: %w", err)
 	}

@@ -17,6 +17,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"pansou/util"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1292,7 +1293,7 @@ func (p *PanlianPlugin) doJSONGET(client *http.Client, cookie string, path strin
 			continue
 		}
 
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		resp.Body.Close()
 		cancel()
 		if readErr != nil {
@@ -1388,7 +1389,7 @@ func (p *PanlianPlugin) doLogin(username string, password string, remember bool)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	cancel()
 	if err != nil {
 		return "", nil, err

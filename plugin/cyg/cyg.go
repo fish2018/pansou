@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"io"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -156,7 +156,7 @@ func (p *CygPlugin) fetchSearchResults(client *http.Client, searchURL string) ([
 	}
 
 	// 解析响应
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("读取响应失败: %w", err)
 	}
@@ -247,7 +247,7 @@ func (p *CygPlugin) getDownloadLinks(client *http.Client, postID int) ([]model.L
 	}
 
 	// 解析响应
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("读取下载链接响应失败: %w", err)
 	}

@@ -6,9 +6,9 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"time"
@@ -119,7 +119,7 @@ func (p *MiaosouPlugin) searchImpl(client *http.Client, keyword string, ext map[
 	}
 
 	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应失败: %w", p.Name(), err)
 	}

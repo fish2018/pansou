@@ -182,7 +182,7 @@ func (p *MeitizyPlugin) searchImpl(client *http.Client, keyword string, ext map[
 	}
 
 	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 读取响应体失败: %w", p.Name(), err)
 	}
@@ -376,7 +376,7 @@ func (p *MeitizyPlugin) doRequestWithRetry(req *http.Request, client *http.Clien
 		reqClone := req.Clone(req.Context())
 		if req.Body != nil {
 			// 读取原始body
-			bodyBytes, err := io.ReadAll(req.Body)
+			bodyBytes, err := util.ReadAllLimited(req.Body, util.MaxUpstreamResponseBytes)
 			if err != nil {
 				lastErr = err
 				continue

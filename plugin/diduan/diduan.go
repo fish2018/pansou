@@ -3,10 +3,10 @@ package diduan
 import (
 	"encoding/base64"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -494,7 +494,7 @@ func (p *DiduanPlugin) fetchDetailPageLinks(detailURL string) []model.Link {
 	}
 
 	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		if p.debugMode {
 			log.Printf("[DIDUAN] 读取详情页响应失败: %v", err)

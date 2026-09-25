@@ -3,8 +3,8 @@ package qupansou
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net/http"
+	"pansou/util"
 	"strings"
 	"sync"
 	"time"
@@ -172,7 +172,7 @@ func (p *QuPanSouAsyncPlugin) searchAPI(keyword string, client *http.Client) ([]
 	defer resp.Body.Close()
 
 	// 读取响应体
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read response body failed: %w", err)
 	}

@@ -616,7 +616,7 @@ func (p *PanSearchAsyncPlugin) fetchFirstPage(keyword string, baseURL string, cl
 	}
 
 	// 读取响应体
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, 0, fmt.Errorf("读取响应失败: %w", err)
 	}
@@ -675,7 +675,7 @@ func (p *PanSearchAsyncPlugin) fetchPage(keyword string, offset int, baseURL str
 	}
 
 	// 读取响应体
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("读取响应失败: %w", err)
 	}

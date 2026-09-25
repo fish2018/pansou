@@ -156,7 +156,7 @@ func SearchHandler(c *gin.Context) {
 		}
 	} else {
 		// POST方式：从请求体获取
-		// 请求体必须封顶：gin 的 GetRawData 就是 io.ReadAll(Request.Body)，
+		// 请求体必须封顶：gin 的 GetRawData 就是 util.ReadAllLimited(Request.Body, util.MaxUpstreamResponseBytes)，
 		// 而认证默认关闭，任何可达客户端都能提交超大 body 把整包物化进内存。
 		if c.Request.ContentLength > maxSearchRequestBodyBytes {
 			c.JSON(http.StatusRequestEntityTooLarge, model.NewErrorResponse(413,

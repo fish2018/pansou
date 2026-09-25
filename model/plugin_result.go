@@ -6,11 +6,11 @@ import (
 
 // PluginSearchResult 插件搜索结果
 type PluginSearchResult struct {
-	Results   []SearchResult `json:"results"`     // 搜索结果
-	IsFinal   bool           `json:"is_final"`    // 是否为最终完整结果
-	Timestamp time.Time      `json:"timestamp"`   // 结果时间戳
-	Source    string         `json:"source"`      // 插件来源
-	Message   string         `json:"message"`     // 状态描述（可选）
+	Results   []SearchResult `json:"results"`   // 搜索结果
+	IsFinal   bool           `json:"is_final"`  // 是否为最终完整结果
+	Timestamp time.Time      `json:"timestamp"` // 结果时间戳
+	Source    string         `json:"source"`    // 插件来源
+	Message   string         `json:"message"`   // 状态描述（可选）
 }
 
 // IsEmpty 检查结果是否为空
@@ -29,4 +29,4 @@ func (p *PluginSearchResult) GetResults() []SearchResult {
 		return []SearchResult{}
 	}
 	return p.Results
-} 
+}

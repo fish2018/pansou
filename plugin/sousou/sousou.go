@@ -3,7 +3,6 @@ package sousou
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -428,7 +427,7 @@ func (p *SousouAsyncPlugin) searchByType(client *http.Client, keyword string, di
 			}
 
 			// 读取响应体
-			respBody, err := io.ReadAll(resp.Body)
+			respBody, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 			if err != nil {
 				debugLog("读取响应失败 (page %d, type %s): %v", pageNum, diskType, err)
 				errChan <- fmt.Errorf("read response body failed (page %d, type %s): %w", pageNum, diskType, err)
