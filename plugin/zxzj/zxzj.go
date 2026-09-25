@@ -14,6 +14,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"pansou/util/json"
 )
 
@@ -35,6 +36,7 @@ func init() {
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
+				Proxy:               util.ProxyFuncForTransport(),
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 10,
 				IdleConnTimeout:     90 * time.Second,

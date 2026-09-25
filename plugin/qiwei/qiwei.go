@@ -18,6 +18,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"pansou/util/json"
 )
 
@@ -104,6 +105,7 @@ func init() {
 
 func NewQiweiPlugin() *QiweiPlugin {
 	transport := &http.Transport{
+		Proxy:               util.ProxyFuncForTransport(),
 		MaxIdleConns:        120,
 		MaxIdleConnsPerHost: 24,
 		MaxConnsPerHost:     36,

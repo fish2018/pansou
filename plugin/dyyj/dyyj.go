@@ -17,6 +17,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 const (
@@ -110,6 +111,7 @@ func NewDyyjPlugin() *DyyjPlugin {
 // createOptimizedHTTPClient 创建优化的HTTP客户端（连接池配置）
 func createOptimizedHTTPClient() *http.Client {
 	transport := &http.Transport{
+		Proxy:                 util.ProxyFuncForTransport(),
 		MaxIdleConns:          MaxIdleConns,
 		MaxIdleConnsPerHost:   MaxIdleConnsPerHost,
 		MaxConnsPerHost:       MaxConnsPerHost,

@@ -14,6 +14,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 const (
@@ -601,6 +602,7 @@ func newHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout: requestTimeout,
 		Transport: &http.Transport{
+			Proxy:               util.ProxyFuncForTransport(),
 			MaxIdleConns:        httpMaxIdleConns,
 			MaxIdleConnsPerHost: httpMaxIdlePerHost,
 			MaxConnsPerHost:     httpMaxConnsPerHost,

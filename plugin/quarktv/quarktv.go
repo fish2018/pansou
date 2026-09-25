@@ -15,6 +15,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"pansou/util/json"
 )
 
@@ -74,6 +75,7 @@ func NewQuarkTVPlugin() *QuarkTVPlugin {
 		client: &http.Client{
 			Timeout: searchTimeout,
 			Transport: &http.Transport{
+				Proxy:               util.ProxyFuncForTransport(),
 				MaxIdleConns:        64,
 				MaxIdleConnsPerHost: 16,
 				MaxConnsPerHost:     24,

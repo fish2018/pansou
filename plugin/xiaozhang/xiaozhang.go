@@ -15,6 +15,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 const (
@@ -95,6 +96,7 @@ func (p *XiaozhangPlugin) doRequest(client *http.Client, url string, referer str
 	tempClient := &http.Client{
 		Timeout: client.Timeout,
 		Transport: &http.Transport{
+			Proxy:              util.ProxyFuncForTransport(),
 			DisableCompression: true, // 禁用自动gzip解压，我们手动处理
 		},
 	}

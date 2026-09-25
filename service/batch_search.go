@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"pansou/config"
+
 	"pansou/model"
 )
 
@@ -91,6 +93,18 @@ type batchSearchOutcome struct {
 	// 插件路径需要置位：那里 4 秒窗口内返回空、结果靠后台补齐是常态。
 	// 频道路径不置位——频道确实可能没有匹配内容，那种空结果应当正常缓存。
 	requireYield bool
+	// yields 记录每个真正返回过的任务的本轮产出，用于逐项输出搜索结果日志。
+	// 框架原本只在异常路径打日志，正常成功路径一行都没有，于是"几十个插件同时
+	// 搜索时只有少数有日志"——那些只是自己无条件打日志的插件。
+	yields []taskYield
+}
+
+// taskYield 是单个任务的本轮产出记录。
+type taskYield struct {
+	id       string
+	count    int
+	duration time.Duration
+	err      error
 }
 
 func newBatchSearchOutcome(total int) *batchSearchOutcome {
@@ -226,12 +240,55 @@ func (o *batchSearchOutcome) requireYieldTracking() { o.requireYield = true }
 // 没有这一步，"成功"会把两类完全不同的情况混在一起：真正有内容，以及
 // 响应超时只来得及返回空壳、内容要靠后台补齐。汇总里的"成功 N/M"看着正常，
 // 用户这一轮却一条都拿不到。
-func (o *batchSearchOutcome) observeYield(id string, contributed int) {
+func (o *batchSearchOutcome) observeYield(id string, contributed int, duration time.Duration, err error) {
+	o.yields = append(o.yields, taskYield{id: id, count: contributed, duration: duration, err: err})
+	if err != nil {
+		// 失败项已由 observe/失败汇总覆盖，不重复算作零产出
+		return
+	}
 	if contributed > 0 {
 		o.yielded++
 		return
 	}
 	o.empty = append(o.empty, id)
+}
+
+// logYields 逐项输出本轮每个任务的结果条数。
+//
+// 这一行覆盖**每一个真正返回过的任务**（含失败的），是回答"某个插件到底跑没跑、
+// 跑了有没有结果"的唯一完整依据：插件自身大多不打日志（75 个插件里只有 19 个
+// 文件含 fmt.Printf），框架又只在异常路径输出。
+func (o *batchSearchOutcome) logYields(source, keyword string) {
+	if len(o.yields) == 0 {
+		return
+	}
+
+	parts := make([]string, 0, len(o.yields))
+	for _, y := range o.yields {
+		switch {
+		case y.err != nil:
+			parts = append(parts, fmt.Sprintf("%s=失败", y.id))
+		case y.count > 0:
+			parts = append(parts, fmt.Sprintf("%s=%d", y.id, y.count))
+		default:
+			parts = append(parts, fmt.Sprintf("%s=0", y.id))
+		}
+	}
+	fmt.Printf("[%s] %s：插件产出 %d 个 -> %s\n", source, keyword, len(o.yields), strings.Join(parts, " "))
+
+	// 逐插件一行的明细默认关闭：几十个插件每次搜索都打一行会把日志冲淡，
+	// 需要逐项排查耗时与状态时再打开。
+	if config.AppConfig == nil || !config.AppConfig.PluginSearchDetailLog {
+		return
+	}
+	for _, y := range o.yields {
+		state := fmt.Sprintf("%d 条", y.count)
+		if y.err != nil {
+			state = "失败(" + failureClass(y.err) + ")"
+		}
+		fmt.Printf("[%s] %s：插件 %s 产出 %s 耗时 %dms\n",
+			source, keyword, y.id, state, y.duration.Milliseconds())
+	}
 }
 
 // shouldBackfill 判断是否值得后台补齐。
@@ -246,6 +303,10 @@ func (o *batchSearchOutcome) shouldBackfill(enabled bool) bool {
 // logSummary 输出完整度摘要与慢项明细，便于判断这次是"慢"还是"坏"。
 // 只在存在失败或超时未完成时输出，正常批次不产生噪音。
 func (o *batchSearchOutcome) logSummary(source, keyword string) {
+	// 逐项产出始终输出：它回答的是"每个插件到底有没有跑出结果"，
+	// 与完整度无关，不能只在出现失败时才可见。
+	o.logYields(source, keyword)
+
 	if o.timedOut() == 0 && o.failed == 0 && len(o.empty) == 0 {
 		return
 	}

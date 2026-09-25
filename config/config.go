@@ -43,6 +43,7 @@ type Config struct {
 	AsyncMaxBackgroundTasks   int           // 最大后台任务数量
 	AsyncCacheTTLHours        int           // 异步缓存有效期（小时）
 	AsyncLogEnabled           bool          // 是否启用异步插件详细日志
+	PluginSearchDetailLog     bool          // 是否逐插件输出搜索结果明细（默认关闭）
 	// HTTP服务器配置
 	HTTPReadTimeout  time.Duration // 读取超时
 	HTTPWriteTimeout time.Duration // 写入超时
@@ -109,6 +110,7 @@ func Init() {
 		AsyncMaxBackgroundTasks:   getAsyncMaxBackgroundTasks(),
 		AsyncCacheTTLHours:        getAsyncCacheTTLHours(),
 		AsyncLogEnabled:           getAsyncLogEnabled(),
+		PluginSearchDetailLog:     getPluginSearchDetailLog(),
 		// HTTP服务器配置
 		HTTPReadTimeout:  getHTTPReadTimeout(),
 		HTTPWriteTimeout: getHTTPWriteTimeout(),
@@ -686,6 +688,20 @@ func getHTTPMaxConns() int {
 }
 
 // 从环境变量获取异步插件日志开关，如果未设置则使用默认值
+// getPluginSearchDetailLog 控制是否逐插件输出搜索结果明细。
+// 默认关闭：批量汇总行已覆盖每个插件的条数，逐插件一行会把日志冲淡。
+func getPluginSearchDetailLog() bool {
+	value := os.Getenv("PLUGIN_SEARCH_DETAIL_LOG")
+	if value == "" {
+		return false
+	}
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return false
+	}
+	return enabled
+}
+
 func getAsyncLogEnabled() bool {
 	logEnv := os.Getenv("ASYNC_LOG_ENABLED")
 	if logEnv == "" {

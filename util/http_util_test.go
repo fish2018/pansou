@@ -212,3 +212,39 @@ func TestPluginPathProxyWiringLive(t *testing.T) {
 	}
 	t.Logf("插件路径经 PROXY(%s) 访问成功: %d", proxy, resp.StatusCode)
 }
+
+// 插件手写 &http.Transport{...} 时 Proxy 字段是零值 = 永远直连。这个助手
+// 保证它们与 http.DefaultTransport 走同一套代理解析。
+func TestProxyFuncForTransportHonoursConfig(t *testing.T) {
+	withConfig(t, &config.Config{ProxyURL: "socks5h://127.0.0.1:7897", NoProxy: "内网.example.com"})
+	proxyFunc := ProxyFuncForTransport()
+
+	req, err := http.NewRequest(http.MethodGet, "https://ysapi.yingso.fun/test1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := proxyFunc(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Scheme != "socks5" || got.Host != "127.0.0.1:7897" {
+		t.Fatalf("插件手写 Transport 未走配置代理: %v", got)
+	}
+
+	bypassed, err := proxyFunc(mustRequest(t, "https://内网.example.com/api"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bypassed != nil {
+		t.Fatalf("NO_PROXY 命中的主机应直连, 实际: %v", bypassed)
+	}
+}
+
+func mustRequest(t *testing.T, raw string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
+}

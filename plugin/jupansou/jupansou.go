@@ -16,6 +16,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"pansou/util/json"
 )
 
@@ -67,6 +68,7 @@ func NewJuPansouPlugin() *JuPansouPlugin {
 			}(),
 			Timeout: jupansouTimeout,
 			Transport: &http.Transport{
+				Proxy:               util.ProxyFuncForTransport(),
 				MaxIdleConns:        32,
 				MaxIdleConnsPerHost: 8,
 				MaxConnsPerHost:     16,

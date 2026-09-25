@@ -15,6 +15,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 const (
@@ -78,6 +79,7 @@ func NewDyyjproPlugin() *DyyjproPlugin {
 		client: &http.Client{
 			Timeout: searchTimeout,
 			Transport: &http.Transport{
+				Proxy:               util.ProxyFuncForTransport(),
 				MaxIdleConns:        64,
 				MaxIdleConnsPerHost: 16,
 				MaxConnsPerHost:     24,

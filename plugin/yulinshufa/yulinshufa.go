@@ -20,6 +20,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 const (
@@ -103,6 +104,7 @@ func NewYulinshufaPlugin() *YulinshufaPlugin {
 func newOptimizedHTTPClient() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
+			Proxy:               util.ProxyFuncForTransport(),
 			MaxIdleConns:        80,
 			MaxIdleConnsPerHost: 20,
 			MaxConnsPerHost:     40,

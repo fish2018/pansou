@@ -245,8 +245,8 @@ func TestBatchSearchOutcomeZeroYield(t *testing.T) {
 		o.requireYieldTracking()
 		o.observe("a", nil, time.Second)
 		o.observe("b", nil, time.Second)
-		o.observeYield("a", 0)
-		o.observeYield("b", 0)
+		o.observeYield("a", 0, time.Second, nil)
+		o.observeYield("b", 0, time.Second, nil)
 		o.finalize([]string{"a", "b"})
 
 		// 这正是修复前的盲区：没有失败也没有超时，complete() 为真，
@@ -268,8 +268,8 @@ func TestBatchSearchOutcomeZeroYield(t *testing.T) {
 		o.requireYieldTracking()
 		o.observe("a", nil, time.Second)
 		o.observe("b", nil, time.Second)
-		o.observeYield("a", 12)
-		o.observeYield("b", 0)
+		o.observeYield("a", 12, time.Second, nil)
+		o.observeYield("b", 0, time.Second, nil)
 		o.finalize([]string{"a", "b"})
 
 		ttl, write := o.cacheTTL(full, partial)
@@ -285,8 +285,8 @@ func TestBatchSearchOutcomeZeroYield(t *testing.T) {
 		o := newBatchSearchOutcome(2)
 		o.observe("c1", nil, time.Second)
 		o.observe("c2", nil, time.Second)
-		o.observeYield("c1", 0)
-		o.observeYield("c2", 0)
+		o.observeYield("c1", 0, time.Second, nil)
+		o.observeYield("c2", 0, time.Second, nil)
 		o.finalize([]string{"c1", "c2"})
 
 		ttl, write := o.cacheTTL(full, partial)
@@ -300,7 +300,7 @@ func TestBatchSearchOutcomeZeroYield(t *testing.T) {
 		o.requireYieldTracking()
 		o.observe("a", errors.New("boom"), time.Second)
 		o.observe("b", nil, time.Second)
-		o.observeYield("b", 0)
+		o.observeYield("b", 0, time.Second, nil)
 		o.finalize([]string{"a", "b"})
 
 		if o.failed != 1 {

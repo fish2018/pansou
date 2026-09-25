@@ -12,6 +12,7 @@ import (
 	cloudscraper "github.com/Advik-B/cloudscraper/lib"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	jsonutil "pansou/util/json"
 )
 
@@ -82,6 +83,7 @@ func NewPanzunPlugin() *PanzunPlugin {
 		shortLinkClient: &http.Client{
 			Timeout: defaultTimeout,
 			Transport: &http.Transport{
+				Proxy:               util.ProxyFuncForTransport(),
 				MaxIdleConns:        32,
 				MaxIdleConnsPerHost: 16,
 				IdleConnTimeout:     60 * time.Second,

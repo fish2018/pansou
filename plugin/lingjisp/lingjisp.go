@@ -12,6 +12,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"pansou/util/json"
 )
 
@@ -98,6 +99,7 @@ func NewLingjiPlugin() *LingjiPlugin {
 		client: &http.Client{
 			Timeout: lingjiSearchTimeout,
 			Transport: &http.Transport{
+				Proxy:               util.ProxyFuncForTransport(),
 				MaxIdleConns:        64,
 				MaxIdleConnsPerHost: 16,
 				MaxConnsPerHost:     24,

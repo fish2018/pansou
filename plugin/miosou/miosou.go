@@ -20,6 +20,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"pansou/util/json"
 )
 
@@ -62,9 +63,10 @@ func NewMiosouPlugin() *MiosouPlugin {
 	return &MiosouPlugin{
 		BaseAsyncPlugin: plugin.NewBaseAsyncPlugin(pluginName, pluginPriority),
 		client: &http.Client{
-			Jar:       jar,
-			Timeout:   requestTimeout,
-			Transport: &http.Transport{MaxIdleConns: 32, MaxIdleConnsPerHost: 8, MaxConnsPerHost: 16, IdleConnTimeout: 90 * time.Second},
+			Jar:     jar,
+			Timeout: requestTimeout,
+			Transport: &http.Transport{
+				Proxy: util.ProxyFuncForTransport(), MaxIdleConns: 32, MaxIdleConnsPerHost: 8, MaxConnsPerHost: 16, IdleConnTimeout: 90 * time.Second},
 		},
 	}
 }

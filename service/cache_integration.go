@@ -11,10 +11,10 @@ import (
 
 // CacheWriteIntegration 缓存写入集成层
 type CacheWriteIntegration struct {
-	batchManager     *cache.DelayedBatchWriteManager
-	mainCache        *cache.EnhancedTwoLevelCache
-	strategy         cache.CacheWriteStrategy
-	initialized      bool
+	batchManager *cache.DelayedBatchWriteManager
+	mainCache    *cache.EnhancedTwoLevelCache
+	strategy     cache.CacheWriteStrategy
+	initialized  bool
 }
 
 // NewCacheWriteIntegration 创建缓存写入集成
@@ -24,22 +24,22 @@ func NewCacheWriteIntegration(mainCache *cache.EnhancedTwoLevelCache) (*CacheWri
 	if err != nil {
 		return nil, fmt.Errorf("创建批量写入管理器失败: %v", err)
 	}
-	
+
 	integration := &CacheWriteIntegration{
 		batchManager: batchManager,
 		mainCache:    mainCache,
 	}
-	
+
 	// 设置主缓存更新函数
 	batchManager.SetMainCacheUpdater(integration.createMainCacheUpdater())
-	
+
 	// 初始化管理器
 	if err := batchManager.Initialize(); err != nil {
 		return nil, fmt.Errorf("初始化批量写入管理器失败: %v", err)
 	}
-	
+
 	integration.initialized = true
-	
+
 	fmt.Printf("[缓存写入集成] 初始化完成\n")
 	return integration, nil
 }
@@ -57,13 +57,13 @@ func (c *CacheWriteIntegration) HandleCacheWrite(key string, results []model.Sea
 	if !c.initialized {
 		return fmt.Errorf("缓存写入集成未初始化")
 	}
-	
+
 	// 计算插件优先级
 	priority := c.getPluginPriority(pluginName)
-	
+
 	// 计算数据大小（估算）
 	dataSize := c.estimateDataSize(results)
-	
+
 	// 创建缓存操作
 	operation := &cache.CacheOperation{
 		Key:        key,
@@ -76,7 +76,7 @@ func (c *CacheWriteIntegration) HandleCacheWrite(key string, results []model.Sea
 		DataSize:   dataSize,
 		IsFinal:    isFinal,
 	}
-	
+
 	// 调用批量写入管理器处理
 	return c.batchManager.HandleCacheOperation(operation)
 }
@@ -87,7 +87,7 @@ func (c *CacheWriteIntegration) getPluginPriority(pluginName string) int {
 	if pluginInstance, exists := plugin.GetPluginByName(pluginName); exists {
 		return pluginInstance.Priority()
 	}
-	
+
 	// 如果插件不存在，返回默认等级4（最低优先级）
 	return 4
 }
@@ -103,7 +103,7 @@ func (c *CacheWriteIntegration) Shutdown(timeout time.Duration) error {
 	if !c.initialized {
 		return nil
 	}
-	
+
 	return c.batchManager.Shutdown(timeout)
 }
 
@@ -112,7 +112,7 @@ func (c *CacheWriteIntegration) GetStats() interface{} {
 	if !c.initialized {
 		return nil
 	}
-	
+
 	return c.batchManager.GetStats()
 }
 

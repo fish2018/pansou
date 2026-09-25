@@ -14,6 +14,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 const (
@@ -113,6 +114,7 @@ type HubanAsyncPlugin struct {
 // createOptimizedHTTPClient 创建优化的HTTP客户端
 func createOptimizedHTTPClient() *http.Client {
 	transport := &http.Transport{
+		Proxy:               util.ProxyFuncForTransport(),
 		MaxIdleConns:        MaxIdleConns,
 		MaxIdleConnsPerHost: MaxIdleConnsPerHost,
 		MaxConnsPerHost:     MaxConnsPerHost,

@@ -19,6 +19,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 const (
@@ -58,6 +59,7 @@ func NewXiaoyuPlugin() *XiaoyuPlugin {
 		client: &http.Client{
 			Timeout: requestTimeout,
 			Transport: &http.Transport{
+				Proxy:               util.ProxyFuncForTransport(),
 				MaxIdleConns:        32,
 				MaxIdleConnsPerHost: 8,
 				MaxConnsPerHost:     maxPageConcurrency,

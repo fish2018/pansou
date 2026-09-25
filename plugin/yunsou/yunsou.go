@@ -14,6 +14,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 const (
@@ -43,6 +44,7 @@ func init() { plugin.RegisterGlobalPlugin(NewYunsouAsyncPlugin()) }
 
 func NewYunsouAsyncPlugin() *YunsouAsyncPlugin {
 	transport := &http.Transport{
+		Proxy:               util.ProxyFuncForTransport(),
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		MaxConnsPerHost:     50,

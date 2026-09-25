@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -80,6 +81,7 @@ func init() {
 // createOptimizedHTTPClient 创建优化的HTTP客户端
 func createOptimizedHTTPClient() *http.Client {
 	transport := &http.Transport{
+		Proxy:               util.ProxyFuncForTransport(),
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,

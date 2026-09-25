@@ -14,6 +14,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 var (
@@ -103,6 +104,7 @@ func (p *DaishuPlugin) SearchWithResult(keyword string, ext map[string]interface
 
 func newHTTPClient() *http.Client {
 	transport := &http.Transport{
+		Proxy:                 util.ProxyFuncForTransport(),
 		MaxIdleConns:          maxIdleConns,
 		MaxIdleConnsPerHost:   maxIdlePerHost,
 		MaxConnsPerHost:       maxConnsPerHost,

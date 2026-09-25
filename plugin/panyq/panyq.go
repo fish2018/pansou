@@ -18,6 +18,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 // 常量定义
@@ -100,6 +101,7 @@ func NewPanyqPlugin() *PanyqPlugin {
 	// 创建一个可以忽略HTTPS证书验证并支持Cookie的HTTP客户端
 	jar, _ := cookiejar.New(nil)
 	transport := &http.Transport{
+		Proxy:           util.ProxyFuncForTransport(),
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		// 启用HTTP/2
 		ForceAttemptHTTP2: true,

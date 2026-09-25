@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -101,6 +102,7 @@ type DuoduoAsyncPlugin struct {
 // createOptimizedHTTPClient 创建优化的HTTP客户端
 func createOptimizedHTTPClient() *http.Client {
 	transport := &http.Transport{
+		Proxy:               util.ProxyFuncForTransport(),
 		MaxIdleConns:        MaxIdleConns,
 		MaxIdleConnsPerHost: MaxIdleConnsPerHost,
 		MaxConnsPerHost:     MaxConnsPerHost,

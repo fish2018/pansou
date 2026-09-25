@@ -1552,6 +1552,9 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 		}
 		outcome.observe(pluginResult.name, pluginResult.err, pluginResult.duration)
 		if pluginResult.err != nil {
+			// 失败项也要进逐项记录：否则"插件产出 N 个"这一行会漏掉失败的插件，
+			// 看日志的人无从确认它到底跑没跑。
+			outcome.observeYield(pluginResult.name, 0, pluginResult.duration, pluginResult.err)
 			continue
 		}
 		// 只添加有链接的结果到最终结果中，同时统计每个插件本轮的可用产出
@@ -1562,7 +1565,7 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 				contributed += len(r.Links)
 			}
 		}
-		outcome.observeYield(pluginResult.name, contributed)
+		outcome.observeYield(pluginResult.name, contributed, pluginResult.duration, nil)
 	}
 
 	outcome.finalize(submitted)

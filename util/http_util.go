@@ -198,6 +198,27 @@ func normalizeProxyURL(raw string) (string, error) {
 	}
 }
 
+// ProxyFuncForTransport 返回可直接赋给 http.Transport.Proxy 的函数，按项目统一
+// 规则解析代理（PROXY -> HTTPS_PROXY -> HTTP_PROXY -> ALL_PROXY，并按 NO_PROXY 放行直连）。
+//
+// 供插件手写 &http.Transport{...} 时使用。手写 Transport 的 Proxy 字段是零值，
+// 含义是"永远直连"——只要部署方配了代理，这些插件就会整体失败，
+// 而默认的 http.DefaultTransport 已经由 TuneDefaultTransport 接好，两者行为不一致。
+func ProxyFuncForTransport() func(*http.Request) (*url.URL, error) {
+	rawProxyURL := ""
+	if config.AppConfig != nil {
+		rawProxyURL = config.AppConfig.ProxyURL
+	}
+	proxyFunc, err := BuildProxyFunc(rawProxyURL, configuredNoProxy())
+	if err != nil {
+		fmt.Printf("[HTTP] 代理解析失败，该 Transport 退回标准环境变量代理: %v\n", err)
+		return http.ProxyFromEnvironment
+	}
+	return func(req *http.Request) (*url.URL, error) {
+		return proxyFunc(req.URL)
+	}
+}
+
 // applyProxyFunc 把统一解析出的代理解析函数装到 transport 上。
 // Transport.Proxy 的签名是 func(*http.Request)，httpproxy 给的是
 // func(*url.URL)，这里做一次适配。

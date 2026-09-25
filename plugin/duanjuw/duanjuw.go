@@ -14,6 +14,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 var (
@@ -530,6 +531,7 @@ func setDuanjuwHeaders(req *http.Request, referer string) {
 
 func newDuanjuwHTTPClient(timeout time.Duration) *http.Client {
 	transport := &http.Transport{
+		Proxy:               util.ProxyFuncForTransport(),
 		MaxIdleConns:        32,
 		MaxIdleConnsPerHost: 8,
 		MaxConnsPerHost:     16,

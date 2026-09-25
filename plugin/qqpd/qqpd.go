@@ -24,6 +24,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"pansou/util/json"
 
 	"github.com/gin-gonic/gin"
@@ -1546,6 +1547,7 @@ func (p *QQPDPlugin) checkQRLoginStatus(qrsig string) (*LoginResult, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
+			Proxy:           util.ProxyFuncForTransport(),
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
@@ -1658,6 +1660,7 @@ func (p *QQPDPlugin) fetchFullCookie(uin, ptsigx, setCookieHeader string) (strin
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
+			Proxy:           util.ProxyFuncForTransport(),
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
@@ -1768,6 +1771,7 @@ func (p *QQPDPlugin) refreshCookie(cookieStr string) string {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
+			Proxy:           util.ProxyFuncForTransport(),
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
@@ -1854,6 +1858,7 @@ func (p *QQPDPlugin) generateQRCodeWithSig() ([]byte, string, error) {
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
+			Proxy:           util.ProxyFuncForTransport(),
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}

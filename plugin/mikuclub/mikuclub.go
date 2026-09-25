@@ -15,6 +15,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 var (
@@ -107,6 +108,7 @@ func (p *MikuclubPlugin) SearchWithResult(keyword string, ext map[string]interfa
 
 func newHTTPClient() *http.Client {
 	transport := &http.Transport{
+		Proxy:                 util.ProxyFuncForTransport(),
 		MaxIdleConns:          maxIdleConns,
 		MaxIdleConnsPerHost:   maxIdlePerHost,
 		MaxConnsPerHost:       maxConnsPerHost,

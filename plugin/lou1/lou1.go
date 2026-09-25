@@ -16,6 +16,7 @@ import (
 
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	jsonutil "pansou/util/json"
 )
 
@@ -536,6 +537,7 @@ func newHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout: requestTimeout,
 		Transport: &http.Transport{
+			Proxy:               util.ProxyFuncForTransport(),
 			MaxIdleConns:        httpMaxIdleConns,
 			MaxIdleConnsPerHost: httpMaxIdlePerHost,
 			MaxConnsPerHost:     httpMaxConnsPerHost,

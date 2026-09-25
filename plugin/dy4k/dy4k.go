@@ -20,6 +20,7 @@ import (
 	"golang.org/x/net/proxy"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 )
 
 // 常量定义
@@ -132,6 +133,7 @@ type Dy4kPlugin struct {
 // createProxyTransport 创建支持代理的传输层
 func createProxyTransport(proxyURL string) (*http.Transport, error) {
 	transport := &http.Transport{
+		Proxy:               util.ProxyFuncForTransport(),
 		MaxIdleConns:        MaxIdleConns,
 		MaxIdleConnsPerHost: MaxIdleConnsPerHost,
 		MaxConnsPerHost:     MaxConnsPerHost,
