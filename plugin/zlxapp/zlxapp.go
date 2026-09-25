@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"time"
@@ -142,34 +143,48 @@ func setRequestHeaders(req *http.Request, refererBaseURL string) {
 }
 
 func doRequestWithRetry(client *http.Client, req *http.Request) (*http.Response, error) {
-	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	var resp *http.Response
+
+	// 重试逻辑收敛到 util.DoWithRetry。这处的等待有两个特点，都不能丢：
+	// 1) 退避是**线性**的（attempt × 200ms），不是倍率——见 DelayFunc 无关的说明；
+	// 2) 等待是**可被请求上下文取消**的（原实现用 NewTimer + select，不是 time.Sleep）。
+	//    因此把等待留在闭包内、组件侧不等待，才能保留取消语义。
+	//
+	// 已知差异（如实记录）：上下文取消后，组件仍会把剩余尝试次数走完，只是每轮立即失败；
+	// 原实现是立刻返回。差别只体现在取消瞬间，且不再有等待。
+	err := util.DoWithRetry(util.RetryConfig{
+		Attempts:  maxRetries + 1,
+		DelayFunc: func(int) time.Duration { return 0 }, // 等待全部在闭包内完成
+	}, func(attempt int) error {
 		if attempt > 0 {
 			timer := time.NewTimer(time.Duration(attempt) * 200 * time.Millisecond)
 			select {
 			case <-timer.C:
 			case <-req.Context().Done():
 				timer.Stop()
-				return nil, req.Context().Err()
+				return req.Context().Err()
 			}
 		}
+		if err := req.Context().Err(); err != nil {
+			return err
+		}
 
-		resp, err := client.Do(req.Clone(req.Context()))
+		r, err := client.Do(req.Clone(req.Context()))
 		if err != nil {
-			lastErr = err
-			continue
+			return err
 		}
-		if resp.StatusCode == http.StatusOK {
-			return resp, nil
+		if r.StatusCode == http.StatusOK {
+			resp = r
+			return nil
 		}
-
-		lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
-		resp.Body.Close()
+		status := r.StatusCode
+		r.Body.Close()
+		return fmt.Errorf("HTTP %d", status)
+	})
+	if err != nil {
+		return nil, err
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("请求失败")
-	}
-	return nil, lastErr
+	return resp, nil
 }
 
 func parseListItems(body []byte) ([]searchItem, error) {

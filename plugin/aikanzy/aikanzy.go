@@ -569,29 +569,36 @@ func (p *AikanzyAsyncPlugin) extractPassword(urlStr string) string {
 // doRequestWithRetry 发送HTTP请求，带重试机制
 func (p *AikanzyAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
 	var resp *http.Response
-	var err error
 
-	for retry := 0; retry <= maxRetries; retry++ {
-		if retry > 0 {
-			// 指数退避
-			backoffTime := time.Duration(1<<uint(retry-1)) * backoffBase * time.Millisecond
-			time.Sleep(backoffTime)
-
-			// 克隆请求
-			req = req.Clone(req.Context())
+	// 重试逻辑收敛到 util.DoWithRetry。原实现是"先等待再发请求"，与组件的"失败后等待"
+	// 等价：原第 k 次尝试前等 backoffBase×2^(k-1)ms，组件在第 j 次失败后等
+	// backoffBase×2^j ms 再发第 j+1 次，逐项相同。次数保持 maxRetries+1。
+	//
+	// 顺带修掉一个诊断缺陷：原先只把 client.Do 的 err 存起来，非 200 状态码时 err 为 nil，
+	// 于是重试耗尽后报出的是 "重试 N 次后仍然失败: %!w(<nil>)"，真实状态码丢失、
+	// 完全无法定位。现在把状态码带出来。
+	err := util.DoWithRetry(util.RetryConfig{
+		Attempts:   maxRetries + 1,
+		BaseDelay:  backoffBase * time.Millisecond,
+		Multiplier: 2,
+	}, func(_ int) error {
+		// 原实现每次重试都克隆请求，这里保持同样意图
+		r, err := client.Do(req.Clone(req.Context()))
+		if err != nil {
+			return err
 		}
-
-		resp, err = client.Do(req)
-		if err == nil && resp.StatusCode == 200 {
-			return resp, nil
+		if r.StatusCode == http.StatusOK {
+			resp = r
+			return nil
 		}
-
-		if resp != nil {
-			resp.Body.Close()
-		}
+		status := r.StatusCode
+		r.Body.Close()
+		return fmt.Errorf("HTTP 状态码 %d", status)
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	return nil, fmt.Errorf("重试 %d 次后仍然失败: %w", maxRetries, err)
+	return resp, nil
 }
 
 // 以下正则原先在函数内临时编译，每次调用都要重新解析模式；
