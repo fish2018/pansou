@@ -1536,6 +1536,9 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 	// 合并所有插件的结果，过滤掉无链接的结果，并统计完整度
 	var allResults []model.SearchResult
 	outcome := newBatchSearchOutcome(len(availablePlugins))
+	// 插件路径启用"整批零产出视为不完整"：4 秒窗口内返回空、内容靠后台补齐
+	// 是常态，这类空结果不该被当成完整结果缓存一整个周期。
+	outcome.requireYieldTracking()
 	submitted := make([]string, 0, len(availablePlugins))
 
 	for _, p := range availablePlugins {
@@ -1551,12 +1554,15 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 		if pluginResult.err != nil {
 			continue
 		}
-		// 只添加有链接的结果到最终结果中
+		// 只添加有链接的结果到最终结果中，同时统计每个插件本轮的可用产出
+		contributed := 0
 		for _, r := range pluginResult.results {
 			if len(r.Links) > 0 {
 				allResults = append(allResults, r)
+				contributed += len(r.Links)
 			}
 		}
+		outcome.observeYield(pluginResult.name, contributed)
 	}
 
 	outcome.finalize(submitted)

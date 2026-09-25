@@ -83,6 +83,14 @@ type batchSearchOutcome struct {
 	// errSamples 保留每类失败的示例错误文本：归类（如"其它错误"）不足以定位问题，
 	// 需要一条原始报错才能知道到底是超时、解析失败还是上游拒绝。
 	errSamples map[string]string
+	// yielded 记录本轮真正贡献了可用结果的任务数；empty 记录"成功但零产出"的任务。
+	// 二者用来区分"确实没有匹配内容"与"响应超时只拿到部分空结果"。
+	yielded int
+	empty   []string
+	// requireYield 表示"整批零产出"应视为不完整。
+	// 插件路径需要置位：那里 4 秒窗口内返回空、结果靠后台补齐是常态。
+	// 频道路径不置位——频道确实可能没有匹配内容，那种空结果应当正常缓存。
+	requireYield bool
 }
 
 func newBatchSearchOutcome(total int) *batchSearchOutcome {
@@ -196,10 +204,34 @@ func (o *batchSearchOutcome) cacheTTL(fullTTL, partialTTL time.Duration) (time.D
 	if o.succeeded == 0 {
 		return 0, false
 	}
+	// 插件路径下整批零产出不写缓存：这类空结果多为响应超时下的部分结果，
+	// 写进去（哪怕只给短 TTL）也会挡住随后由后台补齐的完整结果。
+	//
+	// 同时这也是原 `complete()` 的一个盲区：它只看"没有超时也没有失败"，
+	// 于是"全部成功但零产出"会被判为完整、按完整 TTL 缓存一整个周期。
+	if o.requireYield && o.yielded == 0 {
+		return 0, false
+	}
 	if o.timedOut() > 0 {
 		return partialTTL, true
 	}
 	return fullTTL, true
+}
+
+// requireYieldTracking 开启"整批零产出视为不完整"的判定，供插件路径使用。
+func (o *batchSearchOutcome) requireYieldTracking() { o.requireYield = true }
+
+// observeYield 记录某任务本轮实际贡献的可用结果条数。
+//
+// 没有这一步，"成功"会把两类完全不同的情况混在一起：真正有内容，以及
+// 响应超时只来得及返回空壳、内容要靠后台补齐。汇总里的"成功 N/M"看着正常，
+// 用户这一轮却一条都拿不到。
+func (o *batchSearchOutcome) observeYield(id string, contributed int) {
+	if contributed > 0 {
+		o.yielded++
+		return
+	}
+	o.empty = append(o.empty, id)
 }
 
 // shouldBackfill 判断是否值得后台补齐。
@@ -214,15 +246,31 @@ func (o *batchSearchOutcome) shouldBackfill(enabled bool) bool {
 // logSummary 输出完整度摘要与慢项明细，便于判断这次是"慢"还是"坏"。
 // 只在存在失败或超时未完成时输出，正常批次不产生噪音。
 func (o *batchSearchOutcome) logSummary(source, keyword string) {
-	if o.timedOut() == 0 && o.failed == 0 {
+	if o.timedOut() == 0 && o.failed == 0 && len(o.empty) == 0 {
 		return
 	}
 	fmt.Printf("[%s] %s：成功 %d/%d，失败 %d，超时未完成 %d",
 		source, keyword, o.succeeded, o.total, o.failed, o.timedOut())
+	if o.requireYield {
+		fmt.Printf("，本轮零产出 %d", len(o.empty))
+	}
 	if summary := o.failureSummary(5); summary != "" {
 		fmt.Printf("；失败原因 %s", summary)
 	}
 	fmt.Println()
+
+	// 零产出明细：这些"成功"的任务这一轮没给出任何可用数据，
+	// 不列出来就会被"成功 N/M"掩盖。
+	if o.requireYield && len(o.empty) > 0 {
+		names := o.empty
+		suffix := ""
+		if len(names) > 8 {
+			suffix = fmt.Sprintf(" 等 %d 个", len(names))
+			names = names[:8]
+		}
+		fmt.Printf("[%s] %s：本轮零产出（内容需靠后台补齐）: %s%s\n",
+			source, keyword, strings.Join(names, " "), suffix)
+	}
 
 	// 慢项明细：这些是真正决定批截止该定多长的项。
 	// 这里只报告不自动剔除——自动剔除会静默丢掉仍在产出结果的频道，

@@ -232,3 +232,82 @@ func TestBatchSearchOutcomeSlowestAndFailureSummary(t *testing.T) {
 		t.Errorf("无失败时 failureSummary() = %q, 期望空串", got)
 	}
 }
+
+// 插件路径要开启 requireYieldTracking：4 秒窗口内返回空、内容靠后台补齐是常态，
+// 这类"全部成功但零产出"不能被判为完整结果缓存一整个周期。
+// 频道路径不开启——频道确实可能没有匹配内容，那种空结果应当正常缓存。
+func TestBatchSearchOutcomeZeroYield(t *testing.T) {
+	full := 60 * time.Minute
+	partial := 3 * time.Minute
+
+	t.Run("插件路径整批零产出不写缓存", func(t *testing.T) {
+		o := newBatchSearchOutcome(2)
+		o.requireYieldTracking()
+		o.observe("a", nil, time.Second)
+		o.observe("b", nil, time.Second)
+		o.observeYield("a", 0)
+		o.observeYield("b", 0)
+		o.finalize([]string{"a", "b"})
+
+		// 这正是修复前的盲区：没有失败也没有超时，complete() 为真，
+		// 于是空结果被按完整 TTL 缓存 60 分钟，而 shouldBackfill 又因
+		// timedOut()==0 不触发补齐。
+		if !o.complete() {
+			t.Fatal("前置条件：无失败无超时应为 complete")
+		}
+		if _, write := o.cacheTTL(full, partial); write {
+			t.Error("整批零产出不应写缓存")
+		}
+		if len(o.empty) != 2 || o.yielded != 0 {
+			t.Errorf("零产出统计错误: empty=%v yielded=%d", o.empty, o.yielded)
+		}
+	})
+
+	t.Run("有任意产出即恢复正常判定", func(t *testing.T) {
+		o := newBatchSearchOutcome(2)
+		o.requireYieldTracking()
+		o.observe("a", nil, time.Second)
+		o.observe("b", nil, time.Second)
+		o.observeYield("a", 12)
+		o.observeYield("b", 0)
+		o.finalize([]string{"a", "b"})
+
+		ttl, write := o.cacheTTL(full, partial)
+		if !write || ttl != full {
+			t.Errorf("有产出且无超时应写完整 TTL, 实际 write=%v ttl=%v", write, ttl)
+		}
+		if o.yielded != 1 || len(o.empty) != 1 {
+			t.Errorf("产出统计错误: yielded=%d empty=%v", o.yielded, o.empty)
+		}
+	})
+
+	t.Run("频道路径零产出仍照常缓存", func(t *testing.T) {
+		o := newBatchSearchOutcome(2)
+		o.observe("c1", nil, time.Second)
+		o.observe("c2", nil, time.Second)
+		o.observeYield("c1", 0)
+		o.observeYield("c2", 0)
+		o.finalize([]string{"c1", "c2"})
+
+		ttl, write := o.cacheTTL(full, partial)
+		if !write || ttl != full {
+			t.Errorf("频道路径应照常写完整 TTL, 实际 write=%v ttl=%v", write, ttl)
+		}
+	})
+
+	t.Run("零产出不改变失败与超时的既有判定", func(t *testing.T) {
+		o := newBatchSearchOutcome(2)
+		o.requireYieldTracking()
+		o.observe("a", errors.New("boom"), time.Second)
+		o.observe("b", nil, time.Second)
+		o.observeYield("b", 0)
+		o.finalize([]string{"a", "b"})
+
+		if o.failed != 1 {
+			t.Errorf("failed = %d, 期望 1", o.failed)
+		}
+		if _, write := o.cacheTTL(full, partial); write {
+			t.Error("零产出仍不应写缓存")
+		}
+	})
+}
