@@ -3,6 +3,7 @@ package quarksoo
 import (
 	"net/http"
 	"net/http/httptest"
+	"pansou/config"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,12 +28,13 @@ func TestSearchRetriesThenSucceeds(t *testing.T) {
 	BaseURL = srv.URL
 	defer func() { BaseURL = saved }()
 
+	useTempCacheDir(t)
 	p := NewQuarksooAsyncPlugin()
 	// 缩短等待，避免用例真的等满 500ms×2
 	start := time.Now()
-	// 必须带 refresh：框架会缓存同一关键词的结果（含空结果），命中缓存就不发请求，
-	// 那样测的就不是重试而是缓存了。
-	_, err := p.Search("重试后成功", map[string]interface{}{"refresh": true})
+	// 两个用例共用同一关键词，靠 useTempCacheDir 的独立缓存目录隔离：
+	// 磁盘缓存会跨运行留存，不清的话第二次运行会直接吃到上次的结果。
+	_, err := p.Search("同一关键词", nil)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -59,10 +61,10 @@ func TestSearchRetriesExhaustedReturnsError(t *testing.T) {
 	BaseURL = srv.URL
 	defer func() { BaseURL = saved }()
 
+	useTempCacheDir(t)
 	p := NewQuarksooAsyncPlugin()
-	// 用独立关键词 + refresh 绕开框架缓存：否则会吃到同一进程内前一个用例留下的条目
-	// （实测过：复用关键词时这里 0 次请求、err=nil、0 结果）。
-	res, err := p.Search("重试耗尽", map[string]interface{}{"refresh": true})
+	// 同关键词，隔离见 useTempCacheDir
+	res, err := p.Search("同一关键词", nil)
 	got := atomic.LoadInt32(&hits)
 	t.Logf("请求次数=%d retries=%d 返回条数=%d err=%v", got, p.retries, len(res), err)
 	if got != int32(p.retries)+1 {
@@ -71,4 +73,26 @@ func TestSearchRetriesExhaustedReturnsError(t *testing.T) {
 	if err == nil {
 		t.Error("上游一直 500 时必须报错，而不是返回空结果")
 	}
+}
+
+// useTempCacheDir 把缓存目录指向本用例专属的临时目录。
+//
+// 磁盘缓存会跨运行留存：不清的话，同一关键词在第二次运行时会直接命中上次的结果，
+// 测的就不是重试而是缓存了。用例里两个测试共用同一关键词，靠这个目录隔离即可，
+// 无需靠换关键词或加 refresh。
+func useTempCacheDir(t *testing.T) {
+	t.Helper()
+	saved := config.AppConfig
+	if saved == nil {
+		saved = &config.Config{}
+	}
+	cfg := *saved
+	cfg.CachePath = t.TempDir()
+	cfg.CacheEnabled = true
+	// 关键：异步响应超时必须显式给足。Dur 为 0 时框架会立刻返回（空结果 + nil 错误），
+	// 搜索转到后台继续跑——看起来就像"重试没发生"，实测过，这个签名极易被误判成缓存命中。
+	cfg.AsyncResponseTimeout = 30
+	cfg.AsyncResponseTimeoutDur = 30 * time.Second
+	config.AppConfig = &cfg
+	t.Cleanup(func() { config.AppConfig = saved })
 }
