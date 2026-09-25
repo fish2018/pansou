@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +67,16 @@ func (c *DiskCache) loadMetadata() {
 
 	for _, file := range files {
 		if file.IsDir() {
+			continue
+		}
+
+		// 清理上次被 kill 时留下的临时文件（原子写用 CreateTemp 造的那些）。
+		// 它们不会被下面的逻辑计入 currSize（按 <name>.meta 查找找不到就跳过），
+		// 也不会被 LRU 清理，不清就是永久占着磁盘。
+		if strings.Contains(file.Name(), ".tmp") {
+			if err := os.Remove(filepath.Join(c.path, file.Name())); err != nil && !os.IsNotExist(err) {
+				fmt.Printf("[DISK_CACHE] 清理残留临时文件失败: %s | %v\n", file.Name(), err)
+			}
 			continue
 		}
 
