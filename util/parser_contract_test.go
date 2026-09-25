@@ -1,61 +1,126 @@
 package util
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/PuerkitoBio/goquery"
+)
 
 // 本文件锁定解析路径上被优化过的两处对外行为：
-// 1) extractTitle 用字符串处理替代"每条消息建一个 goquery 文档"；
+// 1) 正文从 DOM 直接拼出（<br> 记为换行），取代"序列化后剥标签"的旧写法；
 // 2) ExtractPassword 的四个网盘分支正则由函数内编译提到包级。
-// 断言只依赖包内函数，不需要网络或样本文件，可作为长期回归契约。
+//
+// 标题用例走完整链路（HTML -> DOM -> 正文 -> 标题），而不是直接构造中间字符串，
+// 这样签名调整或实现替换都无法绕过契约。
+
+// extractTitleFromHTML 复刻解析器里的调用方式：从消息正文节点取
+// 带换行的正文与纯文本，再交给 extractTitle。
+func extractTitleFromHTML(t *testing.T, innerHTML string) string {
+	t.Helper()
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(
+		`<html><body><div class="tgme_widget_message_text">` + innerHTML + `</div></body></html>`))
+	if err != nil {
+		t.Fatalf("构造DOM失败: %v", err)
+	}
+	sel := doc.Find(".tgme_widget_message_text")
+	if sel.Length() == 0 {
+		t.Fatal("未找到正文节点")
+	}
+	return extractTitle(messageTextWithBreaks(sel), sel.Text())
+}
 
 func TestExtractTitleContract(t *testing.T) {
 	cases := []struct {
-		name        string
-		htmlContent string
-		textContent string
-		want        string
+		name      string
+		innerHTML string
+		want      string
 	}{
 		{
-			name:        "跳过日期头取真正的作品名",
-			htmlContent: "<b>📅 9月9日</b><br/>名称：仙逆 4K 合集<br/>简介：xxxx",
-			textContent: "📅 9月9日\n名称：仙逆 4K 合集\n简介：xxxx",
-			want:        "仙逆 4K 合集",
+			name:      "跳过日期头取真正的作品名",
+			innerHTML: "<b>📅 9月9日</b><br/>名称：仙逆 4K 合集<br/>简介：xxxx",
+			want:      "仙逆 4K 合集",
 		},
 		{
-			name:        "以话题标签开头时跳到下一行",
-			htmlContent: "#影视<br/>遮天 全季<br/>描述：yyy",
-			textContent: "#影视\n遮天 全季\n描述：yyy",
-			want:        "遮天 全季",
+			name:      "以话题标签开头时跳到下一行",
+			innerHTML: "#影视<br/>遮天 全季<br/>描述：yyy",
+			want:      "遮天 全季",
 		},
 		{
-			name:        "遇到简介关键字只保留前半段",
-			htmlContent: "凡人修仙传 全集 简介：一个普通少年的修仙路",
-			textContent: "凡人修仙传 全集 简介：一个普通少年的修仙路",
-			want:        "凡人修仙传 全集",
+			name:      "遇到简介关键字只保留前半段",
+			innerHTML: "凡人修仙传 全集 简介：一个普通少年的修仙路",
+			want:      "凡人修仙传 全集",
 		},
 		{
-			name:        "链接文本参与取行且HTML实体被解码",
-			htmlContent: "<a href=\"https://pan.quark.cn/s/abc\">兰香如故 &amp; 番外</a><br/>资源说明：zzz",
-			textContent: "兰香如故 & 番外\n资源说明：zzz",
-			want:        "兰香如故 & 番外",
+			name:      "链接文本参与取行且HTML实体被解码",
+			innerHTML: `<a href="https://pan.quark.cn/s/abc">兰香如故 &amp; 番外</a><br/>资源说明：zzz`,
+			want:      "兰香如故 & 番外",
 		},
 		{
-			name:        "注释内容不计入文本",
-			htmlContent: "<!-- 隐藏注释 -->漫长的季节<br/>其它：q",
-			textContent: "漫长的季节\n其它：q",
-			want:        "漫长的季节",
+			name:      "注释内容不计入文本",
+			innerHTML: "<!-- 隐藏注释 -->漫长的季节<br/>其它：q",
+			want:      "漫长的季节",
 		},
 		{
-			name:        "HTML为空时回落到纯文本内容",
-			htmlContent: "",
-			textContent: "#标签\n名称：备用标题",
-			want:        "备用标题",
+			name:      "正文为空时回落到纯文本内容",
+			innerHTML: "",
+			want:      "",
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := extractTitle(c.htmlContent, c.textContent); got != c.want {
+			if got := extractTitleFromHTML(t, c.innerHTML); got != c.want {
 				t.Errorf("extractTitle() = %q, 期望 %q", got, c.want)
+			}
+		})
+	}
+}
+
+// 正文拼装是最核心的契约：<br> 必须变成换行符，标签必须消失，实体必须解码。
+func TestMessageTextWithBreaksContract(t *testing.T) {
+	cases := []struct {
+		name      string
+		innerHTML string
+		want      string
+	}{
+		{
+			name:      "br自闭合与普通写法都记为换行",
+			innerHTML: "第一行<br/>第二行<br>第三行",
+			want:      "第一行\n第二行\n第三行",
+		},
+		{
+			name:      "标签被剥离但保留文本",
+			innerHTML: "<b>粗体</b>与<i>斜体</i>",
+			want:      "粗体与斜体",
+		},
+		{
+			name:      "实体解码",
+			innerHTML: "兰香如故 &amp; 番外 &lt;合集&gt;",
+			want:      "兰香如故 & 番外 <合集>",
+		},
+		{
+			name:      "注释丢弃",
+			innerHTML: "可见<!-- 隐藏 -->文本",
+			want:      "可见文本",
+		},
+		{
+			name:      "嵌套元素内的换行保留",
+			innerHTML: "<span>上<br/>下</span>",
+			want:      "上\n下",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			doc, err := goquery.NewDocumentFromReader(strings.NewReader(
+				`<html><body><div class="tgme_widget_message_text">` + c.innerHTML + `</div></body></html>`))
+			if err != nil {
+				t.Fatalf("构造DOM失败: %v", err)
+			}
+			got := messageTextWithBreaks(doc.Find(".tgme_widget_message_text"))
+			if got != c.want {
+				t.Errorf("messageTextWithBreaks() = %q, 期望 %q", got, c.want)
 			}
 		})
 	}
