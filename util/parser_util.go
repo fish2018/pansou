@@ -155,9 +155,12 @@ const (
 )
 
 // ParseSearchResults 解析搜索结果页面，只返回结果与翻页参数。
+// 第二个返回值是历史遗留的翻页参数占位：该功能从未实现，调用方也都忽略它，
+// 保留仅为兼容既有签名，实际恒为空串。
 func ParseSearchResults(html string, channel string) ([]model.SearchResult, string, error) {
-	results, nextPageParam, _, err := ParseSearchResultsWithStatus(html, channel)
-	return results, nextPageParam, err
+	results, _, status, err := ParseSearchResultsWithStatus(html, channel)
+	_ = status
+	return results, "", err
 }
 
 // ParseSearchResultsWithStatus 在结果之外额外返回解析可信度，
@@ -169,7 +172,6 @@ func ParseSearchResultsWithStatus(html string, channel string) ([]model.SearchRe
 	}
 
 	var results []model.SearchResult
-	var nextPageParam string
 
 	// 查找消息块
 	doc.Find(".tgme_widget_message_wrap").Each(func(i int, s *goquery.Selection) {
@@ -604,7 +606,7 @@ func ParseSearchResultsWithStatus(html string, channel string) ([]model.SearchRe
 		}
 	}
 
-	return results, nextPageParam, status, nil
+	return results, "", status, nil
 }
 
 // CutTitleByKeywords 根据关键词进行裁剪，保留最前关键词前的部分
