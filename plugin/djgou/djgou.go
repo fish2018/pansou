@@ -170,7 +170,14 @@ func (p *DjgouPlugin) searchImpl(client *http.Client, keyword string, ext map[st
 					challengeBody, readErr := util.ReadAllLimited(challengeResp.Body, util.MaxUpstreamResponseBytes)
 					challengeResp.Body.Close()
 					if readErr == nil {
-						doc, _ = goquery.NewDocumentFromReader(strings.NewReader(string(challengeBody)))
+						// 解析失败原先被丢弃：doc 会留在半截状态，后续用它找挑战字段
+						// 只会得到"没找到"，与"页面里确实没有挑战"无法区分。
+						parsedDoc, parseErr := goquery.NewDocumentFromReader(strings.NewReader(string(challengeBody)))
+						if parseErr != nil {
+							fmt.Printf("[DIGOU] 挑战页解析失败: %v\n", parseErr)
+						} else {
+							doc = parsedDoc
+						}
 					}
 				}
 			}

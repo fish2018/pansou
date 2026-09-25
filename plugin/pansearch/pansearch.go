@@ -728,7 +728,16 @@ func (p *PanSearchAsyncPlugin) convertResults(items []PanSearchItem, keyword str
 
 		var datetime time.Time
 		if item.Time != "" {
-			datetime, _ = time.Parse(time.RFC3339, item.Time)
+			// 解析失败原先被丢弃：结果时间戳变成零值，随后在按时间筛选时被**静默排除**，
+			// 表现为"这条资源明明有却搜不到"。这里换一个常见格式再试，仍失败则记录原因。
+			parseErr := error(nil)
+			datetime, parseErr = time.Parse(time.RFC3339, item.Time)
+			if parseErr != nil {
+				datetime, parseErr = time.Parse("2006-01-02 15:04:05", item.Time)
+			}
+			if parseErr != nil {
+				fmt.Printf("[PANSEARCH] 时间解析失败，该条目将按无时间处理: %q | %v\n", item.Time, parseErr)
+			}
 		}
 
 		result := model.SearchResult{
