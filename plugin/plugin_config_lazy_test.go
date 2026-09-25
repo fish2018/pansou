@@ -85,7 +85,7 @@ func TestBackgroundWorkerPoolResolvesConfigAtUseTime(t *testing.T) {
 		backgroundPoolOnce = savedOnce
 	})
 	backgroundWorkerPool = nil
-	backgroundPoolOnce = sync.Once{}
+	backgroundPoolOnce = &sync.Once{}
 
 	// 模拟真实顺序：插件已构造（此阶段不会创建池），配置随后才可用
 	withAppConfig(t, &config.Config{AsyncMaxBackgroundWorkers: 7})
@@ -100,7 +100,7 @@ func TestBackgroundWorkerPoolResolvesConfigAtUseTime(t *testing.T) {
 
 	// 配置缺失时退回硬编码默认值
 	backgroundWorkerPool = nil
-	backgroundPoolOnce = sync.Once{}
+	backgroundPoolOnce = &sync.Once{}
 	withAppConfig(t, nil)
 	if cap(ensureBackgroundWorkerPool()) != defaultMaxBackgroundWorkers {
 		t.Errorf("无配置时应退回默认容量 %d", defaultMaxBackgroundWorkers)

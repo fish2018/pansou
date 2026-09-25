@@ -96,8 +96,10 @@ var (
 
 	// 工作池相关变量
 	backgroundWorkerPool chan struct{}
-	backgroundPoolOnce   sync.Once
-	backgroundTasksCount int32 = 0
+	// 用指针而不是值：sync.Once 含 noCopy，值语义下任何保存/恢复都会被 go vet 的
+	// copylocks 判定为复制锁（测试需要重置这个一次性状态）。
+	backgroundPoolOnce   *sync.Once = &sync.Once{}
+	backgroundTasksCount int32      = 0
 
 	// 统计数据 (仅用于内部监控)
 	cacheHits        int64 = 0
