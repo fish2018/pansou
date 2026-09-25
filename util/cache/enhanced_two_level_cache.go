@@ -126,7 +126,15 @@ func (c *EnhancedTwoLevelCache) Get(key string) ([]byte, bool, error) {
 			}
 			ttl = remaining
 		}
-		diskLastModified, _ := c.disk.GetLastModified(key)
+		// 读取磁盘条目的最后修改时间。第二个返回值是"是否取到"，不是 error——原先用 _ 丢弃它，
+		// 取不到时会拿到**零值时间**，回填进内存后该条目看起来比实际老得多（0001-01-01），
+		// 影响后续的过期与淘汰判断。取不到时按当前时间回填：宁可让它看起来是刚写入的，
+		// 也不要凭空给它一个远古时间。
+		diskLastModified, hasMeta := c.disk.GetLastModified(key)
+		if !hasMeta {
+			fmt.Printf("[CACHE] 磁盘条目修改时间不可用，按当前时间回填: %s\n", key)
+			diskLastModified = time.Now()
+		}
 		c.memory.SetWithTimestamp(key, diskData, ttl, diskLastModified)
 		return diskData, true, nil
 	}
