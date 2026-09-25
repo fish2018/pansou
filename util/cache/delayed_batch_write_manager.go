@@ -256,6 +256,13 @@ type DelayedBatchWriteManager struct {
 	queueBuffer []*CacheOperation
 	queueMutex  sync.Mutex
 
+	// flushMetaMutex 保护 stats 里的元信息字段（时间/触发原因/批量大小/已写操作数）。
+	// 计数器用 atomic 是对的，但这几个是 time.Time/string/int，无法直接用 atomic，
+	// 此前是裸读写：写来自 flushGlobalBuffer（handler goroutine 与监控 goroutine 都会
+	// 调）与 executeBatchWrite，读来自批处理 goroutine 的 shouldTriggerBatchWrite。
+	// 用专用锁收口，不与 queueMutex 混用（避免把 flush 路径也串行化）。
+	flushMetaMutex sync.RWMutex
+
 	// 全局缓冲区管理器
 	globalBufferManager *GlobalBufferManager
 
@@ -436,9 +443,7 @@ func (m *DelayedBatchWriteManager) flushGlobalBuffer(bufferID string) error {
 	// 统计信息更新
 	atomic.AddInt64(&m.stats.BatchWrites, 1)
 	atomic.AddInt64(&m.stats.TotalWrites, 1)
-	m.stats.LastFlushTime = time.Now()
-	m.stats.LastFlushTrigger = "全局缓冲区触发"
-	m.stats.LastBatchSize = len(operations)
+	m.recordFlushMeta("全局缓冲区触发", len(operations))
 
 	// 批量写入磁盘
 	err = m.batchWriteToDisk(operations)
@@ -449,7 +454,7 @@ func (m *DelayedBatchWriteManager) flushGlobalBuffer(bufferID string) error {
 
 	// 📈 成功统计
 	atomic.AddInt64(&m.stats.SuccessfulWrites, 1)
-	m.stats.TotalOperationsWritten += len(operations)
+	m.addOperationsWritten(len(operations))
 
 	return nil
 }
@@ -721,7 +726,8 @@ func (m *DelayedBatchWriteManager) shouldTriggerBatchWrite() (bool, string) {
 	now := time.Now()
 
 	// 条件1：时间间隔达到阈值
-	if now.Sub(m.stats.LastFlushTime) >= m.config.MaxBatchInterval {
+	lastFlush := m.lastFlushTime()
+	if now.Sub(lastFlush) >= m.config.MaxBatchInterval {
 		return true, "时间间隔触发"
 	}
 
@@ -748,7 +754,7 @@ func (m *DelayedBatchWriteManager) shouldTriggerBatchWrite() (bool, string) {
 	}
 
 	// 条件6：强制刷新间隔（兜底机制）
-	if now.Sub(m.stats.LastFlushTime) >= m.config.forceFlushInterval {
+	if now.Sub(m.lastFlushTime()) >= m.config.forceFlushInterval {
 		return true, "强制刷新触发"
 	}
 
@@ -819,9 +825,7 @@ func (m *DelayedBatchWriteManager) executeBatchWrite(trigger string) error {
 
 	// 统计信息更新
 	atomic.AddInt64(&m.stats.BatchWrites, 1)
-	m.stats.LastFlushTime = time.Now()
-	m.stats.LastFlushTrigger = trigger
-	m.stats.LastBatchSize = len(operations)
+	m.recordFlushMeta(trigger, len(operations))
 
 	// 批量写入磁盘
 	err := m.batchWriteToDisk(operations)
@@ -841,7 +845,7 @@ func (m *DelayedBatchWriteManager) executeBatchWrite(trigger string) error {
 	// 成功统计
 	atomic.AddInt64(&m.stats.SuccessfulWrites, 1)
 	atomic.AddInt64(&m.stats.TotalWrites, 1)
-	m.stats.TotalOperationsWritten += len(operations)
+	m.addOperationsWritten(len(operations))
 
 	return nil
 }
@@ -949,9 +953,61 @@ func (m *DelayedBatchWriteManager) maxInt(a, b int) int {
 }
 
 // GetStats 获取统计信息
+// recordFlushMeta 记录本次刷新的元信息（并发安全）。
+func (m *DelayedBatchWriteManager) recordFlushMeta(trigger string, batchSize int) {
+	m.flushMetaMutex.Lock()
+	m.stats.LastFlushTime = time.Now()
+	m.stats.LastFlushTrigger = trigger
+	m.stats.LastBatchSize = batchSize
+	m.flushMetaMutex.Unlock()
+}
+
+// addOperationsWritten 累加已写入操作数（并发安全）。
+func (m *DelayedBatchWriteManager) addOperationsWritten(n int) {
+	m.flushMetaMutex.Lock()
+	m.stats.TotalOperationsWritten += n
+	m.flushMetaMutex.Unlock()
+}
+
+// lastFlushTime 是 LastFlushTime 的并发安全读取口。
+func (m *DelayedBatchWriteManager) lastFlushTime() time.Time {
+	m.flushMetaMutex.RLock()
+	defer m.flushMetaMutex.RUnlock()
+	return m.stats.LastFlushTime
+}
+
+// snapshotStats 逐字段读取统计快照。
+//
+// 不能写 `stats := *m.stats`：整结构复制会与 atomic.AddInt64 的写入竞争
+// （复制不是原子的），这是比裸字段更隐蔽的一处。计数器逐个原子读，元信息走锁。
+func (m *DelayedBatchWriteManager) snapshotStats() WriteManagerStats {
+	m.flushMetaMutex.RLock()
+	lastFlush := m.stats.LastFlushTime
+	lastTrigger := m.stats.LastFlushTrigger
+	lastBatch := m.stats.LastBatchSize
+	totalWritten := m.stats.TotalOperationsWritten
+	windowStart := m.stats.WindowStart
+	m.flushMetaMutex.RUnlock()
+
+	return WriteManagerStats{
+		TotalWrites:            atomic.LoadInt64(&m.stats.TotalWrites),
+		TotalOperations:        atomic.LoadInt64(&m.stats.TotalOperations),
+		BatchWrites:            atomic.LoadInt64(&m.stats.BatchWrites),
+		ImmediateWrites:        atomic.LoadInt64(&m.stats.ImmediateWrites),
+		MergedOperations:       atomic.LoadInt64(&m.stats.MergedOperations),
+		FailedWrites:           atomic.LoadInt64(&m.stats.FailedWrites),
+		SuccessfulWrites:       atomic.LoadInt64(&m.stats.SuccessfulWrites),
+		CurrentQueueSize:       atomic.LoadInt32(&m.stats.CurrentQueueSize),
+		LastFlushTime:          lastFlush,
+		LastFlushTrigger:       lastTrigger,
+		LastBatchSize:          lastBatch,
+		TotalOperationsWritten: totalWritten,
+		WindowStart:            windowStart,
+	}
+}
+
 func (m *DelayedBatchWriteManager) GetStats() map[string]interface{} {
-	stats := *m.stats
-	stats.CurrentQueueSize = atomic.LoadInt32(&m.stats.CurrentQueueSize)
+	stats := m.snapshotStats()
 	stats.WindowEnd = time.Now()
 
 	// 计算压缩比例
@@ -974,8 +1030,7 @@ func (m *DelayedBatchWriteManager) GetStats() map[string]interface{} {
 
 // GetWriteManagerStats 获取写入管理器统计（兼容性方法）
 func (m *DelayedBatchWriteManager) GetWriteManagerStats() *WriteManagerStats {
-	stats := *m.stats
-	stats.CurrentQueueSize = atomic.LoadInt32(&m.stats.CurrentQueueSize)
+	stats := m.snapshotStats()
 	stats.WindowEnd = time.Now()
 
 	// 计算压缩比例
