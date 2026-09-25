@@ -2,10 +2,10 @@ package mikuclub
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	utiljson "pansou/util/json"
 	"regexp"
 	"strings"
 	"sync"
@@ -256,7 +256,7 @@ func (p *MikuclubPlugin) fetchCategoryPosts(client *http.Client, keyword, catID 
 	}
 
 	var payload postListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := utiljson.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("[%s] 解析搜索结果失败: %w", p.Name(), err)
 	}
 

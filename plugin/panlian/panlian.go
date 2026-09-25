@@ -480,9 +480,11 @@ type VideoItem struct {
 	Lang    string `json:"lang"`
 	Remarks string `json:"remarks"`
 	Score   string `json:"score"`
-	// 注意：这里必须是 "type" 而不是 "type_name"。同层出现两个相同的 json tag 时
-	// encoding/json 会**两个字段全部忽略且不报错**，于是接口返回的 type_name
-	// 谁也没拿到，下面 normalize 里的 firstNonEmpty(TypeName, Type) 也就永远落空。
+	// 注意：这里必须是 "type" 而不是 "type_name"。
+	// 同层出现两个相同的 json tag 时，encoding/json 与本项目实际使用的 sonic
+	// （pansou/util/json）行为一致：**两个字段全部忽略且不报错**（实测确认，
+	// 见 panlian_jsontag_test.go）。于是接口返回的 type_name 谁也没接住，
+	// 下面 normalize 里的 firstNonEmpty(TypeName, Type) 也就永远落空。
 	Type        string `json:"type"`
 	Actor       string `json:"actor"`
 	DirectorNew string `json:"director"`

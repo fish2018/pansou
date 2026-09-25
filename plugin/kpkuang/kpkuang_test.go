@@ -2,7 +2,7 @@ package kpkuang
 
 import (
 	"encoding/base64"
-	"encoding/json"
+	utiljson "pansou/util/json"
 	"strings"
 	"testing"
 
@@ -10,7 +10,7 @@ import (
 )
 
 func TestParseBetaResponse(t *testing.T) {
-	payload, err := json.Marshal([]map[string]interface{}{{
+	payload, err := utiljson.Marshal([]map[string]interface{}{{
 		"id": "625161",
 		"data": map[string]interface{}{
 			"vod_name": "杀手", "vod_year": "2023", "vod_area": "法国/美国",

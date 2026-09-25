@@ -2,13 +2,13 @@ package dyyj
 
 import (
 	"context"
-	encodingjson "encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	utiljson "pansou/util/json"
 	"regexp"
 	"strings"
 	"sync"
@@ -427,7 +427,7 @@ func (p *DyyjPlugin) executeSearchAPI(client *http.Client, keyword string) ([]mo
 	defer resp.Body.Close()
 
 	var payload dyyjAPIResponse
-	if err := encodingjson.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := utiljson.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("[%s] 解析 API 响应失败: %w", p.Name(), err)
 	}
 

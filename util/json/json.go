@@ -45,4 +45,4 @@ func UnmarshalString(str string, v interface{}) error {
 func MarshalIndent(v interface{}, prefix, indent string) ([]byte, error) {
 	// 使用sonic的格式化功能
 	return API.MarshalIndent(v, prefix, indent)
-} 
+}

@@ -2,12 +2,12 @@ package buerchen
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	utiljson "pansou/util/json"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,7 +51,7 @@ func TestSearchDailyAndStreamResolution(t *testing.T) {
 					token = "https://pan.xunlei.com/s/direct?pwd=d4e5"
 				}
 				event := map[string]interface{}{"title": fmt.Sprintf("%s %d", keyword, i), "url": token, "is_type": provider}
-				body, _ := json.Marshal(event)
+				body, _ := utiljson.Marshal(event)
 				fmt.Fprintf(w, "data: %s\n\ndata: %s\n\n", body, body)
 			}
 			fmt.Fprint(w, "data: [DONE]\n\n")
@@ -59,14 +59,14 @@ func TestSearchDailyAndStreamResolution(t *testing.T) {
 			if r.URL.Query().Get("keyword") != keyword {
 				t.Error("daily search must filter on the server")
 			}
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "data": map[string]interface{}{"data": []interface{}{
+			utiljson.NewEncoder(w).Encode(map[string]interface{}{"success": true, "data": map[string]interface{}{"data": []interface{}{
 				map[string]string{"title": keyword + " 合集", "quarkLink": "dailyQ:0123", "baiduLink": "dailyB:4567", "xunleiLink": ""},
 				map[string]string{"title": "无关每日更新", "quarkLink": "irrelevant"},
 			}}})
 		case "/api2/decrypt":
 			defer track()()
 			var payload map[string]string
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			if err := utiljson.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Error(err)
 			}
 			token := payload["encryptUrl"]
@@ -79,14 +79,14 @@ func TestSearchDailyAndStreamResolution(t *testing.T) {
 			} else if token != "dailyQ:0123" {
 				t.Errorf("daily token was changed: %q", token)
 			}
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "data": map[string]string{"url": "https://" + host + "/s/original?pwd=old1"}})
+			utiljson.NewEncoder(w).Encode(map[string]interface{}{"success": true, "data": map[string]string{"url": "https://" + host + "/s/original?pwd=old1"}})
 		case "/api/other/save_url":
 			defer track()()
 			if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" {
 				t.Error("save_url must be a JSON POST")
 			}
 			var payload map[string]string
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			if err := utiljson.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Error(err)
 			}
 			original, err := url.QueryUnescape(payload["url"])
@@ -122,7 +122,7 @@ func TestSearchDailyAndStreamResolution(t *testing.T) {
 			if original == "4+/2==" {
 				shareURL = "https://buerchen.top/s/advert.html"
 			}
-			json.NewEncoder(w).Encode(map[string]interface{}{"code": 200, "data": map[string]string{"url": shareURL}})
+			utiljson.NewEncoder(w).Encode(map[string]interface{}{"code": 200, "data": map[string]string{"url": shareURL}})
 		default:
 			t.Errorf("unexpected endpoint: %s", r.URL.Path)
 			http.NotFound(w, r)

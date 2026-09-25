@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/md5"
-	stdjson "encoding/json"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -265,7 +264,7 @@ func (p *JuPansouPlugin) exchangeURL(client *http.Client, item juPansouStreamIte
 		return "", ""
 	}
 	var payload juPansouTransferResponse
-	if err := stdjson.NewDecoder(resp.Body).Decode(&payload); err != nil || !payload.Success {
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil || !payload.Success {
 		return "", ""
 	}
 	return strings.TrimSpace(payload.Data.ShareURL), strings.TrimSpace(payload.Data.Password)

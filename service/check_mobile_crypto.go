@@ -5,9 +5,9 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
+	utiljson "pansou/util/json"
 	"reflect"
 )
 
@@ -80,7 +80,7 @@ func marshalMobilePayload(data interface{}) ([]byte, error) {
 			return nil, fmt.Errorf("请求数据不能为空")
 		}
 		if kind.Kind() == reflect.Struct || kind.Kind() == reflect.Map {
-			raw, err := json.Marshal(value)
+			raw, err := utiljson.Marshal(value)
 			if err != nil {
 				return nil, fmt.Errorf("序列化请求失败: %w", err)
 			}

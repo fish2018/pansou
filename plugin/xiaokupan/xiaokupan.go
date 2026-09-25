@@ -3,11 +3,11 @@ package xiaokupan
 import (
 	"context"
 	"crypto/sha256"
-	stdjson "encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	utiljson "pansou/util/json"
 	"regexp"
 	"strings"
 	"sync"
@@ -42,11 +42,11 @@ type XiaokupanPlugin struct {
 }
 
 type serovalNode struct {
-	Type   int                `json:"t"`
-	ID     *int               `json:"i,omitempty"`
-	Scalar stdjson.RawMessage `json:"s,omitempty"`
-	Props  *serovalProps      `json:"p,omitempty"`
-	Array  []*serovalNode     `json:"a,omitempty"`
+	Type   int                 `json:"t"`
+	ID     *int                `json:"i,omitempty"`
+	Scalar utiljson.RawMessage `json:"s,omitempty"`
+	Props  *serovalProps       `json:"p,omitempty"`
+	Array  []*serovalNode      `json:"a,omitempty"`
 }
 
 type serovalProps struct {
@@ -162,7 +162,7 @@ func buildSearchPayload(keyword string) ([]byte, error) {
 		"f": 63,
 		"m": []interface{}{},
 	}
-	return stdjson.Marshal(payload)
+	return utiljson.Marshal(payload)
 }
 
 func (p *XiaokupanPlugin) setSearchHeaders(req *http.Request, keyword string) {
@@ -262,7 +262,7 @@ func (p *XiaokupanPlugin) discoverServerFunctionID(client *http.Client) (string,
 
 func parseSearchResponse(body []byte) ([]model.SearchResult, error) {
 	var root serovalNode
-	if err := stdjson.Unmarshal(body, &root); err != nil {
+	if err := utiljson.Unmarshal(body, &root); err != nil {
 		return nil, fmt.Errorf("解析 Seroval 响应失败: %w", err)
 	}
 	decoder := newSerovalDecoder(&root)
@@ -356,7 +356,7 @@ func (d *serovalDecoder) collect(node *serovalNode) {
 func (d *serovalDecoder) resolve(node *serovalNode) *serovalNode {
 	for depth := 0; node != nil && node.Type == 4 && depth < 16; depth++ {
 		var referenceID int
-		if err := stdjson.Unmarshal(node.Scalar, &referenceID); err != nil {
+		if err := utiljson.Unmarshal(node.Scalar, &referenceID); err != nil {
 			return nil
 		}
 		node = d.references[referenceID]
@@ -383,7 +383,7 @@ func (d *serovalDecoder) stringValue(node *serovalNode) string {
 		return ""
 	}
 	var value string
-	if err := stdjson.Unmarshal(node.Scalar, &value); err != nil {
+	if err := utiljson.Unmarshal(node.Scalar, &value); err != nil {
 		return ""
 	}
 	return value

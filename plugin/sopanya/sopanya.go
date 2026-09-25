@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
-	stdjson "encoding/json"
 	"fmt"
 	"html"
 	"io"
@@ -57,15 +56,15 @@ type indexedEvent struct {
 }
 
 type resourceData struct {
-	Title       string             `json:"title"`
-	URL         string             `json:"url"`
-	IsType      int                `json:"is_type"`
-	Code        string             `json:"code"`
-	Content     string             `json:"content"`
-	Description string             `json:"description"`
-	VODContent  string             `json:"vod_content"`
-	UpdateTime  stdjson.RawMessage `json:"update_time"`
-	CreateTime  stdjson.RawMessage `json:"create_time"`
+	Title       string          `json:"title"`
+	URL         string          `json:"url"`
+	IsType      int             `json:"is_type"`
+	Code        string          `json:"code"`
+	Content     string          `json:"content"`
+	Description string          `json:"description"`
+	VODContent  string          `json:"vod_content"`
+	UpdateTime  json.RawMessage `json:"update_time"`
+	CreateTime  json.RawMessage `json:"create_time"`
 }
 
 type saveResponse struct {
@@ -486,7 +485,7 @@ func extractPassword(values ...string) string {
 	return ""
 }
 
-func parseSourceTime(raw stdjson.RawMessage) time.Time {
+func parseSourceTime(raw json.RawMessage) time.Time {
 	if len(raw) == 0 || string(raw) == "null" {
 		return time.Time{}
 	}

@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	stdjson "encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -264,7 +263,7 @@ func (p *NSGameAsyncPlugin) fetchDetail(client *http.Client, id int) (NSGameItem
 	}
 	defer resp.Body.Close()
 	var payload NSGameDetailResponse
-	if err := stdjson.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return NSGameItem{}, err
 	}
 	if !payload.Success || payload.Data.ID == 0 {

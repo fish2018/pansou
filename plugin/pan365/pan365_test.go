@@ -2,12 +2,12 @@ package pan365
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	utiljson "pansou/util/json"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -68,7 +68,7 @@ func TestSearchProvidersLimitsCacheAndRefresh(t *testing.T) {
 				item := searchItem{Title: fmt.Sprintf("%s %d", keyword, i), URL: fmt.Sprintf("%s+/%d==", provider, i), DiskType: provider, Source: provider}
 				items = append(items, item, item)
 			}
-			json.NewEncoder(w).Encode(map[string]interface{}{"code": 200, "data": map[string]interface{}{"list": items}})
+			utiljson.NewEncoder(w).Encode(map[string]interface{}{"code": 200, "data": map[string]interface{}{"list": items}})
 		case "/api/transfer-share/transfer-share":
 			if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" {
 				t.Error("transfer must be a JSON POST")
@@ -76,7 +76,7 @@ func TestSearchProvidersLimitsCacheAndRefresh(t *testing.T) {
 			var request struct {
 				URL string `json:"encrypted_url"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			if err := utiljson.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Error(err)
 			}
 			mu.Lock()
@@ -108,7 +108,7 @@ func TestSearchProvidersLimitsCacheAndRefresh(t *testing.T) {
 			if request.URL == "baidu+/2==" {
 				shareURL = "https://pan.baidu.com.evil.example/s/advert"
 			}
-			json.NewEncoder(w).Encode(map[string]interface{}{"code": 200, "data": map[string]interface{}{
+			utiljson.NewEncoder(w).Encode(map[string]interface{}{"code": 200, "data": map[string]interface{}{
 				"share_url": shareURL, "original_url": fmt.Sprintf("https://%s/s/original%s?pwd=old1", host, id), "passcode": nil,
 			}})
 		default:

@@ -9,16 +9,16 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-	
+
 	"pansou/util/json"
 )
 
 // 磁盘缓存项元数据
 type diskCacheMetadata struct {
-	Key         string    `json:"key"`
-	Expiry      time.Time `json:"expiry"`
-	LastUsed    time.Time `json:"last_used"`
-	Size        int       `json:"size"`
+	Key          string    `json:"key"`
+	Expiry       time.Time `json:"expiry"`
+	LastUsed     time.Time `json:"last_used"`
+	Size         int       `json:"size"`
 	LastModified time.Time `json:"last_modified"` // 添加最后修改时间字段
 }
 
@@ -88,7 +88,7 @@ func (c *DiskCache) loadMetadata() {
 
 		// 更新总大小
 		c.currSize += int64(meta.Size)
-		
+
 		// 存储元数据
 		c.metadata[meta.Key] = &meta
 	}
@@ -148,11 +148,11 @@ func (c *DiskCache) Set(key string, data []byte, ttl time.Duration) error {
 	// 创建元数据
 	now := time.Now()
 	meta := &diskCacheMetadata{
-		Key:         key,
-		Expiry:      now.Add(ttl),
-		LastUsed:    now,
+		Key:          key,
+		Expiry:       now.Add(ttl),
+		LastUsed:     now,
 		LastModified: now, // 设置最后修改时间
-		Size:        len(data),
+		Size:         len(data),
 	}
 
 	// 保存元数据
@@ -347,7 +347,7 @@ func (c *DiskCache) Clear() error {
 	c.currSize = 0
 
 	return nil
-} 
+}
 
 // GetLastModified 获取缓存项的最后修改时间
 func (c *DiskCache) GetLastModified(key string) (time.Time, bool) {
@@ -360,4 +360,4 @@ func (c *DiskCache) GetLastModified(key string) (time.Time, bool) {
 	}
 
 	return meta.LastModified, true
-} 
+}

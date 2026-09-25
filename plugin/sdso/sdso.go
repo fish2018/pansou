@@ -5,10 +5,10 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	utiljson "pansou/util/json"
 	"regexp"
 	"strings"
 	"sync"
@@ -259,7 +259,7 @@ func (p *SDSOPlugin) fetchSinglePageWithType(client *http.Client, keyword string
 
 	// 7. 解析响应
 	var apiResp APIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+	if err := utiljson.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 		return nil, fmt.Errorf("[%s] %s网盘第%d页JSON解析失败: %w", p.Name(), fromType, pageNo, err)
 	}
 

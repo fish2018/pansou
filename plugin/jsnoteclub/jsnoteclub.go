@@ -2,10 +2,10 @@ package jsnoteclub
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	utiljson "pansou/util/json"
 	"regexp"
 	"strings"
 	"sync"
@@ -291,7 +291,7 @@ func (p *JsNoteClubPlugin) fetchPosts(client *http.Client, dataKey string) ([]gh
 	}
 
 	var payload ghostPostsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := utiljson.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("[%s] 解析内容数据失败: %w", p.Name(), err)
 	}
 
