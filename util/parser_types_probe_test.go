@@ -58,16 +58,23 @@ func TestParseAllNetdiskTypesFixture(t *testing.T) {
 		t.Errorf("百度链接形态变了: %q", got)
 	}
 
-	// 冻结当前密码行为：一条消息里多个链接各带自己的提取码时，**全部取到第一个码**。
+	// 每条链接必须拿到**自己**的提取码。
 	//
-	// 这是实测行为，不是理想行为——成因在 ExtractPassword 的正文回退分支：它把整条正文按
-	// "提取码" 切分后返回第一个合法码，与链接本身没有关联。真实页面里 .Text() 还会把 <br>
-	// 折叠掉，所以即便上游把每个码写在自己那行也救不回来。
+	// 这里原本冻结的是错误行为：一条消息里多个链接各带自己的提取码时全部取到第一个码
+	// （六个链接的 Password 都是 1234）。成因是 ExtractPassword 按"提取码"切分整条正文后返回
+	// 第一个合法码，与链接本身没有关联。现已改为按链接位置就近取值（extractCodeNear），
+	// 找不到才回退旧逻辑。断言随之更新——**是有意的行为变更**，对照组见
+	// TestExtractCodeNearControlOldBehaviorWasFirstMatch。
+	// 前五个各自拿到自己那行的码。最后一个（阿里云盘）这一行**没有码**，于是回退到旧逻辑、
+	// 拿到整条消息的首个码 1234。
 	//
-	// 这里先冻结现状，避免重构顺手改掉它；这个正确性问题需要单独决策后修复。
-	for i, l := range results[0].Links {
-		if l.Password != "1234" {
-			t.Errorf("链接[%d] 密码实测为 1234（整条消息取首个码），实际 %q", i, l.Password)
+	// 这个回退是**有意保留**的：真实帖子里常见"多个链接 + 末尾一个提取码统管"的写法，
+	// 纯就近取值会让这些链接一个码都拿不到，那是退化。代价是"链接自己没码、但消息里另有
+	// 别的链接的码"时仍会张冠李戴——两者在文本上无法区分，只能选不丢码的那一侧。
+	wantPassword := []string{"1234", "abcd", "uc99", "p123", "p115", "1234"}
+	for i, want := range wantPassword {
+		if got := results[0].Links[i].Password; got != want {
+			t.Errorf("链接[%d](%s) 密码应为 %q，实际 %q", i, results[0].Links[i].Type, want, got)
 		}
 	}
 

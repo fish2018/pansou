@@ -40,6 +40,12 @@ var MobilePanPattern = regexp.MustCompile(`https?://(?:(?:www\.)?yun\.139\.com/s
 var PasswordPattern = regexp.MustCompile(`(?i)(?:(?:提取|访问|提取密|密)码|pwd)[：:]\s*([a-zA-Z0-9]{4})(?:[^a-zA-Z0-9]|$)`)
 var UrlPasswordPattern = regexp.MustCompile(`(?i)[?&]pwd=([a-zA-Z0-9]{4})(?:[^a-zA-Z0-9]|$)`)
 
+// NearbyPasswordPattern 用于"链接附近"这段短窗口里找提取码。
+//
+// 与 PasswordPattern 的区别是长度：它写死 4 位，而真实的提取码有 5~6 位的。窗口已经很短，
+// 放宽到 4~6 位再配合 isValidPassword 校验，比要求恰好 4 位更贴合实际。
+var NearbyPasswordPattern = regexp.MustCompile(`(?i)(?:(?:提取|访问|提取密|密)码|pwd)[：:\\s]*([a-zA-Z0-9]{4,6})(?:[^a-zA-Z0-9]|$)`)
+
 // 百度网盘密码专用正则表达式 - 确保只提取4位密码
 var BaiduPasswordPattern = regexp.MustCompile(`(?i)(?:链接：.*?提取码：|密码：|提取码：|pwd=|pwd:|pwd：)([a-zA-Z0-9]{4})(?:[^a-zA-Z0-9]|$)`)
 

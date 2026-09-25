@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PuerkitoBio/goquery"
 	"golang.org/x/net/html"
@@ -253,7 +254,7 @@ func parseTgMessage(s *goquery.Selection, channel string) (model.SearchResult, b
 	// 提取标题
 	title := extractTitle(messageTextWithBreaks, messageText)
 
-	links := collectMessageLinks(s, messageText)
+	links := collectMessageLinks(s, messageText, messageTextWithBreaks)
 	tags := extractMessageTags(messageTextElem)
 	images := extractMessageImages(messageDiv)
 
@@ -278,13 +279,122 @@ func parseTgMessage(s *goquery.Selection, channel string) (model.SearchResult, b
 	}, true, true
 }
 
+// passwordFor 返回某条链接对应的提取码。
+//
+// 先用"这条链接自己附近"的短窗口取值（primaryContext），取不到才退回原来的整条扫描逻辑
+// （fallbackContext）——**保证不退化**：宁可回到旧行为，也不能因为附近没找到就返回空。
+func passwordFor(linkURL, primaryContext, fallbackContext string) string {
+	if pw := extractCodeNear(linkURL, primaryContext); pw != "" {
+		return pw
+	}
+	return ExtractPassword(fallbackContext, linkURL)
+}
+
+// nearbyPasswordWindow 是"链接附近"的取值窗口长度。
+//
+// 太短会漏掉写在下一行的提取码，太长会把别的链接的码吃进来。60 足以跨一到两行，
+// 配合"遇到下一个链接就截断"的规则，多链接消息里不会互相串码。
+const nearbyPasswordWindow = 60
+
+// anchorCandidates 给出一条链接在正文里可能的写法，按"越精确越先试"的顺序。
+func anchorCandidates(linkURL string) []string {
+	// 正文里写的链接常常不带查询参数，而 href 可能带（如 ?pwd=xxxx），先去查询串
+	trimmed := linkURL
+	if i := strings.IndexAny(trimmed, "?#"); i > 0 {
+		trimmed = trimmed[:i]
+	}
+	trimmed = strings.TrimRight(trimmed, "/")
+
+	candidates := []string{trimmed}
+
+	// 去掉 scheme：正文里也可能写成不带协议的形式
+	noScheme := trimmed
+	if i := strings.Index(noScheme, "//"); i >= 0 {
+		noScheme = noScheme[i+2:]
+	}
+	noWWW := strings.TrimPrefix(noScheme, "www.")
+
+	if noWWW != noScheme {
+		candidates = append(candidates, noWWW)
+	}
+	if noScheme != trimmed {
+		candidates = append(candidates, noScheme)
+	}
+
+	// 最后退到路径末段（如 /s/pan123 里的 pan123）：锚到"这个链接的标识"，不依赖主机写法。
+	// 太短的不试——4 个字符以内极容易在正文里撞上别的东西。
+	if i := strings.LastIndex(noWWW, "/"); i >= 0 && len(noWWW)-i-1 > 5 {
+		candidates = append(candidates, noWWW[i:])
+	}
+
+	return candidates
+}
+
+// extractCodeNear 在 context 里以 linkURL 为锚，只在它后面一小段找提取码。
+//
+// 为什么要按锚定位：原来的 ExtractPassword 拿到的是**整条消息**的正文，它按"提取码"切分后
+// 返回第一个合法码，与链接本身没有关联。于是一条消息里列了多个网盘链接、各带各的提取码时，
+// 所有链接都会拿到第一个码——用错码解不开盘，而且是静默的。
+//
+// context 里找不到锚点时有两种情况：
+//   - context 很短（按钮标签），说明整段都是这条链接的上下文，直接在里面找；
+//   - context 很长（整条正文却找不到这个链接），无法判断位置，返回空让调用方回退旧逻辑。
+func extractCodeNear(linkURL, context string) string {
+	if context == "" {
+		return ""
+	}
+
+	// 锚点要试多个形态：调用方拿到的 URL 可能已经被规范化过（去 scheme、去 www.、去尾斜杠），
+	// 与正文里写的形态不一定一致。实测 123 网盘就是这样——正文写 www.123pan.com，
+	// 传进来的是 123pan.com，按原样一个都找不到。
+	window := ""
+	for _, anchor := range anchorCandidates(linkURL) {
+		pos := strings.Index(context, anchor)
+		if pos < 0 {
+			continue
+		}
+		rest := context[pos+len(anchor):]
+		// 遇到下一个链接就截断：多链接消息里这一段属于当前链接，不能越过下一条
+		if next := strings.Index(rest, "http"); next >= 0 {
+			rest = rest[:next]
+		}
+		window = rest
+		break
+	}
+
+	if window == "" {
+		if len(context) <= 2*nearbyPasswordWindow {
+			// 短上下文（典型是按钮标签）：它本身就是这条链接的上下文
+			window = context
+		} else {
+			// 长上下文里找不到锚点，无法判断位置，返回空让调用方回退旧逻辑
+			return ""
+		}
+	}
+
+	if len(window) > nearbyPasswordWindow {
+		window = window[:nearbyPasswordWindow]
+	}
+
+	// 窗口末尾可能正好切断一个多字节字符，按 rune 边界回退，避免拿到半个字
+	for len(window) > 0 && !utf8.ValidString(window) {
+		window = window[:len(window)-1]
+	}
+
+	matches := NearbyPasswordPattern.FindStringSubmatch(window)
+	if len(matches) > 1 && isValidPassword(matches[1]) {
+		return matches[1]
+	}
+	return ""
+}
+
 // collectMessageLinks 汇总一条消息里的网盘链接。两个来源：正文与行内键盘按钮里的 <a>，
 // 以及正文文本中直接写出的裸链接。两者过同一套"按网盘类型归集 + 去重 + 补全密码"的处理。
 //
 // Telegram 网页版会把 inline keyboard 渲染在 .tgme_widget_message_inline_keyboard 中，
 // 它与 .tgme_widget_message_text 是同级节点。因此不能只遍历正文中的 <a>，
 // 否则按钮里的网盘链接会被完全忽略。
-func collectMessageLinks(scope *goquery.Selection, messageText string) []model.Link {
+func collectMessageLinks(scope *goquery.Selection, messageText, textWithBreaks string) []model.Link {
 	cand := newLinkCandidates()
 
 	scope.Find(".tgme_widget_message_text a, .tgme_widget_message_inline_keyboard a[href]").Each(func(i int, a *goquery.Selection) {
@@ -297,17 +407,20 @@ func collectMessageLinks(scope *goquery.Selection, messageText string) []model.L
 		}
 
 		// 某些频道会把提取码写在按钮文字中，因此同时使用正文和按钮标签作为密码提取上下文。
+		buttonText := strings.TrimSpace(a.Text())
 		passwordContext := messageText
-		if buttonText := strings.TrimSpace(a.Text()); buttonText != "" {
+		if buttonText != "" {
 			passwordContext += "\n" + buttonText
 		}
 
-		cand.add(GetLinkType(href), href, ExtractPassword(passwordContext, href))
+		// 按钮链接的最近上下文是按钮标签本身；正文里若也写了这个链接，则以正文为准
+		cand.add(GetLinkType(href), href, passwordFor(href, buttonText+"\n"+textWithBreaks, passwordContext))
 	})
 
-	// 处理从文本中提取的链接
+	// 处理从文本中提取的链接。主上下文用**带换行的**正文：ExtractPassword 拿到的是 .Text()，
+	// 它会把 <br> 折叠成一行，按锚定位就无从谈起。
 	for _, linkURL := range ExtractNetDiskLinks(messageText) {
-		cand.add(GetLinkType(linkURL), linkURL, ExtractPassword(messageText, linkURL))
+		cand.add(GetLinkType(linkURL), linkURL, passwordFor(linkURL, textWithBreaks, messageText))
 	}
 
 	return cand.finalize()
