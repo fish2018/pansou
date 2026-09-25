@@ -229,6 +229,39 @@ func NewSearchService(pluginManager *plugin.PluginManager) *SearchService {
 	}
 }
 
+// writeSearchCacheByCompleteness 按本轮完整度决定是否写主缓存、以及写多长 TTL，然后写入。
+//
+// 两条搜索路径（TG 频道 / 插件）原先各写一份同样的编排，并且已经因此**漂移过**：插件侧修了
+// "不许把缓存写小"，TG 侧仍是 Set 直接覆盖。现在统一走这里，两边只剩日志标签不同。
+//
+// 合并语义对两条路径都适用：本轮的 results 常比缓存里已有的更少——插件侧是因为大部分插件还在
+// 后台补齐，TG 侧是因为这一轮有频道超时未回。直接覆盖会把此前累积的结果丢掉，而且静默。
+//
+// sender 只用于日志前缀（"主程序"/"频道路径"）；缓存键由调用方给，两条路径各自一套键空间。
+func writeSearchCacheByCompleteness(outcome *batchSearchOutcome, cacheKey string, results []model.SearchResult, sender string) {
+	if !cacheInitialized || config.AppConfig == nil || !config.AppConfig.CacheEnabled {
+		return
+	}
+	if enhancedTwoLevelCache == nil {
+		return
+	}
+
+	fullTTL := time.Duration(config.AppConfig.CacheTTLMinutes) * time.Minute
+	partialTTL := time.Duration(config.AppConfig.CachePartialTTLMinutes) * time.Minute
+	ttl, write := outcome.cacheTTL(fullTTL, partialTTL)
+	if !write {
+		return
+	}
+
+	go func(res []model.SearchResult, cacheTTL time.Duration) {
+		written := writeFinalMainCache(enhancedTwoLevelCache, cacheKey, res, cacheTTL)
+		if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
+			fmt.Printf("[%s] 缓存更新完成: %s | 本次 %d 条 -> 合并后 %d 条 | TTL: %.0f分钟\n",
+				sender, cacheKey, len(res), written, cacheTTL.Minutes())
+		}
+	}(results, ttl)
+}
+
 // writeFinalMainCache 写入一次搜索的最终结果到主缓存。
 //
 // 必须**先与缓存里已有的合并**，不能直接覆盖。本次请求常常只拿到部分结果——71 个插件里往往
@@ -1369,23 +1402,8 @@ func (s *SearchService) searchTG(keyword string, channels []string, forceRefresh
 	outcome.logSummary("searchTG", keyword)
 
 	// 缓存写入按完整度分流：全失败不写、有超时写短TTL、其余写正常TTL。
-	if cacheInitialized && config.AppConfig.CacheEnabled {
-		fullTTL := time.Duration(config.AppConfig.CacheTTLMinutes) * time.Minute
-		partialTTL := time.Duration(config.AppConfig.CachePartialTTLMinutes) * time.Minute
-
-		if ttl, write := outcome.cacheTTL(fullTTL, partialTTL); write {
-			go func(res []model.SearchResult, cacheTTL time.Duration) {
-				// 使用增强版缓存
-				if enhancedTwoLevelCache != nil {
-					data, err := enhancedTwoLevelCache.GetSerializer().Serialize(res)
-					if err != nil {
-						return
-					}
-					enhancedTwoLevelCache.Set(cacheKey, data, cacheTTL)
-				}
-			}(results, ttl)
-		}
-	}
+	// 与插件路径共用同一个实现——两条路径各写一份时已经漂移过（见函数注释）。
+	writeSearchCacheByCompleteness(outcome, cacheKey, results, "频道路径")
 
 	// 后台补齐超时未完成的频道，用完整结果覆盖缓存
 	if outcome.shouldBackfill(config.AppConfig.TGBackfillEnabled) &&
@@ -1629,23 +1647,8 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 
 	// 缓存写入按完整度分流，与频道路径同一套判定：
 	// 全失败不写、有插件超时写短TTL、其余写正常TTL。
-	if cacheInitialized && config.AppConfig.CacheEnabled {
-		fullTTL := time.Duration(config.AppConfig.CacheTTLMinutes) * time.Minute
-		partialTTL := time.Duration(config.AppConfig.CachePartialTTLMinutes) * time.Minute
-
-		if ttl, write := outcome.cacheTTL(fullTTL, partialTTL); write {
-			go func(res []model.SearchResult, kw string, key string, cacheTTL time.Duration) {
-				// 使用增强版缓存，确保与异步插件使用相同的序列化器
-				if enhancedTwoLevelCache != nil {
-					written := writeFinalMainCache(enhancedTwoLevelCache, key, res, cacheTTL)
-					if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
-						fmt.Printf("[主程序] 缓存更新完成: %s | 本次 %d 条 -> 合并后 %d 条 | TTL: %.0f分钟",
-							key, len(res), written, cacheTTL.Minutes())
-					}
-				}
-			}(allResults, keyword, cacheKey, ttl)
-		}
-	}
+	// 缓存写入按完整度分流，与频道路径同一套判定——同一个实现，不再各写一份。
+	writeSearchCacheByCompleteness(outcome, cacheKey, allResults, "主程序")
 
 	// 后台补齐超时未返回的插件，用完整结果覆盖缓存
 	if outcome.shouldBackfill(config.AppConfig.PluginBackfillEnabled) &&

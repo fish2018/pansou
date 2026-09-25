@@ -19,6 +19,10 @@ func withMainCacheConfig(t *testing.T) *cache.EnhancedTwoLevelCache {
 		CachePath:      t.TempDir(),
 		CacheMaxSizeMB: 10,
 		CacheEnabled:   true,
+		// TTL 必须给非零值：writeSearchCacheByCompleteness 会把 partialTTL 传给 SetBothLevels，
+		// 而 TTL=0 等于立刻过期，读回来就是没有条目——那是配置缺失，不是被测代码的问题。
+		CacheTTLMinutes:        60,
+		CachePartialTTLMinutes: 3,
 	}
 	t.Cleanup(func() { config.AppConfig = saved })
 
@@ -212,4 +216,52 @@ func TestFinalWriteOverwriteShrinksControl(t *testing.T) {
 		t.Fatalf("对照实验失效：直接覆盖竟然保留了 %d 条，说明这个探针测不出问题", got)
 	}
 	t.Log("对照实验符合预期：直接覆盖后只剩 1 条（8 条后台结果被丢弃）")
+}
+
+// 两条搜索路径共用同一个写缓存实现后，"不许写小"对频道路径同样成立。
+//
+// 这是归一之前会漏掉的一半：插件侧修好了，TG 侧仍是 Set 直接覆盖——重复的编排一旦漂移，
+// 修一份就漏一份。
+func TestWriteSearchCacheByCompletenessMergesForBGothPaths(t *testing.T) {
+	c := withMainCacheConfig(t)
+	globalCache := enhancedTwoLevelCache
+	enhancedTwoLevelCache = c
+	cacheInitialized = true
+	t.Cleanup(func() { enhancedTwoLevelCache = globalCache })
+
+	// 两条路径各自的键空间（频道路径与插件路径用的是不同的键）
+	channelKey := "频道键-关键词-110频道"
+	pluginKey := "插件键-关键词-71插件"
+
+	seed := make([]model.SearchResult, 0, 5)
+	for i := 0; i < 5; i++ {
+		seed = append(seed, model.SearchResult{UniqueID: fmt.Sprintf("已累积-%d", i)})
+	}
+
+	for _, key := range []string{channelKey, pluginKey} {
+		if err := mergeIntoMainCache(c, key, seed, time.Minute, true, "关键词", "种子"); err != nil {
+			t.Fatal(err)
+		}
+
+		// 本轮只产出 1 条（TG 侧有频道超时未回 / 插件侧大部分还在后台补齐）
+		// 必须至少有一个任务成功，否则 cacheTTL 按"全失败不写"返回不写——那是正确行为，
+		// 用例要测的是"能写的时候不许写小"。
+		outcome := newBatchSearchOutcome(3)
+		outcome.observe("a", nil, time.Millisecond) // 一个成功、两个超时 -> 走短 TTL 且照写
+		outcome.finalize([]string{"a", "b", "c"})
+		writeSearchCacheByCompleteness(outcome, key, []model.SearchResult{{UniqueID: "本轮-0", Title: "本轮唯一"}}, "测试")
+
+		// 写是放在 goroutine 里的，等它落盘
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if got := len(readMergedResults(t, c, key)); got >= 6 {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+
+		if got := len(readMergedResults(t, c, key)); got != 6 {
+			t.Errorf("键 %q 被写小：应有 6 条（已累积 5 + 本轮 1），实际 %d", key, got)
+		}
+	}
 }
