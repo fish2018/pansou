@@ -1,8 +1,12 @@
 package cache
 
 import (
+	"fmt"
 	"hash/fnv"
+	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,14 +55,12 @@ type ShardedMemoryCache struct {
 
 // 创建新的分片内存缓存
 func NewShardedMemoryCache(maxItems int, maxSizeMB int) *ShardedMemoryCache {
-	// 动态确定分片数量：基于CPU核心数，但至少4个，最多64个
-	shardCount := runtime.NumCPU() * 2
-	if shardCount < 4 {
-		shardCount = 4
-	}
-	if shardCount > 64 {
-		shardCount = 64
-	}
+	// 分片数量：默认按 CPU 核心数推算，可用 SHARD_COUNT 显式覆盖。
+	//
+	// README 一直把 SHARD_COUNT 列在环境变量表里，但代码从来没有读过它——
+	// 文档承诺了一个不存在的开关。这里把承诺兑现：显式值优先，非法值忽略并回落到推算值，
+	// 免得一个手滑的 SHARD_COUNT=0 变成零分片缓存。
+	shardCount := resolveShardCount(runtime.NumCPU())
 
 	// 确保分片数是2的幂，便于使用掩码进行快速取模
 	shardCount = nextPowerOfTwo(shardCount)
@@ -387,4 +389,24 @@ func (c *ShardedMemoryCache) GetAllItems() map[string]*MemoryCacheItem {
 	}
 
 	return result
+}
+
+// resolveShardCount 决定分片数量：SHARD_COUNT 优先，否则按 CPU 核心数推算，
+// 结果一律夹到 [4, 64] 并向上取到 2 的幂（分片按掩码取模，必须是 2 的幂）。
+func resolveShardCount(numCPU int) int {
+	shardCount := numCPU * 2
+	if v := strings.TrimSpace(os.Getenv("SHARD_COUNT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			shardCount = n
+		} else {
+			fmt.Printf("[CACHE] SHARD_COUNT=%q 非法，回落到按 CPU 推算的 %d\n", v, shardCount)
+		}
+	}
+	if shardCount < 4 {
+		shardCount = 4
+	}
+	if shardCount > 64 {
+		shardCount = 64
+	}
+	return nextPowerOfTwo(shardCount)
 }

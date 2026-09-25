@@ -32,6 +32,11 @@ type Config struct {
 	OptimizeMemory bool // 是否启用内存优化
 	// 插件相关配置
 	PluginTimeout time.Duration // 插件超时时间（Duration）
+
+	// InsecureSkipTLSVerify 允许跳过上游证书校验，默认 false。
+	// 有插件（qqpd、panyq）需要它，但"需要"不等于"该默认开着"：跳过校验意味着任何
+	// 中间人都能替换返回内容，而本服务拿到的就是搜索结果。默认安全，由部署方显式开启。
+	InsecureSkipTLSVerify bool
 	// 异步插件相关配置
 	AsyncPluginEnabled        bool          // 是否启用异步插件
 	EnabledPlugins            []string      // 启用的具体插件列表（空表示启用所有）
@@ -96,7 +101,8 @@ func Init() {
 		GCPercent:      getGCPercent(),
 		OptimizeMemory: getOptimizeMemory(),
 		// 插件相关配置
-		PluginTimeout: time.Duration(pluginTimeoutSeconds) * time.Second,
+		PluginTimeout:         time.Duration(pluginTimeoutSeconds) * time.Second,
+		InsecureSkipTLSVerify: getInsecureSkipTLSVerify(),
 		// 异步插件相关配置
 		AsyncPluginEnabled:        getAsyncPluginEnabled(),
 		EnabledPlugins:            getEnabledPlugins(),
@@ -484,6 +490,21 @@ func getPluginTimeout() int {
 		return 30
 	}
 	return timeout
+}
+
+// getInsecureSkipTLSVerify 读取是否允许跳过上游证书校验。
+// 未设置即 false——默认校验证书。只有确认某个上游的证书确实不可用、且接受该风险时才开。
+func getInsecureSkipTLSVerify() bool {
+	v := os.Getenv("INSECURE_SKIP_TLS_VERIFY")
+	return v == "true" || v == "1"
+}
+
+// AllowInsecureTLS 是 nil 安全的读取口，供插件构造 tls.Config 时使用。
+func AllowInsecureTLS() bool {
+	if AppConfig == nil {
+		return false
+	}
+	return AppConfig.InsecureSkipTLSVerify
 }
 
 // 从环境变量获取是否启用异步插件，如果未设置则默认启用

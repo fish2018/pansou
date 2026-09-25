@@ -8,6 +8,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"pansou/config"
 	"pansou/util/json"
 	"path/filepath"
 	"regexp"
@@ -100,8 +101,12 @@ func NewPanyqPlugin() *PanyqPlugin {
 	// 创建一个可以忽略HTTPS证书验证并支持Cookie的HTTP客户端
 	jar, _ := cookiejar.New(nil)
 	transport := &http.Transport{
-		Proxy:           util.ProxyFuncForTransport(),
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		Proxy: util.ProxyFuncForTransport(),
+		TLSClientConfig: &tls.Config{
+			// 证书校验是否跳过由部署方通过 INSECURE_SKIP_TLS_VERIFY 决定，
+			// 默认校验。硬编码 true 等于把这个插件的返回内容对所有中间人开放。
+			InsecureSkipVerify: config.AllowInsecureTLS(),
+		},
 		// 启用HTTP/2
 		ForceAttemptHTTP2: true,
 		// 启用连接复用

@@ -14,6 +14,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"pansou/config"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1547,8 +1548,12 @@ func (p *QQPDPlugin) checkQRLoginStatus(qrsig string) (*LoginResult, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
-			Proxy:           util.ProxyFuncForTransport(),
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy: util.ProxyFuncForTransport(),
+			TLSClientConfig: &tls.Config{
+				// 证书校验是否跳过由部署方通过 INSECURE_SKIP_TLS_VERIFY 决定，
+				// 默认校验。硬编码 true 等于把这个插件的返回内容对所有中间人开放。
+				InsecureSkipVerify: config.AllowInsecureTLS(),
+			},
 		},
 	}
 
@@ -1660,8 +1665,12 @@ func (p *QQPDPlugin) fetchFullCookie(uin, ptsigx, setCookieHeader string) (strin
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
-			Proxy:           util.ProxyFuncForTransport(),
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy: util.ProxyFuncForTransport(),
+			TLSClientConfig: &tls.Config{
+				// 证书校验是否跳过由部署方通过 INSECURE_SKIP_TLS_VERIFY 决定，
+				// 默认校验。硬编码 true 等于把这个插件的返回内容对所有中间人开放。
+				InsecureSkipVerify: config.AllowInsecureTLS(),
+			},
 		},
 	}
 
@@ -1771,8 +1780,12 @@ func (p *QQPDPlugin) refreshCookie(cookieStr string) string {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
-			Proxy:           util.ProxyFuncForTransport(),
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy: util.ProxyFuncForTransport(),
+			TLSClientConfig: &tls.Config{
+				// 证书校验是否跳过由部署方通过 INSECURE_SKIP_TLS_VERIFY 决定，
+				// 默认校验。硬编码 true 等于把这个插件的返回内容对所有中间人开放。
+				InsecureSkipVerify: config.AllowInsecureTLS(),
+			},
 		},
 	}
 
@@ -1858,8 +1871,12 @@ func (p *QQPDPlugin) generateQRCodeWithSig() ([]byte, string, error) {
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
-			Proxy:           util.ProxyFuncForTransport(),
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy: util.ProxyFuncForTransport(),
+			TLSClientConfig: &tls.Config{
+				// 证书校验是否跳过由部署方通过 INSECURE_SKIP_TLS_VERIFY 决定，
+				// 默认校验。硬编码 true 等于把这个插件的返回内容对所有中间人开放。
+				InsecureSkipVerify: config.AllowInsecureTLS(),
+			},
 		},
 	}
 
