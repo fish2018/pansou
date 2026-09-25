@@ -5,7 +5,7 @@ import (
 	"encoding/gob"
 	"sync"
 	"time"
-	
+
 	"pansou/model"
 )
 
@@ -13,19 +13,19 @@ import (
 func init() {
 	// 注册SearchResult类型
 	gob.Register(model.SearchResult{})
-	
+
 	// 注册SearchResponse类型
 	gob.Register(model.SearchResponse{})
-	
+
 	// 注册MergedLinks类型
 	gob.Register(model.MergedLinks{})
-	
+
 	// 注册[]model.SearchResult类型
 	gob.Register([]model.SearchResult{})
-	
+
 	// 注册map[string][]model.SearchResult类型
 	gob.Register(map[string][]model.SearchResult{})
-	
+
 	// 注册time.Time类型
 	gob.Register(time.Time{})
 }
@@ -57,12 +57,12 @@ func (s *GobSerializer) Serialize(v interface{}) ([]byte, error) {
 	buf := s.bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	defer s.bufferPool.Put(buf)
-	
+
 	enc := gob.NewEncoder(buf)
 	if err := enc.Encode(v); err != nil {
 		return nil, err
 	}
-	
+
 	result := make([]byte, buf.Len())
 	copy(result, buf.Bytes())
 	return result, nil
@@ -73,7 +73,7 @@ func (s *GobSerializer) Deserialize(data []byte, v interface{}) error {
 	buf := s.bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	defer s.bufferPool.Put(buf)
-	
+
 	buf.Write(data)
 	dec := gob.NewDecoder(buf)
 	return dec.Decode(v)
@@ -100,4 +100,4 @@ func (s *JSONSerializer) Serialize(v interface{}) ([]byte, error) {
 // Deserialize 反序列化数据
 func (s *JSONSerializer) Deserialize(data []byte, v interface{}) error {
 	return DeserializeWithPool(data, v)
-} 
+}

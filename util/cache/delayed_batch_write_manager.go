@@ -21,62 +21,62 @@ type CacheWriteStrategy string
 const (
 	// CacheStrategyImmediate 立即写入策略（当前实现）
 	CacheStrategyImmediate CacheWriteStrategy = "immediate"
-	
+
 	// CacheStrategyHybrid 混合智能策略（推荐）
-	CacheStrategyHybrid    CacheWriteStrategy = "hybrid"
+	CacheStrategyHybrid CacheWriteStrategy = "hybrid"
 )
 
 // CacheOperation 缓存操作
 type CacheOperation struct {
-	Key              string
-	Data             []model.SearchResult
-	TTL              time.Duration
-	PluginName       string
-	Keyword          string
-	Timestamp        time.Time
-	Priority         int                // 优先级 (1=highest, 4=lowest)
-	DataSize         int                // 数据大小（字节）
-	IsFinal          bool               // 是否为最终结果
+	Key        string
+	Data       []model.SearchResult
+	TTL        time.Duration
+	PluginName string
+	Keyword    string
+	Timestamp  time.Time
+	Priority   int  // 优先级 (1=highest, 4=lowest)
+	DataSize   int  // 数据大小（字节）
+	IsFinal    bool // 是否为最终结果
 }
 
 // CacheWriteConfig 缓存写入配置
 type CacheWriteConfig struct {
 	// 核心策略
-	Strategy                CacheWriteStrategy `env:"CACHE_WRITE_STRATEGY" default:"hybrid"`
-	
+	Strategy CacheWriteStrategy `env:"CACHE_WRITE_STRATEGY" default:"hybrid"`
+
 	// 批量写入参数（自动计算，但可手动覆盖）
-	MaxBatchInterval        time.Duration      `env:"BATCH_MAX_INTERVAL"`        // 0表示自动计算
-	MaxBatchSize            int                `env:"BATCH_MAX_SIZE"`            // 0表示自动计算
-	MaxBatchDataSize        int                `env:"BATCH_MAX_DATA_SIZE"`       // 0表示自动计算
-	
+	MaxBatchInterval time.Duration `env:"BATCH_MAX_INTERVAL"`  // 0表示自动计算
+	MaxBatchSize     int           `env:"BATCH_MAX_SIZE"`      // 0表示自动计算
+	MaxBatchDataSize int           `env:"BATCH_MAX_DATA_SIZE"` // 0表示自动计算
+
 	// 行为参数
-	HighPriorityRatio       float64            `env:"HIGH_PRIORITY_RATIO" default:"0.3"`
-	EnableCompression       bool               // 默认启用操作合并
-	
+	HighPriorityRatio float64 `env:"HIGH_PRIORITY_RATIO" default:"0.3"`
+	EnableCompression bool    // 默认启用操作合并
+
 	// 内部计算参数（运行时动态调整）
-	idleThresholdCPU        float64            // CPU空闲阈值
-	idleThresholdDisk       float64            // 磁盘空闲阈值
-	forceFlushInterval      time.Duration      // 强制刷新间隔
-	autoTuneInterval        time.Duration      // 调优检查间隔
-	
+	idleThresholdCPU   float64       // CPU空闲阈值
+	idleThresholdDisk  float64       // 磁盘空闲阈值
+	forceFlushInterval time.Duration // 强制刷新间隔
+	autoTuneInterval   time.Duration // 调优检查间隔
+
 	// 约束边界（硬编码）
-	minBatchInterval        time.Duration      // 最小30秒
-	maxBatchInterval        time.Duration      // 最大10分钟
-	minBatchSize            int                // 最小10个
-	maxBatchSize            int                // 最大1000个
+	minBatchInterval time.Duration // 最小30秒
+	maxBatchInterval time.Duration // 最大10分钟
+	minBatchSize     int           // 最小10个
+	maxBatchSize     int           // 最大1000个
 }
 
 // Initialize 初始化配置
 func (c *CacheWriteConfig) Initialize() error {
 	// 设置硬编码约束边界
 	c.minBatchInterval = 30 * time.Second
-	c.maxBatchInterval = 600 * time.Second  // 10分钟
+	c.maxBatchInterval = 600 * time.Second // 10分钟
 	c.minBatchSize = 10
 	c.maxBatchSize = 1000
-	
+
 	// 加载环境变量
 	c.loadFromEnvironment()
-	
+
 	// 自动计算最优参数（除非手动设置）
 	if c.MaxBatchInterval == 0 {
 		c.MaxBatchInterval = c.calculateOptimalBatchInterval()
@@ -87,13 +87,13 @@ func (c *CacheWriteConfig) Initialize() error {
 	if c.MaxBatchDataSize == 0 {
 		c.MaxBatchDataSize = c.calculateOptimalDataSize()
 	}
-	
+
 	// 内部参数自动设置
-	c.forceFlushInterval = c.MaxBatchInterval * 5  // 5倍批量间隔
-	c.autoTuneInterval = 300 * time.Second         // 5分钟调优间隔
+	c.forceFlushInterval = c.MaxBatchInterval * 5 // 5倍批量间隔
+	c.autoTuneInterval = 300 * time.Second        // 5分钟调优间隔
 	c.idleThresholdCPU = 0.3                      // CPU空闲阈值
 	c.idleThresholdDisk = 0.5                     // 磁盘空闲阈值
-	
+
 	// 参数验证和约束
 	return c.validateAndConstraint()
 }
@@ -104,26 +104,26 @@ func (c *CacheWriteConfig) loadFromEnvironment() {
 	if strategy := os.Getenv("CACHE_WRITE_STRATEGY"); strategy != "" {
 		c.Strategy = CacheWriteStrategy(strategy)
 	}
-	
+
 	// 批量写入参数
 	if interval := os.Getenv("BATCH_MAX_INTERVAL"); interval != "" {
 		if d, err := time.ParseDuration(interval); err == nil {
 			c.MaxBatchInterval = d
 		}
 	}
-	
+
 	if size := os.Getenv("BATCH_MAX_SIZE"); size != "" {
 		if s, err := strconv.Atoi(size); err == nil {
 			c.MaxBatchSize = s
 		}
 	}
-	
+
 	if dataSize := os.Getenv("BATCH_MAX_DATA_SIZE"); dataSize != "" {
 		if ds, err := strconv.Atoi(dataSize); err == nil {
 			c.MaxBatchDataSize = ds
 		}
 	}
-	
+
 	// 行为参数
 	if ratio := os.Getenv("HIGH_PRIORITY_RATIO"); ratio != "" {
 		if r, err := strconv.ParseFloat(ratio, 64); err == nil {
@@ -137,10 +137,10 @@ func (c *CacheWriteConfig) calculateOptimalBatchInterval() time.Duration {
 	// 基于系统性能动态计算
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
-	
+
 	// 简化实现：根据可用内存量调整
 	availableMemoryGB := float64(memStats.Sys) / 1024 / 1024 / 1024
-	
+
 	var interval time.Duration
 	switch {
 	case availableMemoryGB > 8: // 大内存系统
@@ -150,7 +150,7 @@ func (c *CacheWriteConfig) calculateOptimalBatchInterval() time.Duration {
 	default: // 小内存系统
 		interval = 90 * time.Second
 	}
-	
+
 	// 应用约束
 	if interval < c.minBatchInterval {
 		interval = c.minBatchInterval
@@ -158,7 +158,7 @@ func (c *CacheWriteConfig) calculateOptimalBatchInterval() time.Duration {
 	if interval > c.maxBatchInterval {
 		interval = c.maxBatchInterval
 	}
-	
+
 	return interval
 }
 
@@ -166,11 +166,11 @@ func (c *CacheWriteConfig) calculateOptimalBatchInterval() time.Duration {
 func (c *CacheWriteConfig) calculateOptimalBatchSize() int {
 	// 基于CPU核心数和内存动态计算
 	numCPU := runtime.NumCPU()
-	
+
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 	availableMemoryGB := float64(memStats.Sys) / 1024 / 1024 / 1024
-	
+
 	var size int
 	switch {
 	case numCPU >= 8 && availableMemoryGB > 8: // 高性能系统
@@ -180,7 +180,7 @@ func (c *CacheWriteConfig) calculateOptimalBatchSize() int {
 	default: // 低性能系统
 		size = 50
 	}
-	
+
 	// 应用约束
 	if size < c.minBatchSize {
 		size = c.minBatchSize
@@ -188,7 +188,7 @@ func (c *CacheWriteConfig) calculateOptimalBatchSize() int {
 	if size > c.maxBatchSize {
 		size = c.maxBatchSize
 	}
-	
+
 	return size
 }
 
@@ -198,7 +198,7 @@ func (c *CacheWriteConfig) calculateOptimalDataSize() int {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 	availableMemoryGB := float64(memStats.Sys) / 1024 / 1024 / 1024
-	
+
 	var sizeMB int
 	switch {
 	case availableMemoryGB > 16: // 大内存系统
@@ -208,7 +208,7 @@ func (c *CacheWriteConfig) calculateOptimalDataSize() int {
 	default: // 小内存系统
 		sizeMB = 5
 	}
-	
+
 	return sizeMB * 1024 * 1024 // 转换为字节
 }
 
@@ -216,20 +216,20 @@ func (c *CacheWriteConfig) calculateOptimalDataSize() int {
 func (c *CacheWriteConfig) validateAndConstraint() error {
 	// 验证配置合理性
 	if c.MaxBatchInterval < c.minBatchInterval {
-		return fmt.Errorf("批量间隔配置错误: MaxBatchInterval(%v) < MinBatchInterval(%v)", 
+		return fmt.Errorf("批量间隔配置错误: MaxBatchInterval(%v) < MinBatchInterval(%v)",
 			c.MaxBatchInterval, c.minBatchInterval)
 	}
-	
+
 	if c.MaxBatchSize < c.minBatchSize {
-		return fmt.Errorf("批量大小配置错误: MaxBatchSize(%d) < MinBatchSize(%d)", 
+		return fmt.Errorf("批量大小配置错误: MaxBatchSize(%d) < MinBatchSize(%d)",
 			c.MaxBatchSize, c.minBatchSize)
 	}
-	
+
 	if c.HighPriorityRatio < 0 || c.HighPriorityRatio > 1 {
-		return fmt.Errorf("高优先级比例配置错误: HighPriorityRatio(%f) 应在 [0,1] 范围内", 
+		return fmt.Errorf("高优先级比例配置错误: HighPriorityRatio(%f) 应在 [0,1] 范围内",
 			c.HighPriorityRatio)
 	}
-	
+
 	// 应用最终约束
 	if c.MaxBatchInterval > c.maxBatchInterval {
 		c.MaxBatchInterval = c.maxBatchInterval
@@ -237,75 +237,75 @@ func (c *CacheWriteConfig) validateAndConstraint() error {
 	if c.MaxBatchSize > c.maxBatchSize {
 		c.MaxBatchSize = c.maxBatchSize
 	}
-	
+
 	// 设置默认策略
 	if c.Strategy != CacheStrategyImmediate && c.Strategy != CacheStrategyHybrid {
 		c.Strategy = CacheStrategyHybrid
 	}
-	
+
 	return nil
 }
 
 // DelayedBatchWriteManager 延迟批量写入管理器
 type DelayedBatchWriteManager struct {
-	strategy          CacheWriteStrategy
-	config            *CacheWriteConfig
-	
+	strategy CacheWriteStrategy
+	config   *CacheWriteConfig
+
 	// 延迟写入队列
-	writeQueue        chan *CacheOperation
-	queueBuffer       []*CacheOperation
-	queueMutex        sync.Mutex
-	
+	writeQueue  chan *CacheOperation
+	queueBuffer []*CacheOperation
+	queueMutex  sync.Mutex
+
 	// 全局缓冲区管理器
 	globalBufferManager *GlobalBufferManager
-	
+
 	// 统计信息
-	stats             *WriteManagerStats
-	
+	stats *WriteManagerStats
+
 	// 控制通道
-	shutdownChan      chan struct{}
-	flushTicker       *time.Ticker
-	
+	shutdownChan chan struct{}
+	flushTicker  *time.Ticker
+
 	// 数据压缩（操作合并）
-	operationMap      map[string]*CacheOperation  // key -> latest operation (去重合并)
-	mapMutex          sync.RWMutex
-	
+	operationMap map[string]*CacheOperation // key -> latest operation (去重合并)
+	mapMutex     sync.RWMutex
+
 	// 主缓存更新函数
-	mainCacheUpdater  func(string, []byte, time.Duration) error
-	
+	mainCacheUpdater func(string, []byte, time.Duration) error
+
 	// 序列化器
-	serializer        *GobSerializer
-	
+	serializer *GobSerializer
+
 	// 初始化标志
-	initialized       int32
-	initMutex         sync.Mutex
+	initialized int32
+	initMutex   sync.Mutex
 }
 
 // WriteManagerStats 写入管理器统计信息
 type WriteManagerStats struct {
 	// 基础统计
-	TotalWrites              int64         // 总写入次数
-	TotalOperations          int64         // 总操作次数
-	BatchWrites              int64         // 批量写入次数
-	ImmediateWrites          int64         // 立即写入次数
-	MergedOperations         int64         // 合并操作次数
-	FailedWrites             int64         // 失败写入次数
-	SuccessfulWrites         int64         // 成功写入次数
-	
+	TotalWrites      int64 // 总写入次数
+	TotalOperations  int64 // 总操作次数
+	BatchWrites      int64 // 批量写入次数
+	ImmediateWrites  int64 // 立即写入次数
+	MergedOperations int64 // 合并操作次数
+	FailedWrites     int64 // 失败写入次数
+	SuccessfulWrites int64 // 成功写入次数
+
 	// 性能统计
-	LastFlushTime            time.Time     // 上次刷新时间
-	LastFlushTrigger         string        // 上次刷新触发原因
-	LastBatchSize            int           // 上次批量大小
-	TotalOperationsWritten   int           // 已写入操作总数
-	
+	LastFlushTime          time.Time // 上次刷新时间
+	LastFlushTrigger       string    // 上次刷新触发原因
+	LastBatchSize          int       // 上次批量大小
+	TotalOperationsWritten int       // 已写入操作总数
+
 	// 时间窗口
-	WindowStart              time.Time     // 统计窗口开始时间
-	WindowEnd                time.Time     // 统计窗口结束时间
-	
+	WindowStart time.Time // 统计窗口开始时间
+	WindowEnd   time.Time // 统计窗口结束时间
+
 	// 运行时状态
-	CurrentQueueSize         int32         // 当前队列大小
-	CurrentMemoryUsage       int64         // 当前内存使用量
-	SystemLoadAverage        float64       // 系统负载均值
+	CurrentQueueSize   int32   // 当前队列大小
+	CurrentMemoryUsage int64   // 当前内存使用量
+	SystemLoadAverage  float64 // 系统负载均值
 }
 
 // NewDelayedBatchWriteManager 创建新的延迟批量写入管理器
@@ -314,15 +314,15 @@ func NewDelayedBatchWriteManager() (*DelayedBatchWriteManager, error) {
 		Strategy:          CacheStrategyHybrid,
 		EnableCompression: true,
 	}
-	
+
 	// 初始化配置
 	if err := config.Initialize(); err != nil {
 		return nil, fmt.Errorf("配置初始化失败: %v", err)
 	}
-	
+
 	// 创建全局缓冲区管理器
 	globalBufferManager := NewGlobalBufferManager(BufferHybrid)
-	
+
 	manager := &DelayedBatchWriteManager{
 		strategy:            config.Strategy,
 		config:              config,
@@ -336,7 +336,7 @@ func NewDelayedBatchWriteManager() (*DelayedBatchWriteManager, error) {
 		},
 		serializer: NewGobSerializer(),
 	}
-	
+
 	return manager, nil
 }
 
@@ -345,28 +345,28 @@ func (m *DelayedBatchWriteManager) Initialize() error {
 	if !atomic.CompareAndSwapInt32(&m.initialized, 0, 1) {
 		return nil // 已经初始化
 	}
-	
+
 	m.initMutex.Lock()
 	defer m.initMutex.Unlock()
-	
+
 	// 初始化全局缓冲区管理器
 	if err := m.globalBufferManager.Initialize(); err != nil {
 		return fmt.Errorf("全局缓冲区管理器初始化失败: %v", err)
 	}
-	
+
 	// 启动后台处理goroutine
 	go m.backgroundProcessor()
-	
+
 	// 启动定时刷新goroutine
 	m.flushTicker = time.NewTicker(m.config.MaxBatchInterval)
 	go m.timerFlushProcessor()
-	
+
 	// 启动自动调优goroutine
 	go m.autoTuningProcessor()
-	
+
 	// 启动全局缓冲区监控
 	go m.globalBufferMonitor()
-	
+
 	fmt.Printf("缓存写入策略: %s\n", m.strategy)
 	return nil
 }
@@ -382,17 +382,17 @@ func (m *DelayedBatchWriteManager) HandleCacheOperation(op *CacheOperation) erro
 	if err := m.Initialize(); err != nil {
 		return err
 	}
-	
+
 	// 关键：无论什么策略，都立即更新内存缓存
 	if err := m.updateMemoryCache(op); err != nil {
 		return fmt.Errorf("内存缓存更新失败: %v", err)
 	}
-	
+
 	// 根据策略处理磁盘写入
 	if m.strategy == CacheStrategyImmediate {
 		return m.immediateWriteToDisk(op)
 	}
-	
+
 	// 使用全局缓冲区管理器进行智能缓冲
 	return m.handleWithGlobalBuffer(op)
 }
@@ -405,12 +405,12 @@ func (m *DelayedBatchWriteManager) handleWithGlobalBuffer(op *CacheOperation) er
 		// 全局缓冲区失败，降级到本地队列
 		return m.enqueueForBatchWrite(op)
 	}
-	
+
 	// 如果需要刷新缓冲区
 	if shouldFlush {
 		return m.flushGlobalBuffer(buffer.ID)
 	}
-	
+
 	return nil
 }
 
@@ -420,11 +420,11 @@ func (m *DelayedBatchWriteManager) flushGlobalBuffer(bufferID string) error {
 	if err != nil {
 		return fmt.Errorf("刷新全局缓冲区失败: %v", err)
 	}
-	
+
 	if len(operations) == 0 {
 		return nil
 	}
-	
+
 	// 按优先级排序操作
 	sort.Slice(operations, func(i, j int) bool {
 		if operations[i].Priority != operations[j].Priority {
@@ -432,25 +432,25 @@ func (m *DelayedBatchWriteManager) flushGlobalBuffer(bufferID string) error {
 		}
 		return operations[i].Timestamp.Before(operations[j].Timestamp)
 	})
-	
+
 	// 统计信息更新
 	atomic.AddInt64(&m.stats.BatchWrites, 1)
 	atomic.AddInt64(&m.stats.TotalWrites, 1)
 	m.stats.LastFlushTime = time.Now()
 	m.stats.LastFlushTrigger = "全局缓冲区触发"
 	m.stats.LastBatchSize = len(operations)
-	
+
 	// 批量写入磁盘
 	err = m.batchWriteToDisk(operations)
 	if err != nil {
 		atomic.AddInt64(&m.stats.FailedWrites, 1)
 		return fmt.Errorf("全局缓冲区批量写入失败: %v", err)
 	}
-	
+
 	// 📈 成功统计
 	atomic.AddInt64(&m.stats.SuccessfulWrites, 1)
 	m.stats.TotalOperationsWritten += len(operations)
-	
+
 	return nil
 }
 
@@ -458,13 +458,13 @@ func (m *DelayedBatchWriteManager) flushGlobalBuffer(bufferID string) error {
 func (m *DelayedBatchWriteManager) globalBufferMonitor() {
 	ticker := time.NewTicker(2 * time.Minute) // 每2分钟检查一次
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ticker.C:
 			// 检查是否有过期的缓冲区需要刷新
 			m.checkAndFlushExpiredBuffers()
-			
+
 		case <-m.shutdownChan:
 			return
 		}
@@ -475,7 +475,7 @@ func (m *DelayedBatchWriteManager) globalBufferMonitor() {
 func (m *DelayedBatchWriteManager) checkAndFlushExpiredBuffers() {
 	// 使用原子操作获取需要刷新的缓冲区列表
 	expiredBuffers := m.globalBufferManager.GetExpiredBuffersForFlush()
-	
+
 	flushedCount := 0
 	for _, bufferID := range expiredBuffers {
 		if err := m.flushGlobalBuffer(bufferID); err != nil {
@@ -490,7 +490,7 @@ func (m *DelayedBatchWriteManager) checkAndFlushExpiredBuffers() {
 			flushedCount++
 		}
 	}
-	
+
 	if flushedCount > 0 {
 		fmt.Printf("[全局缓冲区] 刷新完成，处理 %d 个过期缓冲区\n", flushedCount)
 	}
@@ -498,8 +498,7 @@ func (m *DelayedBatchWriteManager) checkAndFlushExpiredBuffers() {
 
 // isBufferNotExistError 检查是否为缓冲区不存在错误
 func isBufferNotExistError(err error) bool {
-	return err != nil && (
-		err.Error() == "缓冲区不存在: "+err.Error()[strings.LastIndex(err.Error(), ": ")+2:] ||
+	return err != nil && (err.Error() == "缓冲区不存在: "+err.Error()[strings.LastIndex(err.Error(), ": ")+2:] ||
 		strings.Contains(err.Error(), "缓冲区不存在"))
 }
 
@@ -512,7 +511,7 @@ func (m *DelayedBatchWriteManager) updateMemoryCache(op *CacheOperation) error {
 		if err != nil {
 			return fmt.Errorf("内存缓存数据序列化失败: %v", err)
 		}
-		
+
 		// 这里只更新内存，不写磁盘（磁盘由批量写入处理）
 		// 注意：mainCacheUpdater实际上是SetBothLevels，会同时更新内存和磁盘
 	}
@@ -524,18 +523,18 @@ func (m *DelayedBatchWriteManager) immediateWriteToDisk(op *CacheOperation) erro
 	if m.mainCacheUpdater == nil {
 		return fmt.Errorf("主缓存更新函数未设置")
 	}
-	
+
 	// 序列化数据
 	data, err := m.serializer.Serialize(op.Data)
 	if err != nil {
 		return fmt.Errorf("数据序列化失败: %v", err)
 	}
-	
+
 	// 更新统计
 	atomic.AddInt64(&m.stats.TotalWrites, 1)
 	atomic.AddInt64(&m.stats.TotalOperations, 1)
 	atomic.AddInt64(&m.stats.ImmediateWrites, 1)
-	
+
 	return m.mainCacheUpdater(op.Key, data, op.TTL)
 }
 
@@ -553,7 +552,7 @@ func (m *DelayedBatchWriteManager) enqueueForBatchWrite(op *CacheOperation) erro
 		m.operationMap[op.Key] = op
 		m.mapMutex.Unlock()
 	}
-	
+
 	// 加入延迟写入队列
 	select {
 	case m.writeQueue <- op:
@@ -574,13 +573,13 @@ func (m *DelayedBatchWriteManager) backgroundProcessor() {
 			m.queueMutex.Lock()
 			m.queueBuffer = append(m.queueBuffer, op)
 			atomic.AddInt32(&m.stats.CurrentQueueSize, -1)
-			
+
 			// 检查是否应该触发批量写入
 			if shouldFlush, trigger := m.shouldTriggerBatchWrite(); shouldFlush {
 				m.executeBatchWrite(trigger)
 			}
 			m.queueMutex.Unlock()
-			
+
 		case <-m.shutdownChan:
 			// 优雅关闭：处理剩余操作
 			m.flushAllPendingData()
@@ -599,7 +598,7 @@ func (m *DelayedBatchWriteManager) timerFlushProcessor() {
 				m.executeBatchWrite("定时触发")
 			}
 			m.queueMutex.Unlock()
-			
+
 		case <-m.shutdownChan:
 			m.flushTicker.Stop()
 			return
@@ -611,12 +610,12 @@ func (m *DelayedBatchWriteManager) timerFlushProcessor() {
 func (m *DelayedBatchWriteManager) autoTuningProcessor() {
 	ticker := time.NewTicker(m.config.autoTuneInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ticker.C:
 			m.autoTuneParameters()
-			
+
 		case <-m.shutdownChan:
 			return
 		}
@@ -628,41 +627,41 @@ func (m *DelayedBatchWriteManager) Shutdown(timeout time.Duration) error {
 	if !atomic.CompareAndSwapInt32(&m.initialized, 1, 0) {
 		return nil // 已经关闭
 	}
-	
+
 	// 正在保存缓存数据（静默）
-	
+
 	// 关闭后台处理器
 	close(m.shutdownChan)
-	
+
 	// 等待所有数据保存完成，但有超时保护
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	
+
 	done := make(chan error, 1)
 	go func() {
 		var lastErr error
-		
+
 		// 第一步：强制刷新全局缓冲区（优先级最高）
 		if err := m.flushAllGlobalBuffers(); err != nil {
 			fmt.Printf("[数据保护] 全局缓冲区刷新失败: %v\n", err)
 			lastErr = err
-		} 
-		
+		}
+
 		// 第二步：刷新本地队列
 		if err := m.flushAllPendingData(); err != nil {
 			fmt.Printf("[数据保护] 本地队列刷新失败: %v\n", err)
 			lastErr = err
-		} 
-		
+		}
+
 		// 第三步：关闭全局缓冲区管理器
 		if err := m.globalBufferManager.Shutdown(); err != nil {
 			fmt.Printf("[数据保护] 全局缓冲区管理器关闭失败: %v\n", err)
 			lastErr = err
-		} 
-		
+		}
+
 		done <- lastErr
 	}()
-	
+
 	select {
 	case err := <-done:
 		if err != nil {
@@ -678,9 +677,9 @@ func (m *DelayedBatchWriteManager) Shutdown(timeout time.Duration) error {
 // flushAllGlobalBuffers 刷新所有全局缓冲区
 func (m *DelayedBatchWriteManager) flushAllGlobalBuffers() error {
 	allBuffers := m.globalBufferManager.FlushAllBuffers()
-	
+
 	var lastErr error
-	
+
 	for bufferID, operations := range allBuffers {
 		if len(operations) > 0 {
 			if err := m.batchWriteToDisk(operations); err != nil {
@@ -690,7 +689,7 @@ func (m *DelayedBatchWriteManager) flushAllGlobalBuffers() error {
 			}
 		}
 	}
-	
+
 	return lastErr
 }
 
@@ -698,14 +697,14 @@ func (m *DelayedBatchWriteManager) flushAllGlobalBuffers() error {
 func (m *DelayedBatchWriteManager) flushAllPendingData() error {
 	m.queueMutex.Lock()
 	defer m.queueMutex.Unlock()
-	
+
 	// 处理队列缓冲区中的数据
 	if len(m.queueBuffer) > 0 {
 		if err := m.executeBatchWrite("程序关闭"); err != nil {
 			return err
 		}
 	}
-	
+
 	// 处理操作映射中的数据（如果启用了压缩）
 	if m.config.EnableCompression && len(m.operationMap) > 0 {
 		operations := m.getCompressedOperations()
@@ -713,46 +712,46 @@ func (m *DelayedBatchWriteManager) flushAllPendingData() error {
 			return m.batchWriteToDisk(operations)
 		}
 	}
-	
+
 	return nil
 }
 
 // shouldTriggerBatchWrite 检查是否应该触发批量写入
 func (m *DelayedBatchWriteManager) shouldTriggerBatchWrite() (bool, string) {
 	now := time.Now()
-	
+
 	// 条件1：时间间隔达到阈值
 	if now.Sub(m.stats.LastFlushTime) >= m.config.MaxBatchInterval {
 		return true, "时间间隔触发"
 	}
-	
+
 	// 条件2：操作数量达到阈值
 	if len(m.queueBuffer) >= m.config.MaxBatchSize {
 		return true, "数量阈值触发"
 	}
-	
+
 	// 条件3：数据大小达到阈值
 	totalSize := m.calculateBufferSize()
 	if totalSize >= m.config.MaxBatchDataSize {
 		return true, "大小阈值触发"
 	}
-	
+
 	// 条件4：高优先级数据比例达到阈值
 	highPriorityRatio := m.calculateHighPriorityRatio()
 	if highPriorityRatio >= m.config.HighPriorityRatio {
 		return true, "高优先级触发"
 	}
-	
+
 	// 条件5：系统空闲（CPU和磁盘使用率都较低）
 	if m.isSystemIdle() {
 		return true, "系统空闲触发"
 	}
-	
+
 	// 条件6：强制刷新间隔（兜底机制）
 	if now.Sub(m.stats.LastFlushTime) >= m.config.forceFlushInterval {
 		return true, "强制刷新触发"
 	}
-	
+
 	return false, ""
 }
 
@@ -770,14 +769,14 @@ func (m *DelayedBatchWriteManager) calculateHighPriorityRatio() float64 {
 	if len(m.queueBuffer) == 0 {
 		return 0
 	}
-	
+
 	highPriorityCount := 0
 	for _, op := range m.queueBuffer {
 		if op.Priority <= 2 { // 等级1和等级2插件
 			highPriorityCount++
 		}
 	}
-	
+
 	return float64(highPriorityCount) / float64(len(m.queueBuffer))
 }
 
@@ -786,7 +785,7 @@ func (m *DelayedBatchWriteManager) isSystemIdle() bool {
 	// 简化实现：基于CPU使用率
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
-	
+
 	// 如果GC频率较低，认为系统相对空闲
 	return memStats.NumGC%10 == 0
 }
@@ -796,7 +795,7 @@ func (m *DelayedBatchWriteManager) executeBatchWrite(trigger string) error {
 	if len(m.queueBuffer) == 0 {
 		return nil
 	}
-	
+
 	// 操作合并：如果启用压缩，使用合并后的操作
 	var operations []*CacheOperation
 	if m.config.EnableCompression {
@@ -805,11 +804,11 @@ func (m *DelayedBatchWriteManager) executeBatchWrite(trigger string) error {
 		operations = make([]*CacheOperation, len(m.queueBuffer))
 		copy(operations, m.queueBuffer)
 	}
-	
+
 	if len(operations) == 0 {
 		return nil
 	}
-	
+
 	// 按优先级排序：确保重要数据优先写入
 	sort.Slice(operations, func(i, j int) bool {
 		if operations[i].Priority != operations[j].Priority {
@@ -817,20 +816,20 @@ func (m *DelayedBatchWriteManager) executeBatchWrite(trigger string) error {
 		}
 		return operations[i].Timestamp.Before(operations[j].Timestamp)
 	})
-	
+
 	// 统计信息更新
 	atomic.AddInt64(&m.stats.BatchWrites, 1)
 	m.stats.LastFlushTime = time.Now()
 	m.stats.LastFlushTrigger = trigger
 	m.stats.LastBatchSize = len(operations)
-	
+
 	// 批量写入磁盘
 	err := m.batchWriteToDisk(operations)
 	if err != nil {
 		atomic.AddInt64(&m.stats.FailedWrites, 1)
 		return fmt.Errorf("批量写入失败: %v", err)
 	}
-	
+
 	// 清空缓冲区
 	m.queueBuffer = m.queueBuffer[:0]
 	if m.config.EnableCompression {
@@ -838,12 +837,12 @@ func (m *DelayedBatchWriteManager) executeBatchWrite(trigger string) error {
 		m.operationMap = make(map[string]*CacheOperation)
 		m.mapMutex.Unlock()
 	}
-	
+
 	// 成功统计
 	atomic.AddInt64(&m.stats.SuccessfulWrites, 1)
 	atomic.AddInt64(&m.stats.TotalWrites, 1)
 	m.stats.TotalOperationsWritten += len(operations)
-	
+
 	return nil
 }
 
@@ -851,12 +850,12 @@ func (m *DelayedBatchWriteManager) executeBatchWrite(trigger string) error {
 func (m *DelayedBatchWriteManager) getCompressedOperations() []*CacheOperation {
 	m.mapMutex.RLock()
 	defer m.mapMutex.RUnlock()
-	
+
 	operations := make([]*CacheOperation, 0, len(m.operationMap))
 	for _, op := range m.operationMap {
 		operations = append(operations, op)
 	}
-	
+
 	return operations
 }
 
@@ -865,7 +864,7 @@ func (m *DelayedBatchWriteManager) batchWriteToDisk(operations []*CacheOperation
 	if m.mainCacheUpdater == nil {
 		return fmt.Errorf("主缓存更新函数未设置")
 	}
-	
+
 	// 批量处理所有操作
 	for _, op := range operations {
 		// 序列化数据
@@ -873,13 +872,13 @@ func (m *DelayedBatchWriteManager) batchWriteToDisk(operations []*CacheOperation
 		if err != nil {
 			return fmt.Errorf("数据序列化失败: %v", err)
 		}
-		
+
 		// 写入磁盘
 		if err := m.mainCacheUpdater(op.Key, data, op.TTL); err != nil {
 			return fmt.Errorf("磁盘写入失败: %v", err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -887,7 +886,7 @@ func (m *DelayedBatchWriteManager) batchWriteToDisk(operations []*CacheOperation
 func (m *DelayedBatchWriteManager) emergencyFlush() error {
 	m.queueMutex.Lock()
 	defer m.queueMutex.Unlock()
-	
+
 	return m.executeBatchWrite("紧急刷新")
 }
 
@@ -895,7 +894,7 @@ func (m *DelayedBatchWriteManager) emergencyFlush() error {
 func (m *DelayedBatchWriteManager) autoTuneParameters() {
 	// 完全自动调优，无需配置开关
 	stats := m.collectRecentStats()
-	
+
 	// 调优批量间隔：基于系统负载动态调整
 	avgSystemLoad := stats.SystemLoadAverage
 	switch {
@@ -904,13 +903,13 @@ func (m *DelayedBatchWriteManager) autoTuneParameters() {
 	case avgSystemLoad < 0.3: // 低负载：缩短间隔，及时持久化
 		m.config.MaxBatchInterval = m.maxDuration(m.config.MaxBatchInterval*8/10, m.config.minBatchInterval)
 	}
-	
+
 	// 调优批量大小：基于写入频率动态调整
 	queueSize := int(atomic.LoadInt32(&m.stats.CurrentQueueSize))
 	switch {
 	case queueSize > 200: // 高频：增大批量，提高效率
 		m.config.MaxBatchSize = m.minInt(m.config.MaxBatchSize*12/10, m.config.maxBatchSize)
-	case queueSize < 50:  // 低频：减小批量，降低延迟
+	case queueSize < 50: // 低频：减小批量，降低延迟
 		m.config.MaxBatchSize = m.maxInt(m.config.MaxBatchSize*8/10, m.config.minBatchSize)
 	}
 }
@@ -922,22 +921,30 @@ func (m *DelayedBatchWriteManager) collectRecentStats() *WriteManagerStats {
 
 // 辅助函数
 func (m *DelayedBatchWriteManager) minDuration(a, b time.Duration) time.Duration {
-	if a < b { return a }
+	if a < b {
+		return a
+	}
 	return b
 }
 
 func (m *DelayedBatchWriteManager) maxDuration(a, b time.Duration) time.Duration {
-	if a > b { return a }
+	if a > b {
+		return a
+	}
 	return b
 }
 
 func (m *DelayedBatchWriteManager) minInt(a, b int) int {
-	if a < b { return a }
+	if a < b {
+		return a
+	}
 	return b
 }
 
 func (m *DelayedBatchWriteManager) maxInt(a, b int) int {
-	if a > b { return a }
+	if a > b {
+		return a
+	}
 	return b
 }
 
@@ -946,22 +953,22 @@ func (m *DelayedBatchWriteManager) GetStats() map[string]interface{} {
 	stats := *m.stats
 	stats.CurrentQueueSize = atomic.LoadInt32(&m.stats.CurrentQueueSize)
 	stats.WindowEnd = time.Now()
-	
+
 	// 计算压缩比例
 	if stats.TotalOperations > 0 {
 		stats.SystemLoadAverage = float64(stats.TotalWrites) / float64(stats.TotalOperations)
 	}
-	
+
 	// 获取全局缓冲区统计
 	globalBufferStats := m.globalBufferManager.GetStats()
-	
+
 	// 合并所有统计信息
 	combinedStats := map[string]interface{}{
 		"write_manager": &stats,
 		"global_buffer": globalBufferStats,
 		"buffer_info":   m.globalBufferManager.GetBufferInfo(),
 	}
-	
+
 	return combinedStats
 }
 
@@ -970,11 +977,11 @@ func (m *DelayedBatchWriteManager) GetWriteManagerStats() *WriteManagerStats {
 	stats := *m.stats
 	stats.CurrentQueueSize = atomic.LoadInt32(&m.stats.CurrentQueueSize)
 	stats.WindowEnd = time.Now()
-	
+
 	// 计算压缩比例
 	if stats.TotalOperations > 0 {
 		stats.SystemLoadAverage = float64(stats.TotalWrites) / float64(stats.TotalOperations)
 	}
-	
+
 	return &stats
 }

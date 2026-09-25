@@ -16,11 +16,11 @@ type memoryCacheItem struct {
 
 // 内存缓存
 type MemoryCache struct {
-	items     map[string]*memoryCacheItem
-	mutex     sync.RWMutex
-	maxItems  int
-	maxSize   int64
-	currSize  int64
+	items    map[string]*memoryCacheItem
+	mutex    sync.RWMutex
+	maxItems int
+	maxSize  int64
+	currSize int64
 }
 
 // 创建新的内存缓存
@@ -185,4 +185,4 @@ func (c *MemoryCache) StartCleanupTask() {
 			c.CleanExpired()
 		}
 	}()
-} 
+}

@@ -11,12 +11,12 @@ import (
 
 // ShardedDiskCache 分片磁盘缓存
 type ShardedDiskCache struct {
-	baseDir     string
-	shardCount  int
-	shardMask   uint32 // 用于快速取模的掩码
-	shards      []*DiskCache
-	maxSizeMB   int
-	mutex       sync.RWMutex
+	baseDir    string
+	shardCount int
+	shardMask  uint32 // 用于快速取模的掩码
+	shards     []*DiskCache
+	maxSizeMB  int
+	mutex      sync.RWMutex
 }
 
 // NewShardedDiskCache 创建新的分片磁盘缓存（兼容现有接口）
@@ -34,10 +34,10 @@ func NewOptimizedShardedDiskCache(baseDir string, maxSizeMB int) (*ShardedDiskCa
 	if shardCount > 32 { // 磁盘缓存分片数适当限制，避免过多文件夹
 		shardCount = 32
 	}
-	
+
 	// 确保分片数是2的幂，便于使用掩码进行快速取模
 	shardCount = nextPowerOfTwoDisk(shardCount)
-	
+
 	return newShardedDiskCacheWithCount(baseDir, shardCount, maxSizeMB)
 }
 
@@ -62,7 +62,7 @@ func newShardedDiskCacheWithCount(baseDir string, shardCount, maxSizeMB int) (*S
 	if shardSize < 1 {
 		shardSize = 1
 	}
-	
+
 	cache := &ShardedDiskCache{
 		baseDir:    baseDir,
 		shardCount: shardCount,
@@ -70,7 +70,7 @@ func newShardedDiskCacheWithCount(baseDir string, shardCount, maxSizeMB int) (*S
 		shards:     make([]*DiskCache, shardCount),
 		maxSizeMB:  maxSizeMB,
 	}
-	
+
 	// 初始化每个分片
 	for i := 0; i < shardCount; i++ {
 		shardPath := filepath.Join(baseDir, fmt.Sprintf("shard_%d", i))
@@ -80,7 +80,7 @@ func newShardedDiskCacheWithCount(baseDir string, shardCount, maxSizeMB int) (*S
 		}
 		cache.shards[i] = diskCache
 	}
-	
+
 	return cache, nil
 }
 
@@ -121,16 +121,16 @@ func (c *ShardedDiskCache) Has(key string) bool {
 func (c *ShardedDiskCache) Clear() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	
+
 	var lastErr error
 	for _, shard := range c.shards {
 		if err := shard.Clear(); err != nil {
 			lastErr = err
 		}
 	}
-	
+
 	return lastErr
-} 
+}
 
 // GetLastModified 获取缓存项的最后修改时间
 func (c *ShardedDiskCache) GetLastModified(key string) (time.Time, bool) {
@@ -175,4 +175,4 @@ func (c *ShardedDiskCache) GetShardIndex(key string) int {
 		// 兼容老版本的模运算
 		return int(h.Sum32()) % c.shardCount
 	}
-} 
+}
