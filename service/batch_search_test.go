@@ -30,10 +30,14 @@ func TestBatchSearchOutcomeCacheTTL(t *testing.T) {
 			wantWrite: true,
 		},
 		{
-			name:        "有任务超时未返回则写短TTL",
+			// 对照实验语义：这条用例原先断言 wantTTL=partial。改成 full 是刻意的行为变更，
+			// 依据见 cacheTTL 的注释（"有超时"在插件路径是常态，短 TTL 换来的收益实测约为零，
+			// 代价是 0.2 秒与 30 秒之间的延迟不确定）。wantMissing 仍然必须为 1——
+			// 超时本身照旧要统计，只是不再决定 TTL。
+			name:        "有任务超时未返回仍写完整TTL（本轮变更）",
 			submitted:   []string{"a", "b", "c"},
 			observed:    map[string]error{"a": nil, "b": nil},
-			wantTTL:     partial,
+			wantTTL:     full,
 			wantWrite:   true,
 			wantMissing: 1,
 		},

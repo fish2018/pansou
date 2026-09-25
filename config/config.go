@@ -60,7 +60,14 @@ type Config struct {
 	TGChannelRequestTimeout time.Duration // 单个频道请求超时
 	TGResponseMaxBytes      int64         // 单个频道响应体上限
 	TGBackfillEnabled       bool          // 超时后是否后台补齐缺失频道
-	CachePartialTTLMinutes  int           // 结果不完整时的缓存有效期（分钟）
+	// CachePartialTTLMinutes 已不再参与 TTL 选择（2026-09-25 起）。
+	//
+	// 它曾用于"本轮有超时则写短 TTL"的分档，但那个门槛在实际部署里判错了对象：
+	// 插件路径的异步窗口只有 4 秒，"有插件超时"是常态而非抖动，于是插件侧主缓存
+	// 每次都被压到 3 分钟，而同一关键词的 TG 侧活 60 分钟。实测短 TTL 换来的
+	// 重搜增益约为零（−32/−72/+5 条），代价是 0.2 秒与 30 秒之间的延迟不确定。
+	// 字段与 CACHE_PARTIAL_TTL_MINUTES 环境变量保留，仅为兼容既有部署，改它不再有效果。
+	CachePartialTTLMinutes int // 已废弃：不再参与 TTL 选择
 	// 插件批任务配置
 	PluginBatchTimeout    time.Duration // 插件批任务软截止
 	PluginBackfillEnabled bool          // 超时后是否后台补齐缺失插件
