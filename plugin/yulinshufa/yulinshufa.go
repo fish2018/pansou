@@ -732,27 +732,37 @@ func (p *YulinshufaPlugin) decorateCommonHeaders(req *http.Request) {
 }
 
 func (p *YulinshufaPlugin) doRequestWithRetry(client *http.Client, req *http.Request, maxRetries int) (*http.Response, error) {
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			backoff := time.Duration(1<<uint(attempt-1)) * 200 * time.Millisecond
-			time.Sleep(backoff)
-			p.debugf("重试第 %d 次, url=%s", attempt+1, req.URL.String())
-		}
+	var resp *http.Response
 
-		resp, err := client.Do(req.Clone(req.Context()))
-		if err == nil && resp.StatusCode == http.StatusOK {
-			return resp, nil
+	// 重试逻辑收敛到 util.DoWithRetry。原实现是"先等待再发请求"，与组件的"失败后等待"
+	// 等价：原第 k 次尝试前等 2^(k-1)×200ms，组件在第 j 次失败后等 2^j×200ms 再发第 j+1 次，
+	// 两者逐项相同。所以 Multiplier: 2 + BaseDelay 200ms 就还原了原退避曲线。
+	err := util.DoWithRetry(util.RetryConfig{
+		Attempts:   maxRetries,
+		BaseDelay:  200 * time.Millisecond,
+		Multiplier: 2,
+		OnRetry: func(attempt int, _ error, _ time.Duration) {
+			// 原日志打在"即将重试"处、次数从 1 起计；组件回调的 attempt 是 0 起的失败序号，
+			// 故加 2 才是"第几次请求"。
+			p.debugf("重试第 %d 次, url=%s", attempt+2, req.URL.String())
+		},
+	}, func(_ int) error {
+		r, err := client.Do(req.Clone(req.Context()))
+		if err != nil {
+			return err
 		}
-
-		if resp != nil {
-			resp.Body.Close()
-			lastErr = fmt.Errorf("状态码: %d", resp.StatusCode)
-		} else {
-			lastErr = err
+		if r.StatusCode == http.StatusOK {
+			resp = r
+			return nil
 		}
+		status := r.StatusCode
+		r.Body.Close()
+		return fmt.Errorf("状态码: %d", status)
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("请求重试 %d 次仍失败: %w", maxRetries, lastErr)
+	return resp, nil
 }
 
 func parseDebugFlag() bool {
