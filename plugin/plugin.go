@@ -70,6 +70,31 @@ type InitializablePlugin interface {
 // 是为了避免并发请求共享同一个插件实例时互相覆盖。
 const ExtContextKey = "_ctx"
 
+// ExtMainCacheKey 是 ext 中承载"本次请求该写哪个主缓存键"的键。
+//
+// 为什么走 ext 而不放在插件实例上：插件实例是全局注册表里的共享单例，service 层
+// 每个请求都往同一实例上 SetMainCacheKey/SetCurrentKeyword，两个并发请求（或请求
+// 与后台补齐）会互相覆盖，于是 A 关键词的结果可能被写进 B 关键词的缓存槽。
+// 本文件早先为 ExtContextKey 修过同一隐患（见上方注释），这次把主缓存键与关键词
+// 一并挪到 per-request 的 ext 上。
+const ExtMainCacheKey = "_main_cache_key"
+
+// resolveMainCacheKey 解析本次调用该用的主缓存键。
+//
+// 优先取 ext 里由 service 层注入的值；插件调用点普遍传 p.MainCacheKey（106 处），
+// 那个字段在并发下可能已被别的请求改写，所以只作兜底。
+func resolveMainCacheKey(mainCacheKey string, ext map[string]interface{}) string {
+	if ext == nil {
+		return mainCacheKey
+	}
+	if v, ok := ext[ExtMainCacheKey]; ok {
+		if str, ok := v.(string); ok && str != "" {
+			return str
+		}
+	}
+	return mainCacheKey
+}
+
 // ContextFromExt 取出本次搜索的上下文，未设置时返回 background。
 func ContextFromExt(ext map[string]interface{}) context.Context {
 	if ext != nil {
@@ -519,7 +544,9 @@ func (p *BaseAsyncPlugin) SetMainCacheKey(key string) {
 	p.MainCacheKey = key
 }
 
-// SetCurrentKeyword 设置当前搜索关键词（用于日志显示）
+// SetCurrentKeyword 已不再被框架读取：关键词改为按参数透传，避免并发请求
+// 共享同一个插件实例时互相覆盖。保留方法只为兼容既有调用方。
+// Deprecated: 框架改用 AsyncSearch/AsyncSearchWithResult 的 keyword 参数。
 func (p *BaseAsyncPlugin) SetCurrentKeyword(keyword string) {
 	p.currentKeyword = keyword
 }
@@ -623,13 +650,13 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 		ext = make(map[string]interface{})
 	}
 
+	// 主缓存键以 ext 里的为准：插件实例上的 MainCacheKey 是共享的，并发下会被
+	// 别的请求改写，只作兜底。
+	mainCacheKey = resolveMainCacheKey(mainCacheKey, ext)
+
 	now := time.Now()
 
-	// 修改缓存键，确保包含插件名称
-	// 键必须含 ext 摘要：ext 是请求可控参数且确实改变结果形状
-	// （sdso 的 pages_per_type、cyg 的 per_page 等），原先只有 name:keyword，
-	// 两个 ext 不同、结果也不同的请求会共用一条缓存。
-	pluginSpecificCacheKey := fmt.Sprintf("%s:%s:%s", p.name, keyword, util.ExtDigest(ext))
+	pluginSpecificCacheKey := pluginCacheKey(p, keyword, ext)
 	forceRefresh := ext != nil && ext["refresh"] == true
 
 	// 检查缓存
@@ -706,7 +733,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 			})
 
 			// 🔧 工作池满时短超时(默认4秒)内完成，这是完整结果
-			p.updateMainCacheWithFinal(mainCacheKey, results, true)
+			p.updateMainCacheWithFinal(mainCacheKey, results, true, keyword)
 
 			return
 		}
@@ -763,7 +790,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 				recordAsyncCompletion()
 
 				// 异步插件后台完成时更新主缓存（标记为最终结果）
-				p.updateMainCacheWithFinal(mainCacheKey, results, true)
+				p.updateMainCacheWithFinal(mainCacheKey, results, true, keyword)
 
 				// 异步插件本地缓存系统已移除
 			}
@@ -816,7 +843,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 				})
 
 				// 🔧 短超时(默认4秒)内正常完成，这是完整的最终结果
-				p.updateMainCacheWithFinal(mainCacheKey, results, true)
+				p.updateMainCacheWithFinal(mainCacheKey, results, true, keyword)
 
 				// 异步插件本地缓存系统已移除
 			}
@@ -864,7 +891,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 		})
 
 		// 🔧 修复：4秒超时时也要更新主缓存，标记为部分结果（空结果）
-		p.updateMainCacheWithFinal(mainCacheKey, []model.SearchResult{}, false)
+		p.updateMainCacheWithFinal(mainCacheKey, []model.SearchResult{}, false, keyword)
 
 		// fmt.Printf("[%s] 响应超时，后台继续处理: %s\n", p.name, pluginSpecificCacheKey)
 		return []model.SearchResult{}
@@ -909,13 +936,13 @@ func (p *BaseAsyncPlugin) AsyncSearchWithResult(
 		ext = make(map[string]interface{})
 	}
 
+	// 主缓存键以 ext 里的为准：插件实例上的 MainCacheKey 是共享的，并发下会被
+	// 别的请求改写，只作兜底。
+	mainCacheKey = resolveMainCacheKey(mainCacheKey, ext)
+
 	now := time.Now()
 
-	// 修改缓存键，确保包含插件名称
-	// 键必须含 ext 摘要：ext 是请求可控参数且确实改变结果形状
-	// （sdso 的 pages_per_type、cyg 的 per_page 等），原先只有 name:keyword，
-	// 两个 ext 不同、结果也不同的请求会共用一条缓存。
-	pluginSpecificCacheKey := fmt.Sprintf("%s:%s:%s", p.name, keyword, util.ExtDigest(ext))
+	pluginSpecificCacheKey := pluginCacheKey(p, keyword, ext)
 	forceRefresh := ext != nil && ext["refresh"] == true
 
 	// 检查缓存
@@ -1065,7 +1092,7 @@ func (p *BaseAsyncPlugin) AsyncSearchWithResult(
 		// 🔧 恢复主缓存更新：使用统一的GOB序列化
 		// 传递原始数据，由主程序负责序列化
 		if mainCacheKey != "" && p.mainCacheUpdater != nil {
-			err := p.mainCacheUpdater(mainCacheKey, results, p.getCacheTTL(), true, p.currentKeyword)
+			err := p.mainCacheUpdater(mainCacheKey, results, p.getCacheTTL(), true, keyword)
 			if err != nil {
 				fmt.Printf("❌ [%s] 及时完成缓存更新失败: %s | 错误: %v\n", p.name, mainCacheKey, err)
 			}
@@ -1134,7 +1161,7 @@ func (p *BaseAsyncPlugin) completeSearchInBackground(
 	// 🔧 恢复主缓存更新：使用统一的GOB序列化
 	// 传递原始数据，由主程序负责序列化
 	if mainCacheKey != "" && p.mainCacheUpdater != nil {
-		err := p.mainCacheUpdater(mainCacheKey, results, p.getCacheTTL(), true, p.currentKeyword)
+		err := p.mainCacheUpdater(mainCacheKey, results, p.getCacheTTL(), true, keyword)
 		if err != nil {
 			fmt.Printf("❌ [%s] 后台完成缓存更新失败: %s | 错误: %v\n", p.name, mainCacheKey, err)
 		}
@@ -1199,7 +1226,7 @@ func (p *BaseAsyncPlugin) refreshCacheInBackground(
 	})
 
 	// 🔥 异步插件后台刷新完成时更新主缓存（标记为最终结果）
-	p.updateMainCacheWithFinal(originalCacheKey, mergedResults, true)
+	p.updateMainCacheWithFinal(originalCacheKey, mergedResults, true, keyword)
 
 	// 记录刷新时间
 	refreshTime := time.Since(refreshStart)
@@ -1215,11 +1242,11 @@ func (p *BaseAsyncPlugin) refreshCacheInBackground(
 
 // updateMainCache 更新主缓存系统（兼容性方法，默认IsFinal=true）
 func (p *BaseAsyncPlugin) updateMainCache(cacheKey string, results []model.SearchResult) {
-	p.updateMainCacheWithFinal(cacheKey, results, true)
+	p.updateMainCacheWithFinal(cacheKey, results, true, "")
 }
 
 // updateMainCacheWithFinal 更新主缓存系统，支持IsFinal参数
-func (p *BaseAsyncPlugin) updateMainCacheWithFinal(cacheKey string, results []model.SearchResult, isFinal bool) {
+func (p *BaseAsyncPlugin) updateMainCacheWithFinal(cacheKey string, results []model.SearchResult, isFinal bool, keyword string) {
 	// 如果主缓存更新函数为空或缓存键为空，直接返回
 	if p.mainCacheUpdater == nil || cacheKey == "" {
 		return
@@ -1249,7 +1276,7 @@ func (p *BaseAsyncPlugin) updateMainCacheWithFinal(cacheKey string, results []mo
 	// 🔧 恢复异步插件缓存更新，使用修复后的统一序列化
 	// 传递原始数据，由主程序负责GOB序列化
 	if p.mainCacheUpdater != nil {
-		err := p.mainCacheUpdater(cacheKey, results, p.getCacheTTL(), isFinal, p.currentKeyword)
+		err := p.mainCacheUpdater(cacheKey, results, p.getCacheTTL(), isFinal, keyword)
 		if err != nil {
 			fmt.Printf("❌ [%s] 主缓存更新失败: %s | 错误: %v\n", p.name, cacheKey, err)
 		}

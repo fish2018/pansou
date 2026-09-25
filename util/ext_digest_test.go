@@ -69,6 +69,14 @@ func TestExtDigestNilAndEmpty(t *testing.T) {
 
 // ExtContextKeyName 与 plugin.ExtContextKey 的一致性由 plugin 包中的用例锁定：
 // util 不能 import plugin（会成环），所以这里只能靠常量对齐，需要断言防漂移。
+func TestExtDigestIgnoresMainCacheKey(t *testing.T) {
+	plain := ExtDigest(map[string]interface{}{"pages": 2})
+	withKey := ExtDigest(map[string]interface{}{"pages": 2, "_main_cache_key": "abc123"})
+	if plain != withKey {
+		t.Error("主缓存键是结果写到哪的地址而非结果形状参数，不应影响 ext 摘要")
+	}
+}
+
 func TestExtContextKeyNameValue(t *testing.T) {
 	if ExtContextKeyName != "_ctx" {
 		t.Errorf("ExtContextKeyName = %q，必须与 plugin.ExtContextKey 一致", ExtContextKeyName)

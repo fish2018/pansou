@@ -22,6 +22,9 @@ var extDigestExcludedKeys = map[string]bool{
 	"refresh": true,
 	// 递归标记，插件内部透传用
 	"_depth": true,
+	// service 层注入的主缓存键。它是"结果写到哪"的地址而不是结果形状参数，
+	// 且其值本身由 keyword+plugins+ext 推出，算进摘要纯属冗余。
+	"_main_cache_key": true,
 }
 
 // ExtDigest 计算影响搜索结果形状的 ext 参数的摘要。

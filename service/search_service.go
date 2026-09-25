@@ -1402,15 +1402,19 @@ func (s *SearchService) backfillTGChannels(cacheKey, keyword string, missing []s
 // 独立定义是因为下面的循环用 plugin 作为局部变量名，遮蔽了包名。
 const pluginExtContextKey = plugin.ExtContextKey
 
-// pluginExtWithContext 复制 ext 并注入本次批任务的上下文。
+// pluginExtWithContext 复制 ext 并注入本次批任务的上下文与主缓存键。
 // 复制而不是就地写入，避免并发请求共享同一个 ext 互相覆盖，
 // 同时插件基类可以据此在批任务超时后立刻返回而不是等自己的响应超时。
-func pluginExtWithContext(ext map[string]interface{}, ctx context.Context) map[string]interface{} {
-	taskExt := make(map[string]interface{}, len(ext)+1)
+//
+// 主缓存键同样放在每份副本里而不是插件实例上：插件实例是全局注册表里的共享单例，
+// 逐请求写字段会让并发的两个关键词互相覆盖，A 的结果可能被写进 B 的缓存槽。
+func pluginExtWithContext(ext map[string]interface{}, ctx context.Context, mainCacheKey string) map[string]interface{} {
+	taskExt := make(map[string]interface{}, len(ext)+2)
 	for k, v := range ext {
 		taskExt[k] = v
 	}
 	taskExt[pluginExtContextKey] = ctx
+	taskExt[plugin.ExtMainCacheKey] = mainCacheKey
 	return taskExt
 }
 
@@ -1508,15 +1512,15 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 		plugin := p // 创建副本，避免闭包问题
 		pluginName := plugin.Name()
 		tasks = append(tasks, func(ctx context.Context) interface{} {
-			// 设置主缓存键和当前关键词
-			plugin.SetMainCacheKey(cacheKey)
-			plugin.SetCurrentKeyword(keyword)
-
+			// 主缓存键与关键词都按本次请求传递，不再写到插件实例上：插件实例是
+			// 全局注册表里的共享单例，逐请求写字段会让并发的两个关键词互相覆盖，
+			// A 的结果可能被写进 B 的缓存槽（见 plugin.ExtMainCacheKey）。
+			//
 			// 插件的Search方法已经负责异步调度、插件缓存和后台刷新。
 			// 这里直接调用，避免再包一层AsyncSearch导致嵌套等待和重复超时。
-			// 批任务的超时时间通过 ext 传给插件，插件基类据此在到点后立刻返回。
+			// 批任务的超时时间与主缓存键都通过 ext 传给插件。
 			start := time.Now()
-			pluginResults, err := plugin.Search(keyword, pluginExtWithContext(ext, ctx))
+			pluginResults, err := plugin.Search(keyword, pluginExtWithContext(ext, ctx, cacheKey))
 
 			return &pluginBatchResult{name: pluginName, results: pluginResults, err: err, duration: time.Since(start)}
 		})
@@ -1649,9 +1653,8 @@ func (s *SearchService) backfillPlugins(cacheKey, keyword string, missing []stri
 	for _, p := range availablePlugins {
 		plugin := p
 		tasks = append(tasks, func(ctx context.Context) interface{} {
-			plugin.SetMainCacheKey(cacheKey)
-			plugin.SetCurrentKeyword(keyword)
-			pluginResults, err := plugin.Search(keyword, pluginExtWithContext(ext, ctx))
+			// 同批任务路径：主缓存键按请求传，不写共享实例字段
+			pluginResults, err := plugin.Search(keyword, pluginExtWithContext(ext, ctx, cacheKey))
 			if err != nil {
 				return nil
 			}
