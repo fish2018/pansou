@@ -132,6 +132,13 @@ func (c *ShardedDiskCache) Clear() error {
 	return lastErr
 }
 
+// GetExpiry 获取缓存项的过期时间（写入时按 ttl 算出的那个时刻）。
+// 上层回填内存缓存时按剩余寿命计时而不是重新计满，见 EnhancedTwoLevelCache.Get。
+func (c *ShardedDiskCache) GetExpiry(key string) (time.Time, bool) {
+	shard := c.getShard(key)
+	return shard.GetExpiry(key)
+}
+
 // GetLastModified 获取缓存项的最后修改时间
 func (c *ShardedDiskCache) GetLastModified(key string) (time.Time, bool) {
 	shard := c.getShard(key)

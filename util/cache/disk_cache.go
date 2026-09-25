@@ -349,6 +349,23 @@ func (c *DiskCache) Clear() error {
 	return nil
 }
 
+// GetExpiry 获取缓存项的过期时间（写入时按 ttl 算出的那个时刻）。
+//
+// 存在的理由是上层需要它：EnhancedTwoLevelCache 从磁盘回填内存时，原先一律用
+// CacheTTLMinutes 重新计时，于是磁盘上按 3 分钟短 TTL 落盘的 partial 结果
+// 会在内存里获得完整 60 分钟寿命，短 TTL 分流被整个绕过。
+func (c *DiskCache) GetExpiry(key string) (time.Time, bool) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	meta, exists := c.metadata[key]
+	if !exists {
+		return time.Time{}, false
+	}
+
+	return meta.Expiry, true
+}
+
 // GetLastModified 获取缓存项的最后修改时间
 func (c *DiskCache) GetLastModified(key string) (time.Time, bool) {
 	c.mutex.RLock()

@@ -103,9 +103,23 @@ func (c *EnhancedTwoLevelCache) Get(key string) ([]byte, bool, error) {
 	// 尝试从磁盘读取数据
 	diskData, diskHit, diskErr := c.disk.Get(key)
 	if diskErr == nil && diskHit {
-		// 磁盘缓存命中，更新内存缓存
-		diskLastModified, _ := c.disk.GetLastModified(key)
+		// 磁盘缓存命中，更新内存缓存。
+		//
+		// 这里必须按磁盘条目的**剩余**寿命回填，不能一律用 CacheTTLMinutes：
+		// 内存缓存的 SetWithTimestamp 是 expiry = now + ttl，重新计时会让
+		// 磁盘上按短 TTL（CachePartialTTLMinutes，默认 3 分钟）落盘的部分结果
+		// 在内存里活满完整 TTL（默认 60 分钟），service 侧读缓存又不校验新鲜度
+		// （search_service.go 注释明写"不检查新鲜度"），短 TTL 分流因此被整个绕过。
 		ttl := time.Duration(config.AppConfig.CacheTTLMinutes) * time.Minute
+		if expiry, ok := c.disk.GetExpiry(key); ok {
+			remaining := time.Until(expiry)
+			if remaining <= 0 {
+				// 磁盘条目其实已过期（可能尚未被清理任务删掉），不能复活它
+				return nil, false, nil
+			}
+			ttl = remaining
+		}
+		diskLastModified, _ := c.disk.GetLastModified(key)
 		c.memory.SetWithTimestamp(key, diskData, ttl, diskLastModified)
 		return diskData, true, nil
 	}
