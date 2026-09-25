@@ -7,7 +7,11 @@ import (
 	"pansou/plugin"
 )
 
+// gying 站点已关闭（2026-09 确认），此实测用例无法再通过。
+// 保留主体代码用于站点恢复后复验，但先无条件跳过，避免误以为可以跑通。
 func TestGyingLiveLoginAndSearch(t *testing.T) {
+	t.Skip("gying 站点已关闭，实测用例暂停；站点恢复后移除本行即可复验")
+
 	username := os.Getenv("GYING_TEST_USERNAME")
 	password := os.Getenv("GYING_TEST_PASSWORD")
 	if username == "" || password == "" {
