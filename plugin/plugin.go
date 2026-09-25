@@ -96,6 +96,7 @@ var (
 
 	// 工作池相关变量
 	backgroundWorkerPool chan struct{}
+	backgroundPoolOnce   sync.Once
 	backgroundTasksCount int32 = 0
 
 	// 统计数据 (仅用于内部监控)
@@ -349,13 +350,10 @@ func initAsyncPlugin() {
 		return
 	}
 
-	// 如果配置已加载，则从配置读取工作池大小
-	maxWorkers := defaultMaxBackgroundWorkers
-	if config.AppConfig != nil {
-		maxWorkers = config.AppConfig.AsyncMaxBackgroundWorkers
-	}
-
-	backgroundWorkerPool = make(chan struct{}, maxWorkers)
+	// 工作池不在这里创建。本函数会被各插件的构造函数在包 init() 阶段触发，
+	// 那时 config.AppConfig 还是 nil，容量会被定死为硬编码默认值并因
+	// initialized=true 而永不重算——ASYNC_MAX_BACKGROUND_WORKERS 就成了死配置。
+	// 改为首次真正取用工作槽时再按配置创建，见 ensureBackgroundWorkerPool。
 
 	// 异步插件本地缓存系统已移除，现在只依赖主缓存系统
 
@@ -365,6 +363,26 @@ func initAsyncPlugin() {
 // InitAsyncPluginSystem 导出的初始化函数，用于确保异步插件系统初始化
 func InitAsyncPluginSystem() {
 	initAsyncPlugin()
+}
+
+// ensureBackgroundWorkerPool 在首次使用时按当前配置创建工作池。
+//
+// 必须在调用时解析：插件构造函数在包 init() 阶段跑，早于 main 的 config.Init()，
+// 那时读到的是 nil 配置，容量会被固定成硬编码默认值；而 initAsyncPlugin 置位的
+// initialized 又让 main 里那次补正初始化直接返回，配置再也补不回来。
+func ensureBackgroundWorkerPool() chan struct{} {
+	backgroundPoolOnce.Do(func() {
+		maxWorkers := defaultMaxBackgroundWorkers
+		if config.AppConfig != nil {
+			maxWorkers = config.AppConfig.AsyncMaxBackgroundWorkers
+		}
+		if maxWorkers <= 0 {
+			maxWorkers = defaultMaxBackgroundWorkers
+		}
+		backgroundWorkerPool = make(chan struct{}, maxWorkers)
+		fmt.Printf("[PLUGIN] 后台工作池按当前配置创建：容量 %d\n", maxWorkers)
+	})
+	return backgroundWorkerPool
 }
 
 // acquireWorkerSlot 尝试获取工作槽
@@ -381,8 +399,9 @@ func acquireWorkerSlot() bool {
 	}
 
 	// 尝试获取工作槽
+	pool := ensureBackgroundWorkerPool()
 	select {
-	case backgroundWorkerPool <- struct{}{}:
+	case pool <- struct{}{}:
 		atomic.AddInt32(&backgroundTasksCount, 1)
 		return true
 	default:
@@ -392,7 +411,7 @@ func acquireWorkerSlot() bool {
 
 // releaseWorkerSlot 释放工作槽
 func releaseWorkerSlot() {
-	<-backgroundWorkerPool
+	<-ensureBackgroundWorkerPool()
 	atomic.AddInt32(&backgroundTasksCount, -1)
 }
 

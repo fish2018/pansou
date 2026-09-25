@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -69,5 +70,39 @@ func TestPluginClientIsCreatedOnce(t *testing.T) {
 	}
 	if got := first.Timeout; got != 7*time.Second {
 		t.Errorf("Timeout = %v, 期望 7s", got)
+	}
+}
+
+// 工作池容量同样必须延后到调用时解析：initAsyncPlugin 会在各插件的构造函数里
+// 于包 init() 阶段被触发，那时 config.AppConfig 为 nil，容量被定死为硬编码默认值，
+// 且 initialized=true 让 main 里那次补正初始化直接返回，配置再也补不回来。
+// 修复前 ASYNC_MAX_BACKGROUND_WORKERS 设任何值都无效。
+func TestBackgroundWorkerPoolResolvesConfigAtUseTime(t *testing.T) {
+	saved := backgroundWorkerPool
+	savedOnce := backgroundPoolOnce
+	t.Cleanup(func() {
+		backgroundWorkerPool = saved
+		backgroundPoolOnce = savedOnce
+	})
+	backgroundWorkerPool = nil
+	backgroundPoolOnce = sync.Once{}
+
+	// 模拟真实顺序：插件已构造（此阶段不会创建池），配置随后才可用
+	withAppConfig(t, &config.Config{AsyncMaxBackgroundWorkers: 7})
+
+	pool := ensureBackgroundWorkerPool()
+	if cap(pool) != 7 {
+		t.Errorf("工作池容量 = %d, 期望 7（配置未生效）", cap(pool))
+	}
+	if pool != ensureBackgroundWorkerPool() {
+		t.Error("重复取用应返回同一个池")
+	}
+
+	// 配置缺失时退回硬编码默认值
+	backgroundWorkerPool = nil
+	backgroundPoolOnce = sync.Once{}
+	withAppConfig(t, nil)
+	if cap(ensureBackgroundWorkerPool()) != defaultMaxBackgroundWorkers {
+		t.Errorf("无配置时应退回默认容量 %d", defaultMaxBackgroundWorkers)
 	}
 }
