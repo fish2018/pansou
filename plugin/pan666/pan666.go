@@ -210,10 +210,10 @@ func (p *Pan666AsyncPlugin) fetchPage(client *http.Client, keyword string, offse
 			continue
 		}
 
-		defer resp.Body.Close()
-
-		// 读取响应体
+		// 这里不能用 defer：它在重试循环里会把每次响应都压到函数返回才关，
+		// 重试 N 次就有 N 个响应体（连同连接）一直不释放。读完立即关闭。
 		responseBody, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
 		if err != nil {
 			if i == p.retries {
 				return nil, false, fmt.Errorf("读取响应失败: %w", err)
