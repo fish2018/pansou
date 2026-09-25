@@ -844,18 +844,21 @@ func (p *GyingPlugin) SearchWithResult(keyword string, ext map[string]interface{
 		}
 	}
 
-	if !forceRefresh {
-		if cacheItem, ok := p.searchCache.Load(keyword); ok {
-			cached := cacheItem.(model.PluginSearchResult)
-			if DebugLog {
-				fmt.Printf("[Gying] 命中插件缓存: %s\n", keyword)
-			}
-			return cached, nil
-		}
-	} else {
+	// 已存在的缓存：非刷新时直接返回；刷新失败时作为兜底，避免"刷新一下结果反而没了"。
+	var cached *model.PluginSearchResult
+	if cacheItem, ok := p.searchCache.Load(keyword); ok {
+		existing := cacheItem.(model.PluginSearchResult)
+		cached = &existing
+	}
+
+	if !forceRefresh && cached != nil {
 		if DebugLog {
-			fmt.Printf("[Gying] 强制刷新，此次跳过插件缓存，关键词: %s\n", keyword)
+			fmt.Printf("[Gying] 命中插件缓存: %s\n", keyword)
 		}
+		return *cached, nil
+	}
+	if forceRefresh && DebugLog {
+		fmt.Printf("[Gying] 强制刷新，此次跳过插件缓存，关键词: %s\n", keyword)
 	}
 
 	// 原有真实抓取逻辑
@@ -867,6 +870,11 @@ func (p *GyingPlugin) SearchWithResult(keyword string, ext map[string]interface{
 		fmt.Printf("[Gying] 找到 %d 个有效用户\n", len(users))
 	}
 	if len(users) == 0 {
+		// 无可用账号时同样优先回退缓存，避免把有效结果替换成空。
+		if cached != nil && len(cached.Results) > 0 {
+			fmt.Printf("[Gying] 没有有效用户，返回缓存结果 %d 条（关键词: %s）\n", len(cached.Results), keyword)
+			return *cached, nil
+		}
 		if DebugLog {
 			fmt.Printf("[Gying] 没有有效用户，返回空结果\n")
 		}
@@ -878,17 +886,31 @@ func (p *GyingPlugin) SearchWithResult(keyword string, ext map[string]interface{
 		})
 		users = users[:MaxConcurrentUsers]
 	}
-	results := p.executeSearchTasks(users, keyword)
+	results, searchErr := p.executeSearchTasks(users, keyword)
 	if DebugLog {
 		fmt.Printf("[Gying] 搜索完成，获得 %d 条结果\n", len(results))
 	}
+
+	// 抓取整体失败：优先回退已缓存结果，而不是返回空。否则 refresh=true 时
+	// 会表现为"刷新一下结果就没了"——用户看到的正是这个现象。
+	if searchErr != nil {
+		if cached != nil && len(cached.Results) > 0 {
+			fmt.Printf("[Gying] 刷新失败，返回缓存结果 %d 条（关键词: %s，原因: %v）\n",
+				len(cached.Results), keyword, searchErr)
+			return *cached, nil
+		}
+		return model.PluginSearchResult{}, fmt.Errorf("[Gying] 搜索失败: %w", searchErr)
+	}
+
 	realResult := model.PluginSearchResult{
 		Results: results,
 		IsFinal: true,
 	}
-	// 写入缓存
+	// 只在实际拿到结果时覆盖缓存，避免用空结果冲掉有效缓存
 	if len(results) > 0 {
 		p.searchCache.Store(keyword, realResult)
+	} else if DebugLog {
+		fmt.Printf("[Gying] 抓取成功但无匹配，保留原缓存: %s\n", keyword)
 	}
 	return realResult, nil
 }
@@ -2309,11 +2331,17 @@ func (p *GyingPlugin) reloginUser(user *User) error {
 
 // ============ 搜索逻辑 ============
 
-// executeSearchTasks 并发执行搜索任务
-func (p *GyingPlugin) executeSearchTasks(users []*User, keyword string) []model.SearchResult {
+// executeSearchTasks 并发执行搜索任务。
+//
+// 返回值区分两种情况：err != nil 表示所有用户都没能完成抓取（网络/会话问题）；
+// err == nil 且结果为空表示抓取本身成功、确实没有匹配。二者的区别很关键——
+// 前者需要向上报错并回退缓存，后者是合法的空结果，不能当成失败。
+func (p *GyingPlugin) executeSearchTasks(users []*User, keyword string) ([]model.SearchResult, error) {
 	var allResults []model.SearchResult
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	var succeeded int
+	var firstErr error
 
 	for _, user := range users {
 		wg.Add(1)
@@ -2335,6 +2363,11 @@ func (p *GyingPlugin) executeSearchTasks(users []*User, keyword string) []model.
 					if DebugLog {
 						fmt.Printf("[Gying] 为用户 %s 创建scraper失败: %v\n", u.Username, err)
 					}
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("创建scraper失败: %w", err)
+					}
+					mu.Unlock()
 					return
 				}
 
@@ -2352,6 +2385,11 @@ func (p *GyingPlugin) executeSearchTasks(users []*User, keyword string) []model.
 					if DebugLog {
 						fmt.Printf("[Gying] 用户 %s scraper实例无效，跳过\n", u.Username)
 					}
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("用户 %s 的scraper实例无效", u.Username)
+					}
+					mu.Unlock()
 					return
 				}
 			}
@@ -2361,10 +2399,16 @@ func (p *GyingPlugin) executeSearchTasks(users []*User, keyword string) []model.
 				if DebugLog {
 					fmt.Printf("[Gying] 用户 %s 搜索失败（已重试）: %v\n", u.Username, err)
 				}
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
 				return
 			}
 
 			mu.Lock()
+			succeeded++
 			allResults = append(allResults, results...)
 			mu.Unlock()
 		}(user)
@@ -2372,8 +2416,11 @@ func (p *GyingPlugin) executeSearchTasks(users []*User, keyword string) []model.
 
 	wg.Wait()
 
-	// 去重
-	return p.deduplicateResults(allResults)
+	deduped := p.deduplicateResults(allResults)
+	if succeeded == 0 && firstErr != nil {
+		return deduped, firstErr
+	}
+	return deduped, nil
 }
 
 // searchWithScraperWithRetry 使用scraper搜索（带403自动重新登录重试）

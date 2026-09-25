@@ -822,6 +822,18 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 		return results, nil
 	case err := <-errorChan:
 		close(doneChan)
+		// 抓取失败时回退缓存：与超时路径 partial() 保持一致。
+		// 否则插件会因为一次失败而从结果里凭空消失——refresh=true 时尤其明显，
+		// 因为刷新会跳过缓存，失败就直接返回空。
+		// 注意调用方在 err != nil 时会丢弃 results，因此这里返回 nil error
+		// 并打印明确日志，兼顾数据可用性与可观测性。
+		if cachedItems, ok := apiResponseCache.Load(pluginSpecificCacheKey); ok {
+			if cachedResult, ok := cachedItems.(cachedResponse); ok && len(cachedResult.Results) > 0 {
+				fmt.Printf("[%s] 抓取失败，回退缓存结果 %d 条: %s (原因: %v)\n",
+					p.name, len(cachedResult.Results), pluginSpecificCacheKey, err)
+				return cachedResult.Results, nil
+			}
+		}
 		return nil, err
 	case <-time.After(responseTimeout):
 		return partial(), nil
@@ -1011,6 +1023,14 @@ func (p *BaseAsyncPlugin) AsyncSearchWithResult(
 
 	case err := <-errorChan:
 		// 不直接关闭，让defer处理
+		// 与 AsyncSearch 一致：失败时优先回退缓存，避免插件结果凭空消失。
+		if cachedItems, ok := apiResponseCache.Load(pluginSpecificCacheKey); ok {
+			if cachedResult, ok := cachedItems.(cachedResponse); ok && len(cachedResult.Results) > 0 {
+				fmt.Printf("[%s] 抓取失败，回退缓存结果 %d 条: %s (原因: %v)\n",
+					p.name, len(cachedResult.Results), pluginSpecificCacheKey, err)
+				return model.PluginSearchResult{Results: cachedResult.Results, IsFinal: true}, nil
+			}
+		}
 		return model.PluginSearchResult{}, err
 
 	case <-time.After(responseTimeout):
