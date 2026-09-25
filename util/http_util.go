@@ -34,6 +34,23 @@ func InitHTTPClient() {
 
 // NewHTTPClient 创建HTTP客户端，可按需指定本客户端使用的代理。
 func NewHTTPClient(proxyURL string) (*http.Client, error) {
+	// 连接池配置：空闲连接保活时间直接影响"快速兜底"这类密集访问路径的
+	// 冷启动成本——连接一旦被回收，下次搜索要多付一次 TCP+TLS 握手。
+	maxIdleConnsPerHost := 20
+	idleConnTimeout := 90 * time.Second
+	if config.AppConfig != nil {
+		if config.AppConfig.UpstreamMaxIdleConnsPerHost > 0 {
+			maxIdleConnsPerHost = config.AppConfig.UpstreamMaxIdleConnsPerHost
+		}
+		if config.AppConfig.UpstreamIdleConnTimeout > 0 {
+			idleConnTimeout = config.AppConfig.UpstreamIdleConnTimeout
+		}
+	}
+	maxIdleConns := 100
+	if maxIdleConns < maxIdleConnsPerHost {
+		maxIdleConns = maxIdleConnsPerHost
+	}
+
 	// 创建传输配置
 	transport := &http.Transport{
 		// 启用HTTP/2
@@ -45,10 +62,10 @@ func NewHTTPClient(proxyURL string) (*http.Client, error) {
 		},
 
 		// 连接池优化
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
+		MaxIdleConns:          maxIdleConns,
+		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		MaxConnsPerHost:       100,
-		IdleConnTimeout:       90 * time.Second,
+		IdleConnTimeout:       idleConnTimeout,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 

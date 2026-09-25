@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"golang.org/x/net/html"
 	"pansou/model"
 )
 
@@ -633,27 +634,54 @@ func extractImageURLFromStyle(style string) string {
 }
 
 // extractTitle 从消息HTML和文本内容中提取标题
+// htmlToPlainText 把一段 HTML 片段转成纯文本：剥离标签、丢弃注释、解码实体。
+// 语义等价于"为这段 HTML 建一个 goquery 文档再取 Text()"，但不需要建 DOM——
+// extractTitle 原先对每条消息都做一次这种建树，是解析路径里最浪费的一步。
+func htmlToPlainText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] == '<' {
+			// 注释整体丢弃，与解析器的行为一致
+			if strings.HasPrefix(s[i:], "<!--") {
+				end := strings.Index(s[i:], "-->")
+				if end < 0 {
+					break
+				}
+				i += end + 3
+				continue
+			}
+			end := strings.IndexByte(s[i:], '>')
+			if end < 0 {
+				break
+			}
+			i += end + 1
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return html.UnescapeString(b.String())
+}
+
 func extractTitle(htmlContent string, textContent string) string {
 	// 按 <br> 分行解析 HTML。部分频道第一行是“📅 9月9日”之类的
 	// 日期头，真正的作品名在下一行；如果把日期当标题，服务层的
 	// 关键词过滤会把已经提取到的按钮链接全部过滤掉。
 	if htmlContent != "" {
 		htmlWithNewlines := brTagPattern.ReplaceAllString(htmlContent, "\n")
-		doc, err := goquery.NewDocumentFromReader(strings.NewReader("<div>" + htmlWithNewlines + "</div>"))
-		if err == nil {
-			for _, line := range strings.Split(doc.Text(), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || isTelegramDateHeader(line) || isTitleMetadataLine(line) {
-					continue
-				}
-				if strings.HasPrefix(line, "名称：") {
-					return strings.TrimSpace(line[len("名称："):])
-				}
-				if strings.HasPrefix(line, "#") && !strings.Contains(line, "名称") {
-					continue
-				}
-				return CutTitleByKeywords(line, []string{"简介", "描述"})
+		for _, line := range strings.Split(htmlToPlainText(htmlWithNewlines), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || isTelegramDateHeader(line) || isTitleMetadataLine(line) {
+				continue
 			}
+			if strings.HasPrefix(line, "名称：") {
+				return strings.TrimSpace(line[len("名称："):])
+			}
+			if strings.HasPrefix(line, "#") && !strings.Contains(line, "名称") {
+				continue
+			}
+			return CutTitleByKeywords(line, []string{"简介", "描述"})
 		}
 	}
 

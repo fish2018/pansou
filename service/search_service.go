@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -591,20 +591,27 @@ func (s *SearchService) searchChannel(keyword string, channel string) ([]model.S
 }
 
 // searchChannelWithContext 在调用方上下文内搜索单个频道。
-// 频道请求自身的 4 秒超时保留，同时受父上下文的取消约束。
+// 频道请求自身的超时保留（可通过 TG_CHANNEL_REQUEST_TIMEOUT_SECONDS 调整），
+// 同时受父上下文的取消约束；非 200 状态码直接判为失败，不会把错误页
+// 当成"频道没有匹配内容"；响应体有大小上限，避免异常响应把内存吃满。
 func (s *SearchService) searchChannelWithContext(parent context.Context, keyword string, channel string) ([]model.SearchResult, error) {
 	// 构建搜索URL
-	url := util.BuildSearchURL(channel, keyword, "")
+	searchURL := util.BuildSearchURL(channel, keyword, "")
 
 	// 使用全局HTTP客户端（已配置代理）
 	client := util.GetHTTPClient()
 
-	// 创建一个带超时的上下文
-	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
+	requestTimeout := config.AppConfig.TGChannelRequestTimeout
+	if requestTimeout <= 0 {
+		requestTimeout = 4 * time.Second
+	}
+	// WithTimeout 会取父上下文与本次超时的较小者，天然满足 deadline 传播，
+	// 批任务软截止一到就不会有请求继续占着上游连接。
+	ctx, cancel := context.WithTimeout(parent, requestTimeout)
 	defer cancel()
 
 	// 创建请求
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -616,8 +623,18 @@ func (s *SearchService) searchChannelWithContext(parent context.Context, keyword
 	}
 	defer resp.Body.Close()
 
-	// 读取响应体
-	body, err := ioutil.ReadAll(resp.Body)
+	// 状态码判定：429/403/5xx 等都不是可用页面，按失败上报，
+	// 这样"频道被限流"与"频道没有匹配内容"不会混为一谈。
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("频道 %s 返回状态码 %d", channel, resp.StatusCode)
+	}
+
+	// 读取响应体（带上限）
+	maxBytes := config.AppConfig.TGResponseMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = 2 * 1024 * 1024
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -1217,6 +1234,15 @@ func mergeResultsByType(results []model.SearchResult, keyword string, cloudTypes
 	return mergedLinks
 }
 
+// tgChannelResult 携带频道名的批任务结果。
+// 池按完成顺序返回结果，与提交顺序无关，所以由任务自己带回频道名，
+// 这样才能准确区分"频道失败"、"频道超时未完成"与"频道确实没有匹配内容"。
+type tgChannelResult struct {
+	channel string
+	results []model.SearchResult
+	err     error
+}
+
 // searchTG 搜索TG频道
 func (s *SearchService) searchTG(keyword string, channels []string, forceRefresh bool) ([]model.SearchResult, error) {
 	// 生成缓存键
@@ -1251,42 +1277,138 @@ func (s *SearchService) searchTG(keyword string, channels []string, forceRefresh
 	for _, channel := range channels {
 		ch := channel // 创建副本，避免闭包问题
 		tasks = append(tasks, func(ctx context.Context) interface{} {
-			results, err := s.searchChannelWithContext(ctx, keyword, ch)
-			if err != nil {
-				return nil
-			}
-			return results
+			channelResults, err := s.searchChannelWithContext(ctx, keyword, ch)
+			return &tgChannelResult{channel: ch, results: channelResults, err: err}
 		})
 	}
 
-	// 执行搜索任务并获取结果
-	taskResults := pool.ExecuteBatchWithTimeout(tasks, len(channels), config.AppConfig.PluginTimeout)
+	// 批任务软截止：到点先返回已收集结果，不为了个别慢频道把整个兜底请求
+	// 拖到单请求超时；未完成的频道随后由后台补齐并覆盖缓存。
+	batchTimeout := config.AppConfig.TGChannelTimeout
+	if batchTimeout <= 0 {
+		batchTimeout = 3 * time.Second
+	}
+	taskResults := pool.ExecuteBatchWithTimeout(tasks, len(channels), batchTimeout)
 
-	// 合并所有频道的结果
+	// 合并所有频道的结果，并统计成功、失败与超时未完成的数量
+	succeeded := 0
+	failed := 0
+	returned := make(map[string]bool, len(taskResults))
+	missing := make([]string, 0)
+
 	for _, result := range taskResults {
-		if result != nil {
-			channelResults := result.([]model.SearchResult)
-			results = append(results, channelResults...)
+		channelResult, ok := result.(*tgChannelResult)
+		if !ok {
+			continue
+		}
+		returned[channelResult.channel] = true
+		if channelResult.err != nil {
+			failed++
+			continue
+		}
+		succeeded++
+		results = append(results, channelResult.results...)
+	}
+
+	for _, channel := range channels {
+		if !returned[channel] {
+			missing = append(missing, channel)
 		}
 	}
 
-	// 异步缓存结果
+	// 缓存写入策略：
+	// - 没有任何频道成功：不写，避免空结果在缓存周期内被反复命中；
+	// - 有频道超时未完成：只写短TTL，让后续请求能较快重新拿到完整结果；
+	// - 其余情况：写正常TTL，并由后台补齐任务覆盖为完整结果。
 	if cacheInitialized && config.AppConfig.CacheEnabled {
-		go func(res []model.SearchResult) {
+		if succeeded > 0 {
 			ttl := time.Duration(config.AppConfig.CacheTTLMinutes) * time.Minute
-
-			// 使用增强版缓存
-			if enhancedTwoLevelCache != nil {
-				data, err := enhancedTwoLevelCache.GetSerializer().Serialize(res)
-				if err != nil {
-					return
-				}
-				enhancedTwoLevelCache.Set(cacheKey, data, ttl)
+			if len(missing) > 0 {
+				ttl = time.Duration(config.AppConfig.CachePartialTTLMinutes) * time.Minute
+				fmt.Printf("[searchTG] %s：%d/%d 个频道超时未完成，结果按 %.0f 分钟短缓存写入\n",
+					keyword, len(missing), len(channels), ttl.Minutes())
 			}
-		}(results)
+			go func(res []model.SearchResult, cacheTTL time.Duration) {
+				// 使用增强版缓存
+				if enhancedTwoLevelCache != nil {
+					data, err := enhancedTwoLevelCache.GetSerializer().Serialize(res)
+					if err != nil {
+						return
+					}
+					enhancedTwoLevelCache.Set(cacheKey, data, cacheTTL)
+				}
+			}(results, ttl)
+		} else {
+			fmt.Printf("[searchTG] %s：%d 个频道全部失败（失败 %d 个），跳过缓存写入\n",
+				keyword, len(channels), failed)
+		}
+	}
+
+	// 后台补齐超时未完成的频道，用完整结果覆盖缓存
+	if len(missing) > 0 && succeeded > 0 && config.AppConfig.TGBackfillEnabled &&
+		cacheInitialized && config.AppConfig.CacheEnabled {
+		go s.backfillTGChannels(cacheKey, keyword, missing, len(channels), results)
 	}
 
 	return results, nil
+}
+
+// backfillTGChannels 在后台补搜批任务超时未返回的频道，并把合并后的完整结果写入缓存。
+// 只在缺失比例不高时触发：缺失过多说明上游整体变慢，补齐只会把请求量再放大一倍。
+func (s *SearchService) backfillTGChannels(cacheKey, keyword string, missing []string, total int, collected []model.SearchResult) {
+	if len(missing) == 0 || total == 0 {
+		return
+	}
+	if len(missing)*3 > total {
+		fmt.Printf("[searchTG] %s：超时频道占比过高（%d/%d），跳过后台补齐\n", keyword, len(missing), total)
+		return
+	}
+
+	requestTimeout := config.AppConfig.TGChannelRequestTimeout
+	if requestTimeout <= 0 {
+		requestTimeout = 4 * time.Second
+	}
+
+	tasks := make([]pool.Task, 0, len(missing))
+	for _, channel := range missing {
+		ch := channel
+		tasks = append(tasks, func(ctx context.Context) interface{} {
+			channelResults, err := s.searchChannelWithContext(ctx, keyword, ch)
+			if err != nil {
+				return nil
+			}
+			return channelResults
+		})
+	}
+
+	// 补齐批次也有自己的预算，到点没回来的频道就放弃，不再叠加等待。
+	backfillResults := pool.ExecuteBatchWithTimeout(tasks, len(missing), requestTimeout)
+
+	merged := make([]model.SearchResult, 0, len(collected))
+	merged = append(merged, collected...)
+	added := 0
+	for _, result := range backfillResults {
+		channelResults, ok := result.([]model.SearchResult)
+		if !ok {
+			continue
+		}
+		added++
+		merged = append(merged, channelResults...)
+	}
+
+	if added == 0 || enhancedTwoLevelCache == nil {
+		return
+	}
+
+	// 补齐成功后用完整结果覆盖此前的短TTL缓存。
+	ttl := time.Duration(config.AppConfig.CacheTTLMinutes) * time.Minute
+	data, err := enhancedTwoLevelCache.GetSerializer().Serialize(merged)
+	if err != nil {
+		return
+	}
+	enhancedTwoLevelCache.Set(cacheKey, data, ttl)
+	fmt.Printf("[searchTG] %s：后台补齐 %d/%d 个超时频道，缓存已更新为完整结果（%d 条）\n",
+		keyword, added, len(missing), len(merged))
 }
 
 // pluginExtContextKey 与 plugin.ExtContextKey 一致；

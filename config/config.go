@@ -47,6 +47,15 @@ type Config struct {
 	HTTPWriteTimeout time.Duration // 写入超时
 	HTTPIdleTimeout  time.Duration // 空闲超时
 	HTTPMaxConns     int           // 最大连接数
+	// 上游HTTP客户端配置（抓取外部站点时使用）
+	UpstreamIdleConnTimeout     time.Duration // 空闲连接保活时间
+	UpstreamMaxIdleConnsPerHost int           // 每个主机的空闲连接数
+	// TG频道搜索配置（快速兜底路径，单位见各getter注释）
+	TGChannelTimeout        time.Duration // 频道批任务软截止
+	TGChannelRequestTimeout time.Duration // 单个频道请求超时
+	TGResponseMaxBytes      int64         // 单个频道响应体上限
+	TGBackfillEnabled       bool          // 超时后是否后台补齐缺失频道
+	CachePartialTTLMinutes  int           // 结果不完整时的缓存有效期（分钟）
 	// 认证相关配置
 	AuthEnabled     bool              // 是否启用认证
 	AuthUsers       map[string]string // 用户名:密码映射
@@ -100,6 +109,15 @@ func Init() {
 		HTTPWriteTimeout: getHTTPWriteTimeout(),
 		HTTPIdleTimeout:  getHTTPIdleTimeout(),
 		HTTPMaxConns:     getHTTPMaxConns(),
+		// 上游HTTP客户端配置
+		UpstreamIdleConnTimeout:     time.Duration(getUpstreamIdleConnTimeout()) * time.Second,
+		UpstreamMaxIdleConnsPerHost: getUpstreamMaxIdleConnsPerHost(),
+		// TG频道搜索配置
+		TGChannelTimeout:        time.Duration(getTGChannelTimeout()) * time.Second,
+		TGChannelRequestTimeout: time.Duration(getTGChannelRequestTimeout()) * time.Second,
+		TGResponseMaxBytes:      getTGResponseMaxBytes(),
+		TGBackfillEnabled:       getTGBackfillEnabled(),
+		CachePartialTTLMinutes:  getCachePartialTTL(),
 		// 认证相关配置
 		AuthEnabled:     getAuthEnabled(),
 		AuthUsers:       getAuthUsers(),
@@ -271,6 +289,100 @@ func getCacheTTL() int {
 		return 60
 	}
 	return ttl
+}
+
+// 从环境变量获取TG频道批任务的软截止时间（秒），默认3秒。
+// 到点即返回已收集结果并标记为不完整，剩余频道由后台补齐，
+// 避免为了极少数慢频道把整个"快速兜底"请求拖到单请求超时。
+func getTGChannelTimeout() int {
+	timeoutEnv := os.Getenv("TG_CHANNEL_TIMEOUT_SECONDS")
+	if timeoutEnv == "" {
+		return 3
+	}
+	timeout, err := strconv.Atoi(timeoutEnv)
+	if err != nil || timeout <= 0 {
+		return 3
+	}
+	return timeout
+}
+
+// 从环境变量获取单个TG频道请求的超时时间（秒），默认4秒。
+func getTGChannelRequestTimeout() int {
+	timeoutEnv := os.Getenv("TG_CHANNEL_REQUEST_TIMEOUT_SECONDS")
+	if timeoutEnv == "" {
+		return 4
+	}
+	timeout, err := strconv.Atoi(timeoutEnv)
+	if err != nil || timeout <= 0 {
+		return 4
+	}
+	return timeout
+}
+
+// 从环境变量获取单个TG频道响应体上限（字节），默认2MB。
+// 用于兜住异常响应，正常搜索页解压后约120-160KB。
+func getTGResponseMaxBytes() int64 {
+	sizeEnv := os.Getenv("TG_RESPONSE_MAX_BYTES")
+	if sizeEnv == "" {
+		return 2 * 1024 * 1024
+	}
+	size, err := strconv.ParseInt(sizeEnv, 10, 64)
+	if err != nil || size <= 0 {
+		return 2 * 1024 * 1024
+	}
+	return size
+}
+
+// 从环境变量获取超时后是否后台补齐缺失频道，默认启用。
+func getTGBackfillEnabled() bool {
+	enabled := os.Getenv("TG_BACKFILL_ENABLED")
+	if enabled == "" {
+		return true
+	}
+	return enabled != "false" && enabled != "0"
+}
+
+// 从环境变量获取"结果不完整"时的缓存有效期（分钟），默认3分钟。
+// 完整结果仍使用CACHE_TTL，残缺结果只短存，避免一次抖动污染整个缓存周期。
+func getCachePartialTTL() int {
+	ttlEnv := os.Getenv("CACHE_PARTIAL_TTL_MINUTES")
+	if ttlEnv == "" {
+		return 3
+	}
+	ttl, err := strconv.Atoi(ttlEnv)
+	if err != nil || ttl <= 0 {
+		return 3
+	}
+	return ttl
+}
+
+// 从环境变量获取上游空闲连接保活时间（秒），默认600秒。
+// TG搜索是对同一主机的密集访问，连接一旦回收，下次搜索要多付一次
+// TCP+TLS 握手（实测约0.75秒，占单次耗时四成）。
+func getUpstreamIdleConnTimeout() int {
+	secEnv := os.Getenv("UPSTREAM_IDLE_CONN_TIMEOUT_SECONDS")
+	if secEnv == "" {
+		return 600
+	}
+	sec, err := strconv.Atoi(secEnv)
+	if err != nil || sec <= 0 {
+		return 600
+	}
+	return sec
+}
+
+// 从环境变量获取每个主机的空闲连接数，默认110。
+// HTTP/2 会把并发请求复用到少量连接上，这里是给服务端压低流上限时留的余量。
+func getUpstreamMaxIdleConnsPerHost() int {
+	connEnv := os.Getenv("UPSTREAM_MAX_IDLE_CONNS_PER_HOST")
+	if connEnv == "" {
+		return 110
+	}
+	conn, err := strconv.Atoi(connEnv)
+	if err != nil || conn <= 0 {
+		return 110
+	}
+	return conn
 }
 
 // 从环境变量获取是否启用压缩，如果未设置则默认禁用
