@@ -86,6 +86,27 @@ func TuneDefaultTransport() {
 }
 
 // describeProxy 用于启动日志，避免把含账号密码的代理地址整条打出来。
+// MaskProxyURL 去掉代理地址里的用户名密码后返回，用于日志。
+//
+// 代理地址常写成 http://user:pass@host:port，直接打印等于把凭据写进日志与容器
+// 日志采集链路（main.go 启动时原先就是这么打的）。解析不出来时返回占位文案而不是
+// 原文——拿不准就宁可不打。
+func MaskProxyURL(rawProxyURL string) string {
+	trimmed := strings.TrimSpace(rawProxyURL)
+	if trimmed == "" {
+		return "未配置"
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Host == "" {
+		return "已配置代理（地址无法解析，已隐藏）"
+	}
+	if u.User != nil {
+		u.User = nil
+		return u.String() + "（凭据已隐藏）"
+	}
+	return u.String()
+}
+
 func describeProxy(rawProxyURL string) string {
 	if strings.TrimSpace(rawProxyURL) == "" {
 		return "标准环境变量(HTTP_PROXY/HTTPS_PROXY/NO_PROXY)"
@@ -284,7 +305,10 @@ func FetchHTML(targetURL string) (string, error) {
 
 // BuildSearchURL 构建搜索URL
 func BuildSearchURL(channel string, keyword string, nextPageParam string) string {
-	baseURL := "https://t.me/s/" + channel
+	// channel 直接来自请求参数，必须转义：否则可注入 ? / # 与空格，污染路径或
+	// 查询串（同函数下面的 keyword 是转义过的，channel 漏了）。合法频道名只有
+	// 字母数字下划线，PathEscape 对它们是无操作。
+	baseURL := "https://t.me/s/" + url.PathEscape(channel)
 	if keyword != "" {
 		baseURL += "?q=" + url.QueryEscape(keyword)
 		if nextPageParam != "" {

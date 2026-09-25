@@ -265,15 +265,15 @@ func printServiceInfo(port string, pluginManager *plugin.PluginManager) {
 		} else if strings.HasPrefix(config.AppConfig.ProxyURL, "https://") {
 			proxyType = "HTTPS代理"
 		}
-		fmt.Printf("使用%s (PROXY): %s\n", proxyType, config.AppConfig.ProxyURL)
+		fmt.Printf("使用%s (PROXY): %s\n", proxyType, util.MaskProxyURL(config.AppConfig.ProxyURL))
 		hasProxy = true
 	}
 	if config.AppConfig.HTTPProxyURL != "" {
-		fmt.Printf("使用HTTP代理 (HTTP_PROXY/http_proxy): %s\n", config.AppConfig.HTTPProxyURL)
+		fmt.Printf("使用HTTP代理 (HTTP_PROXY/http_proxy): %s\n", util.MaskProxyURL(config.AppConfig.HTTPProxyURL))
 		hasProxy = true
 	}
 	if config.AppConfig.HTTPSProxyURL != "" {
-		fmt.Printf("使用HTTPS代理 (HTTPS_PROXY/https_proxy): %s\n", config.AppConfig.HTTPSProxyURL)
+		fmt.Printf("使用HTTPS代理 (HTTPS_PROXY/https_proxy): %s\n", util.MaskProxyURL(config.AppConfig.HTTPSProxyURL))
 		hasProxy = true
 	}
 	if !hasProxy {

@@ -16,7 +16,6 @@ type Config struct {
 	DefaultConcurrency int
 	Port               string
 	ProxyURL           string
-	UseProxy           bool
 	HTTPProxyURL       string
 	HTTPSProxyURL      string
 	NoProxy            string
@@ -32,8 +31,7 @@ type Config struct {
 	GCPercent      int  // GC触发阈值百分比
 	OptimizeMemory bool // 是否启用内存优化
 	// 插件相关配置
-	PluginTimeoutSeconds int           // 插件超时时间（秒）
-	PluginTimeout        time.Duration // 插件超时时间（Duration）
+	PluginTimeout time.Duration // 插件超时时间（Duration）
 	// 异步插件相关配置
 	AsyncPluginEnabled        bool          // 是否启用异步插件
 	EnabledPlugins            []string      // 启用的具体插件列表（空表示启用所有）
@@ -83,7 +81,6 @@ func Init() {
 		DefaultConcurrency: getDefaultConcurrency(),
 		Port:               getPort(),
 		ProxyURL:           proxyURL,
-		UseProxy:           proxyURL != "",
 		HTTPProxyURL:       getHTTPProxyURL(),
 		HTTPSProxyURL:      getHTTPSProxyURL(),
 		NoProxy:            getNoProxy(),
@@ -99,8 +96,7 @@ func Init() {
 		GCPercent:      getGCPercent(),
 		OptimizeMemory: getOptimizeMemory(),
 		// 插件相关配置
-		PluginTimeoutSeconds: pluginTimeoutSeconds,
-		PluginTimeout:        time.Duration(pluginTimeoutSeconds) * time.Second,
+		PluginTimeout: time.Duration(pluginTimeoutSeconds) * time.Second,
 		// 异步插件相关配置
 		AsyncPluginEnabled:        getAsyncPluginEnabled(),
 		EnabledPlugins:            getEnabledPlugins(),
