@@ -321,29 +321,31 @@ func extractJuPansouPassword(rawURL string) string {
 }
 
 func doJuPansouRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
-	var lastErr error
-	for attempt := 0; attempt < jupansouMaxRetries; attempt++ {
-		resp, err := client.Do(req.Clone(req.Context()))
-		if err == nil && resp.StatusCode == http.StatusOK {
-			return resp, nil
+	var resp *http.Response
+
+	// 重试逻辑收敛到 util.DoWithRetry：这段循环在多个插件里逐字复制过。
+	// 指数退避（200 * time.Millisecond x 2^attempt）与"最后一次不再等待"的语义保持不变。
+	err := util.DoWithRetry(util.RetryConfig{
+		Attempts:   jupansouMaxRetries,
+		BaseDelay:  200 * time.Millisecond,
+		Multiplier: 2,
+	}, func(_ int) error {
+		r, err := client.Do(req.Clone(req.Context()))
+		if err != nil {
+			return err
 		}
-		if resp != nil {
-			status := resp.StatusCode
-			resp.Body.Close()
-			if err == nil {
-				// Do 成功但状态码非 200。此前这里只执行 lastErr = err，
-				// err 为 nil 时会把 lastErr 清空，三次失败后仅报出
-				// "%!w(<nil>)"，真实状态码被丢掉、无法定位失败原因。
-				err = fmt.Errorf("HTTP 状态码 %d", status)
-			}
+		if r.StatusCode == http.StatusOK {
+			resp = r
+			return nil
 		}
-		lastErr = err
-		if lastErr == nil {
-			lastErr = fmt.Errorf("HTTP 状态码 %d", resp.StatusCode)
-		}
-		if attempt < jupansouMaxRetries-1 {
-			time.Sleep(200 * time.Millisecond * time.Duration(1<<attempt))
-		}
+		status := r.StatusCode
+		r.Body.Close()
+		// Do 成功但状态码非 200：必须把状态码带出来，否则失败原因被清空后
+		// 只会报出 "%!w(<nil>)"，真实状态码丢失、无法定位。
+		return fmt.Errorf("HTTP 状态码 %d", status)
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("重试 %d 次后失败: %w", jupansouMaxRetries, lastErr)
+	return resp, nil
 }
