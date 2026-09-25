@@ -73,7 +73,7 @@ func VerifyHandler(c *gin.Context) {
 	// 如果未启用认证，直接返回有效
 	if !config.AppConfig.AuthEnabled {
 		c.JSON(200, gin.H{
-			"valid": true,
+			"valid":   true,
 			"message": "认证功能未启用",
 		})
 		return

@@ -16,7 +16,7 @@ func applyResultFilter(response model.SearchResponse, filter *model.FilterConfig
 	for i, kw := range filter.Include {
 		includeKeywords[i] = strings.ToLower(kw)
 	}
-	
+
 	excludeKeywords := make([]string, len(filter.Exclude))
 	for i, kw := range filter.Exclude {
 		excludeKeywords[i] = strings.ToLower(kw)
@@ -26,7 +26,7 @@ func applyResultFilter(response model.SearchResponse, filter *model.FilterConfig
 	if resultType == "merged_by_type" || resultType == "" {
 		// 过滤 merged_by_type 的 note 字段
 		response.MergedByType = filterMergedByType(response.MergedByType, includeKeywords, excludeKeywords)
-		
+
 		// 重新计算 total
 		total := 0
 		for _, links := range response.MergedByType {
@@ -37,7 +37,7 @@ func applyResultFilter(response model.SearchResponse, filter *model.FilterConfig
 		// 过滤 results 的 title 和 links 的 work_title
 		response.Results = filterResults(response.Results, includeKeywords, excludeKeywords)
 		response.Total = len(response.Results)
-		
+
 		// 如果是 all 类型，也需要过滤 merged_by_type
 		if resultType == "all" {
 			response.MergedByType = filterMergedByType(response.MergedByType, includeKeywords, excludeKeywords)
@@ -54,22 +54,22 @@ func filterMergedByType(mergedLinks model.MergedLinks, includeKeywords, excludeK
 	}
 
 	filtered := make(model.MergedLinks)
-	
+
 	for linkType, links := range mergedLinks {
 		filteredLinks := make([]model.MergedLink, 0)
-		
+
 		for _, link := range links {
 			if matchFilter(link.Note, includeKeywords, excludeKeywords) {
 				filteredLinks = append(filteredLinks, link)
 			}
 		}
-		
+
 		// 只添加非空的类型
 		if len(filteredLinks) > 0 {
 			filtered[linkType] = filteredLinks
 		}
 	}
-	
+
 	return filtered
 }
 
@@ -80,13 +80,13 @@ func filterResults(results []model.SearchResult, includeKeywords, excludeKeyword
 	}
 
 	filtered := make([]model.SearchResult, 0)
-	
+
 	for _, result := range results {
 		// 先检查 title 是否匹配
 		if !matchFilter(result.Title, includeKeywords, excludeKeywords) {
 			continue
 		}
-		
+
 		// title 匹配后，过滤 links 中的 work_title
 		filteredLinks := make([]model.Link, 0)
 		for _, link := range result.Links {
@@ -95,33 +95,33 @@ func filterResults(results []model.SearchResult, includeKeywords, excludeKeyword
 			if checkText == "" {
 				checkText = result.Title
 			}
-			
+
 			if matchFilter(checkText, includeKeywords, excludeKeywords) {
 				filteredLinks = append(filteredLinks, link)
 			}
 		}
-		
+
 		// 只有有链接的结果才添加
 		if len(filteredLinks) > 0 {
 			result.Links = filteredLinks
 			filtered = append(filtered, result)
 		}
 	}
-	
+
 	return filtered
 }
 
 // matchFilter 检查文本是否匹配过滤条件
 func matchFilter(text string, includeKeywords, excludeKeywords []string) bool {
 	lowerText := strings.ToLower(text)
-	
+
 	// 检查 exclude（任一匹配则排除）
 	for _, kw := range excludeKeywords {
 		if strings.Contains(lowerText, kw) {
 			return false
 		}
 	}
-	
+
 	// 检查 include（如果有 include 列表，必须至少匹配一个）
 	if len(includeKeywords) > 0 {
 		matched := false
@@ -135,6 +135,6 @@ func matchFilter(text string, includeKeywords, excludeKeywords []string) bool {
 			return false
 		}
 	}
-	
+
 	return true
 }

@@ -1,7 +1,7 @@
 package api
 
 import (
-	// "fmt"
+	"fmt"
 	"net/http"
 	// "os"
 
@@ -156,6 +156,14 @@ func SearchHandler(c *gin.Context) {
 		}
 	} else {
 		// POST方式：从请求体获取
+		// 请求体必须封顶：gin 的 GetRawData 就是 io.ReadAll(Request.Body)，
+		// 而认证默认关闭，任何可达客户端都能提交超大 body 把整包物化进内存。
+		if c.Request.ContentLength > maxSearchRequestBodyBytes {
+			c.JSON(http.StatusRequestEntityTooLarge, model.NewErrorResponse(413,
+				fmt.Sprintf("请求体过大（上限 %d 字节）", maxSearchRequestBodyBytes)))
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxSearchRequestBodyBytes)
 		data, err := c.GetRawData()
 		if err != nil {
 			c.JSON(http.StatusBadRequest, model.NewErrorResponse(400, "读取请求数据失败: "+err.Error()))
@@ -166,6 +174,14 @@ func SearchHandler(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, model.NewErrorResponse(400, "无效的请求参数: "+err.Error()))
 			return
 		}
+	}
+
+	// 请求指定的频道/插件数量必须封顶：它会被当作 TG 路径的工作池大小，
+	// 直接决定 goroutine 数与出站请求数（见 service.searchTG）。
+	if channelsOverLimit(len(req.Channels)) {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(400,
+			fmt.Sprintf("channels 数量 %d 超过上限 %d", len(req.Channels), maxRequestChannels)))
+		return
 	}
 
 	// 检查并设置默认值
