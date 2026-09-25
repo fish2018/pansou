@@ -671,7 +671,7 @@ func (p *PanlianPlugin) searchWithUser(client *http.Client, user *User, keyword 
 	results, err := p.searchOnce(client, user, keyword)
 	if err == nil {
 		user.LastAccessAt = time.Now()
-		_ = p.saveUser(user)
+		p.saveUserOrLog(user)
 		return results, nil
 	}
 
@@ -681,7 +681,7 @@ func (p *PanlianPlugin) searchWithUser(client *http.Client, user *User, keyword 
 	if user.EncryptedPassword == "" || user.Username == "" {
 		user.Status = "expired"
 		user.Cookie = ""
-		_ = p.saveUser(user)
+		p.saveUserOrLog(user)
 		return nil, err
 	}
 
@@ -1436,7 +1436,7 @@ func (p *PanlianPlugin) reloginUser(user *User) error {
 	if err != nil {
 		user.Status = "expired"
 		user.Cookie = ""
-		_ = p.saveUser(user)
+		p.saveUserOrLog(user)
 		return err
 	}
 
@@ -1498,10 +1498,10 @@ func (p *PanlianPlugin) handleGetStatus(c *gin.Context, hash string) {
 			CreatedAt:    time.Now(),
 			LastAccessAt: time.Now(),
 		}
-		_ = p.saveUser(user)
+		p.saveUserOrLog(user)
 	} else {
 		user.LastAccessAt = time.Now()
-		_ = p.saveUser(user)
+		p.saveUserOrLog(user)
 	}
 
 	loggedIn := user.Status == "active" && user.Cookie != ""
@@ -2183,4 +2183,16 @@ func (p *PanlianPlugin) decryptPassword(encrypted string) (string, error) {
 		return "", err
 	}
 	return string(plaintext), nil
+}
+
+// saveUserOrLog 保存用户状态，失败时记录下来。
+//
+// 原先这几处都是 _ = p.saveUser(user)：内存状态已经更新，当前进程一切正常，
+// 但持久化失败时更改会在重启后丢失——新登录的用户会变回 pending、relogin 拿到的
+// cookie 会消失——而且没有任何线索。搜索本身已经成功，没法把错误回传给调用方，
+// 所以至少要让它在日志里可见。
+func (p *PanlianPlugin) saveUserOrLog(user *User) {
+	if err := p.saveUser(user); err != nil {
+		fmt.Printf("[PANLIAN] 保存用户状态失败（重启后可能丢失登录态）: %v\n", err)
+	}
 }
