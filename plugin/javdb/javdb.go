@@ -279,59 +279,70 @@ func (p *JavdbPlugin) doRequestWithRetry(req *http.Request, client *http.Client)
 
 // doRequestWithRateLimitRetry 带429重试机制的HTTP请求
 func (p *JavdbPlugin) doRequestWithRateLimitRetry(req *http.Request, client *http.Client) (*http.Response, error) {
-	var lastErr error
+	var resp *http.Response
+	var giveUpErr error
 
-	for attempt := 0; attempt <= MaxRetryOnRateLimit; attempt++ {
-		if attempt > 0 {
-			// 随机延迟，避免同时重试造成更大压力
+	// 重试逻辑收敛到 util.DoWithRetry。这处语义与其它插件都不同，逐项对齐：
+	// - **只在 429 时重试**：非 429（含 5xx）一律直接返回该响应，由调用方判断；
+	// - 退避是**随机区间**（MinRetryDelay~MaxRetryDelay 秒），故意打散重试时刻避免加压
+	//   ——用 DelayFunc 表达，倍率退避在这里是错的；
+	// - 次数是 MaxRetryOnRateLimit+1（原循环条件 attempt <= MaxRetryOnRateLimit）；
+	// - 重试用尽时置 rateLimited 标志并返回带原因的专用错误。
+	// 注意：MaxRetryOnRateLimit 默认为 0，此时 Attempts=1，第 0 次即命中"放弃"分支，
+	// 与原实现"设为 0 则不重试"一致。
+	err := util.DoWithRetry(util.RetryConfig{
+		Attempts: MaxRetryOnRateLimit + 1,
+		DelayFunc: func(int) time.Duration {
 			delaySeconds := rand.Intn(MaxRetryDelay-MinRetryDelay+1) + MinRetryDelay
+			return time.Duration(delaySeconds) * time.Second
+		},
+		OnRetry: func(attempt int, _ error, wait time.Duration) {
 			if p.debugMode {
-				log.Printf("[JAVDB] 429重试 %d/%d，随机延迟 %d 秒", attempt, MaxRetryOnRateLimit, delaySeconds)
+				log.Printf("[JAVDB] 429重试 %d/%d，随机延迟 %d 秒", attempt+1, MaxRetryOnRateLimit, int(wait.Seconds()))
 			}
-			time.Sleep(time.Duration(delaySeconds) * time.Second)
-		}
-
-		// 克隆请求避免并发问题
-		reqClone := req.Clone(req.Context())
-
-		resp, err := client.Do(reqClone)
+		},
+	}, func(attempt int) error {
+		r, err := client.Do(req.Clone(req.Context()))
 		if err != nil {
-			lastErr = err
-			if resp != nil {
-				resp.Body.Close()
+			if r != nil {
+				r.Body.Close()
 			}
-			continue
+			return err
 		}
 
-		// 如果不是429，直接返回（无论成功还是其他错误）
-		if resp.StatusCode != 429 {
-			return resp, nil
+		// 非 429 直接返回（无论成功还是其它错误）
+		if r.StatusCode != 429 {
+			resp = r
+			return nil
 		}
 
-		// 遇到429
 		atomic.AddInt32(&p.rateLimitCount, 1)
 		if p.debugMode {
 			log.Printf("[JAVDB] 遇到429限流，尝试 %d/%d", attempt+1, MaxRetryOnRateLimit+1)
 		}
 
-		// 如果不允许重试或已达到最大重试次数
 		if MaxRetryOnRateLimit == 0 || attempt >= MaxRetryOnRateLimit {
 			atomic.StoreInt32(&p.rateLimited, 1)
-			resp.Body.Close()
-			return nil, fmt.Errorf("[%s] 429限流，%s", p.Name(),
-				func() string {
-					if MaxRetryOnRateLimit == 0 {
-						return "不重试"
-					}
-					return fmt.Sprintf("重试%d次后仍然限流", MaxRetryOnRateLimit)
-				}())
+			r.Body.Close()
+			reason := "不重试"
+			if MaxRetryOnRateLimit != 0 {
+				reason = fmt.Sprintf("重试%d次后仍然限流", MaxRetryOnRateLimit)
+			}
+			giveUpErr = fmt.Errorf("[%s] 429限流，%s", p.Name(), reason)
+			return giveUpErr
 		}
 
-		resp.Body.Close()
-		lastErr = fmt.Errorf("429 Too Many Requests")
+		r.Body.Close()
+		return fmt.Errorf("429 Too Many Requests")
+	})
+	if err != nil {
+		// 放弃重试时的专用错误优先返回：它带限流原因，比笼统的包装更有用
+		if giveUpErr != nil {
+			return nil, giveUpErr
+		}
+		return nil, err
 	}
-
-	return nil, lastErr
+	return resp, nil
 }
 
 // parseSearchResults 解析搜索结果HTML
