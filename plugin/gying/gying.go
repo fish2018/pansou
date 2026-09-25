@@ -2649,9 +2649,9 @@ func (p *GyingPlugin) fetchAllDetails(searchData *SearchData, scraper *cloudscra
 			mu.Unlock()
 
 			// 检查标题是否包含搜索关键词
-			if index >= len(searchData.L.Title) {
+			if !searchData.hasAlignedIndex(index) {
 				if DebugLog {
-					fmt.Printf("[Gying]   [%d/%d] ⏭️  跳过: 索引超出标题数组范围\n",
+					fmt.Printf("[Gying]   [%d/%d] ⏭️  跳过: 索引超出标题/类型/ID 数组范围\n",
 						index+1, len(searchData.L.I))
 				}
 				return
@@ -2808,9 +2808,23 @@ func (p *GyingPlugin) fetchDetail(resourceID, resourceType string, scraper *clou
 	return &detail, nil
 }
 
+// hasAlignedIndex 判断三个必需数组是否都覆盖了 index。
+//
+// 上游返回的 l.title / l.d / l.i 是三个互相独立的 JSON 数组，长度并不保证一致。
+// 搜索循环的边界只由 l.i 决定，旧守卫又只校验了 l.title，于是 l.d 短一截时
+// searchData.L.D[index] 直接越界 panic；这段代码跑在 goroutine 里，而全仓
+// goroutine 都没有 recover，后果不是单次请求失败而是整个进程退出。
+// Year/Info/Daoyan/Zhuyan 这些可选数组本来就都写了 len 守卫，唯独 D 漏了。
+func (s *SearchData) hasAlignedIndex(index int) bool {
+	return index >= 0 &&
+		index < len(s.L.Title) &&
+		index < len(s.L.D) &&
+		index < len(s.L.I)
+}
+
 // buildResult 构建SearchResult
 func (p *GyingPlugin) buildResult(detail *DetailData, searchData *SearchData, index int) model.SearchResult {
-	if index >= len(searchData.L.Title) {
+	if !searchData.hasAlignedIndex(index) {
 		return model.SearchResult{}
 	}
 
