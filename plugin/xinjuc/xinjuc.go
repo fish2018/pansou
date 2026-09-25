@@ -539,7 +539,14 @@ func (p *XinjucPlugin) doRequestWithRetry(req *http.Request, client *http.Client
 		}
 
 		if resp != nil {
+			status := resp.StatusCode
 			resp.Body.Close()
+			if err == nil {
+				// Do 成功但状态码非 200。此前这里只执行 lastErr = err，
+				// err 为 nil 时会把 lastErr 清空，三次失败后仅报出
+				// "%!w(<nil>)"，真实状态码被丢掉、无法定位失败原因。
+				err = fmt.Errorf("HTTP 状态码 %d", status)
+			}
 		}
 		lastErr = err
 	}

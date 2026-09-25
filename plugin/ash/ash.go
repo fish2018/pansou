@@ -289,7 +289,13 @@ func (p *AshPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (
 
 		// 清理响应
 		if resp != nil {
+			status := resp.StatusCode
 			resp.Body.Close()
+			if err == nil {
+				// Do 成功但状态码非 200。此前 lastErr 会被置为 nil，
+				// 最终只报出"重试 N 次后仍然失败"，失败原因被丢掉。
+				err = fmt.Errorf("HTTP 状态码 %d", status)
+			}
 		}
 
 		lastErr = err
