@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -17,7 +16,9 @@ import (
 func TestAsyncSearchFallsBackToCacheOnError(t *testing.T) {
 	p := NewBaseAsyncPlugin("test-fallback", 1)
 	keyword := "仙逆"
-	cacheKey := fmt.Sprintf("%s:%s", p.name, keyword)
+	// 插件级缓存键的格式只有 pluginCacheKey 一处定义，这里跟着它走，
+	// 不再手拼，避免键格式一变测试就失配
+	cacheKey := pluginCacheKey(p, keyword, nil)
 
 	cached := []model.SearchResult{{UniqueID: "test-cached-1", Title: "缓存结果"}}
 	apiResponseCache.Store(cacheKey, cachedResponse{
@@ -46,7 +47,9 @@ func TestAsyncSearchFallsBackToCacheOnError(t *testing.T) {
 func TestAsyncSearchReportsErrorWithoutCache(t *testing.T) {
 	p := NewBaseAsyncPlugin("test-no-cache", 1)
 	keyword := "不存在的关键词"
-	cacheKey := fmt.Sprintf("%s:%s", p.name, keyword)
+	// 插件级缓存键的格式只有 pluginCacheKey 一处定义，这里跟着它走，
+	// 不再手拼，避免键格式一变测试就失配
+	cacheKey := pluginCacheKey(p, keyword, nil)
 	apiResponseCache.Delete(cacheKey)
 
 	failing := func(*http.Client, string, map[string]interface{}) ([]model.SearchResult, error) {

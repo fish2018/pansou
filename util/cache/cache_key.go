@@ -90,8 +90,11 @@ func GenerateTGCacheKey(keyword string, channels []string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// GeneratePluginCacheKey 为插件搜索生成缓存键
-func GeneratePluginCacheKey(keyword string, plugins []string) string {
+// GeneratePluginCacheKey 为插件搜索生成缓存键。
+//
+// extDigest 是影响结果形状的 ext 参数摘要（util.ExtDigest）。此前该键只有
+// keyword + plugins，而 ext 同样改变结果，于是 ext 不同的两个请求会共用一条缓存。
+func GeneratePluginCacheKey(keyword string, plugins []string, extDigest string) string {
 	// 关键词标准化
 	normalizedKeyword := strings.ToLower(strings.TrimSpace(keyword))
 
@@ -99,7 +102,7 @@ func GeneratePluginCacheKey(keyword string, plugins []string) string {
 	pluginsHash := getPluginsHash(plugins)
 
 	// 生成插件搜索特定的缓存键
-	keyStr := fmt.Sprintf("plugin:%s:%s", normalizedKeyword, pluginsHash)
+	keyStr := fmt.Sprintf("plugin:%s:%s:%s", normalizedKeyword, pluginsHash, extDigest)
 	hash := md5.Sum([]byte(keyStr))
 	return hex.EncodeToString(hash[:])
 }

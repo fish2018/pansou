@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"pansou/config"
 	"pansou/model"
+	"pansou/util"
 )
 
 // ============================================================
@@ -594,6 +595,22 @@ func (p *BaseAsyncPlugin) backgroundHTTPClient() *http.Client {
 // 第八部分：异步搜索核心逻辑
 // ============================================================
 
+// pluginCacheKey 生成插件级缓存键。
+//
+// 必须含插件名 + 关键词 + ext 摘要三者：
+//   - 插件名：各插件共用同一个 apiResponseCache，不带名字会串台
+//   - 关键词：同插件不同词的结果不同
+//   - ext 摘要：ext 是请求可控参数且确实改变结果形状（sdso 的 pages_per_type、
+//     cyg 的 per_page、miaoso 的 title_en）。原先只有 name:keyword，于是
+//     {"kw":"X","plugins":["sdso"]} 与再加 {"pages":5} 的请求会命中同一条缓存，
+//     后者直接拿到前者的少页结果。
+//
+// 抽成函数是为了让键格式只有一处定义：此前测试里自己手拼过 name:keyword，
+// 格式一改测试就失配。
+func pluginCacheKey(p *BaseAsyncPlugin, keyword string, ext map[string]interface{}) string {
+	return p.name + ":" + keyword + ":" + util.ExtDigest(ext)
+}
+
 // AsyncSearch 异步搜索基础方法
 func (p *BaseAsyncPlugin) AsyncSearch(
 	keyword string,
@@ -609,7 +626,10 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 	now := time.Now()
 
 	// 修改缓存键，确保包含插件名称
-	pluginSpecificCacheKey := fmt.Sprintf("%s:%s", p.name, keyword)
+	// 键必须含 ext 摘要：ext 是请求可控参数且确实改变结果形状
+	// （sdso 的 pages_per_type、cyg 的 per_page 等），原先只有 name:keyword，
+	// 两个 ext 不同、结果也不同的请求会共用一条缓存。
+	pluginSpecificCacheKey := fmt.Sprintf("%s:%s:%s", p.name, keyword, util.ExtDigest(ext))
 	forceRefresh := ext != nil && ext["refresh"] == true
 
 	// 检查缓存
@@ -892,7 +912,10 @@ func (p *BaseAsyncPlugin) AsyncSearchWithResult(
 	now := time.Now()
 
 	// 修改缓存键，确保包含插件名称
-	pluginSpecificCacheKey := fmt.Sprintf("%s:%s", p.name, keyword)
+	// 键必须含 ext 摘要：ext 是请求可控参数且确实改变结果形状
+	// （sdso 的 pages_per_type、cyg 的 per_page 等），原先只有 name:keyword，
+	// 两个 ext 不同、结果也不同的请求会共用一条缓存。
+	pluginSpecificCacheKey := fmt.Sprintf("%s:%s:%s", p.name, keyword, util.ExtDigest(ext))
 	forceRefresh := ext != nil && ext["refresh"] == true
 
 	// 检查缓存

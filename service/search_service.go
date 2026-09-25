@@ -1427,7 +1427,7 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 	}
 
 	// 生成缓存键
-	cacheKey := cache.GeneratePluginCacheKey(keyword, plugins)
+	cacheKey := cache.GeneratePluginCacheKey(keyword, plugins, util.ExtDigest(ext))
 
 	// 如果未启用强制刷新，尝试从缓存获取结果
 	if !forceRefresh && cacheInitialized && config.AppConfig.CacheEnabled {
