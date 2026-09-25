@@ -2,6 +2,7 @@ package util
 
 import (
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -157,5 +158,68 @@ func TestRetryDelayFuncCanExpressNoBackoff(t *testing.T) {
 		func(int) error { return errAlways })
 	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
 		t.Errorf("零延迟重试不该等待，耗时 %v", elapsed)
+	}
+}
+
+// AbortError 让"重试没有意义"的错误立即停止：不等待、不再试，且不被包装成"重试 N 次后仍失败"。
+func TestDoWithRetryAbortsImmediately(t *testing.T) {
+	sentinel := errors.New("登录失效")
+	var calls int32
+	var retryWaits []time.Duration
+
+	start := time.Now()
+	err := DoWithRetry(RetryConfig{
+		Attempts:  5,
+		BaseDelay: 500 * time.Millisecond,
+		OnRetry:   func(_ int, _ error, wait time.Duration) { retryWaits = append(retryWaits, wait) },
+	}, func(int) error {
+		atomic.AddInt32(&calls, 1)
+		return Abort(sentinel)
+	})
+	elapsed := time.Since(start)
+
+	if calls != 1 {
+		t.Errorf("中止后不该再试，实际调用 %d 次", calls)
+	}
+	if len(retryWaits) != 0 {
+		t.Errorf("中止不该触发重试回调（即不该等待），实际 %d 次", len(retryWaits))
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("中止应立即返回，实际耗时 %v", elapsed)
+	}
+	// 原始错误必须透出，且能判定"这是中止"
+	if !errors.Is(err, sentinel) {
+		t.Errorf("原始错误链丢失: %v", err)
+	}
+	if !errors.Is(err, ErrAborted) {
+		t.Errorf("应可用 errors.Is(err, ErrAborted) 判定中止: %v", err)
+	}
+	if strings.Contains(err.Error(), "重试 5 次后仍失败") {
+		t.Errorf("中止不该被包装成重试耗尽: %v", err)
+	}
+}
+
+// 中止只针对被标记的错误；普通错误仍按次数重试。
+func TestDoWithRetryAbortDoesNotAffectNormalErrors(t *testing.T) {
+	var calls int32
+	err := DoWithRetry(RetryConfig{Attempts: 3, BaseDelay: time.Millisecond}, func(attempt int) error {
+		atomic.AddInt32(&calls, 1)
+		if attempt == 1 {
+			return Abort(errors.New("第二次不行就放弃"))
+		}
+		return errors.New("普通失败")
+	})
+	if calls != 2 {
+		t.Errorf("应在第 2 次中止，实际调用 %d 次", calls)
+	}
+	if err == nil || !errors.Is(err, ErrAborted) {
+		t.Errorf("应返回中止错误: %v", err)
+	}
+}
+
+// Abort(nil) 必须是 nil，否则会把"成功"变成中止。
+func TestAbortNilIsNil(t *testing.T) {
+	if Abort(nil) != nil {
+		t.Error("Abort(nil) 必须返回 nil")
 	}
 }

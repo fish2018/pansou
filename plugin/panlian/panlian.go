@@ -1267,14 +1267,25 @@ func (p *PanlianPlugin) doJSONGET(client *http.Client, cookie string, path strin
 		targetURL += "?" + values.Encode()
 	}
 
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	var ok bool
+
+	// 重试逻辑收敛到 util.DoWithRetry。这处有两类"重试没有意义"的错误，用 util.Abort 中止：
+	// 登录失效（cookie 过期，再试还是失效）与响应格式不对（再试还是不对）。
+	// 退避是**线性**的（(attempt+1) × 200ms），用 DelayFunc 原样表达。
+	err := util.DoWithRetry(util.RetryConfig{
+		Attempts: 3,
+		DelayFunc: func(attempt int) time.Duration {
+			return time.Duration(attempt+1) * 200 * time.Millisecond
+		},
+	}, func(_ int) error {
 		ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+		defer cancel()
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 		if err != nil {
-			cancel()
-			return err
+			return util.Abort(err) // 建请求就失败，重试没意义
 		}
+
 		req.Header.Set("User-Agent", browserUserAgent())
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
 		req.Header.Set("Accept", "application/json, text/plain, */*")
@@ -1287,38 +1298,35 @@ func (p *PanlianPlugin) doJSONGET(client *http.Client, cookie string, path strin
 
 		resp, err := client.Do(req)
 		if err != nil {
-			cancel()
-			lastErr = err
-			time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
-			continue
+			return err
 		}
-
 		body, readErr := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		resp.Body.Close()
-		cancel()
 		if readErr != nil {
-			lastErr = readErr
-			time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
-			continue
+			return readErr
 		}
 		if resp.StatusCode != http.StatusOK {
 			if resp.StatusCode == http.StatusUnauthorized || bytes.Contains(bytes.ToLower(body), []byte("请先登录")) || bytes.Contains(bytes.ToLower(body), []byte("admin_auth_required")) {
-				return fmt.Errorf("%w: HTTP %d", errLoginRequired, resp.StatusCode)
+				return util.Abort(fmt.Errorf("%w: HTTP %d", errLoginRequired, resp.StatusCode))
 			}
-			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
-			time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
-			continue
+			return fmt.Errorf("HTTP %d", resp.StatusCode)
 		}
 		if err := json.Unmarshal(body, out); err != nil {
 			if bytes.Contains(body, []byte("请先登录")) || bytes.Contains(body, []byte("login")) {
-				return fmt.Errorf("%w: %s", errLoginRequired, string(body))
+				return util.Abort(fmt.Errorf("%w: %s", errLoginRequired, string(body)))
 			}
-			return fmt.Errorf("解析接口响应失败: %w", err)
+			return util.Abort(fmt.Errorf("解析接口响应失败: %w", err))
 		}
+		ok = true
 		return nil
+	})
+	if err != nil {
+		return err
 	}
-
-	return lastErr
+	if !ok {
+		return fmt.Errorf("请求未成功")
+	}
+	return nil
 }
 
 func (p *PanlianPlugin) doJSONPOST(client *http.Client, cookie string, path string, payload []byte, out interface{}) error {

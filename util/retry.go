@@ -1,10 +1,38 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"time"
 )
+
+// AbortError 包住一个"重试没有意义"的错误，让 DoWithRetry 立即停止而不是把它重试掉。
+//
+// 为什么需要它：仓里的重试并不都是"任何失败都值得再来一次"。例如 4xx（目标明确拒绝）、
+// 登录失效（cookie 过期）、响应格式不对（再试还会不对）——这些继续重试只是白等。
+// 没有这个信号时，这些站点无法收敛到组件，只能各自保留一份循环。
+//
+// 用法：return util.Abort(fmt.Errorf("..."))；判定用 errors.Is(err, util.ErrAborted)
+// 或直接看 DoWithRetry 的返回值——它会原样透出被包住的错误。
+type abortError struct{ err error }
+
+func (e *abortError) Error() string { return e.err.Error() }
+func (e *abortError) Unwrap() error { return e.err }
+
+// ErrAborted 是 AbortError 的哨兵，便于上层用 errors.Is 判定"这是中止而非重试耗尽"。
+var ErrAborted = errors.New("重试被中止")
+
+// Is 让 errors.Is(err, ErrAborted) 对任意 AbortError 成立。
+func (e *abortError) Is(target error) bool { return target == ErrAborted }
+
+// Abort 把 err 标记为"不再重试"。err 为 nil 时返回 nil。
+func Abort(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &abortError{err: err}
+}
 
 // RetryConfig 描述一次重试策略。
 type RetryConfig struct {
@@ -50,6 +78,10 @@ func DoWithRetry(cfg RetryConfig, fn func(attempt int) error) error {
 	for attempt := 0; attempt < attempts; attempt++ {
 		if err := fn(attempt); err != nil {
 			lastErr = err
+			// 被标记为"重试没有意义"的错误立即停止，不等待、不再试
+			if errors.Is(err, ErrAborted) {
+				break
+			}
 			if attempt == attempts-1 {
 				break // 最后一次失败不再等待
 			}
@@ -67,6 +99,10 @@ func DoWithRetry(cfg RetryConfig, fn func(attempt int) error) error {
 		// attempts>=1 时循环必然至少跑一次，走到这里说明 fn 是 nil——当作配置错误报出来，
 		// 而不是静默地"成功"。
 		return fmt.Errorf("重试未执行：fn 为空")
+	}
+	if errors.Is(lastErr, ErrAborted) {
+		// 主动中止：不要包装成"重试 N 次后仍失败"，那是误导——它第一次就决定不重试了
+		return lastErr
 	}
 	if attempts > 1 {
 		return fmt.Errorf("重试 %d 次后仍失败: %w", attempts, lastErr)
