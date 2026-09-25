@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"pansou/config"
 	"time"
 
 	"pansou/model"
@@ -47,6 +48,15 @@ func NewCacheWriteIntegration(mainCache *cache.EnhancedTwoLevelCache) (*CacheWri
 // createMainCacheUpdater 创建主缓存更新函数
 func (c *CacheWriteIntegration) createMainCacheUpdater() func(string, []byte, time.Duration) error {
 	return func(key string, data []byte, ttl time.Duration) error {
+		// 同 Service 侧的回调：这里同样只有字节、没有内容语义，写的是批量管理器的
+		// 快照与 TTL。打印 key/TTL/字节数，便于对照谁最后写了这个键、写的是哪一版。
+		k := key
+		if len(k) > 8 {
+			k = k[:8]
+		}
+		if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
+			fmt.Printf("[缓存写入集成] 落盘 %s... | %d 字节 | TTL: %.0f分钟\n", k, len(data), ttl.Minutes())
+		}
 		// 调用现有的缓存系统进行实际写入
 		return c.mainCache.SetBothLevels(key, data, ttl)
 	}

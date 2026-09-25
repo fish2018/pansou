@@ -21,6 +21,11 @@ services:
       - ASYNC_MAX_BACKGROUND_WORKERS=20
       - ASYNC_MAX_BACKGROUND_TASKS=100
       - ASYNC_CACHE_TTL_HOURS=1
+      # 插件批任务的软截止（请求会一直等它）。默认取 PLUGIN_TIMEOUT=30 秒，实测首轮因此固定耗时 30.1~30.3 秒；
+      # 压到 8 秒后，凡人修仙传/仙逆/遮天三个关键词首轮均为 8.2 秒，结果条数 821/457/1877（30 秒档为 821/452/1851），
+      # 即零损失换取每次搜索少等 22 秒。超时的插件本身是卡住的那些，其结果仍会经后台补齐进入缓存。
+      # 这是请求路径的上限，与插件后台 HTTP 超时（PLUGIN_TIMEOUT）是两件事，不要一起降。
+      - PLUGIN_BATCH_TIMEOUT_SECONDS=8
       # 认证配置（可选）
       # - AUTH_ENABLED=true
       # - AUTH_USERS=admin:admin123,user:pass456

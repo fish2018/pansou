@@ -220,6 +220,13 @@ func NewSearchService(pluginManager *plugin.PluginManager) *SearchService {
 	// 确保缓存写入管理器设置了主缓存更新函数
 	if globalCacheWriteManager != nil && enhancedTwoLevelCache != nil {
 		globalCacheWriteManager.SetMainCacheUpdater(func(key string, data []byte, ttl time.Duration) error {
+			// 这个回调只拿到字节，不了解内容：它带着写入管理器的快照与 TTL 直接落盘，
+			// 因此必须把 key/TTL/字节数打出来，否则"缓存命中的条数与最后一次完整写入不符"
+			// 这类现象无从追溯。
+			if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
+				fmt.Printf("[缓存写入管理器] 落盘 %s... | %d 字节 | TTL: %.0f分钟\n",
+					keyPrefix(key), len(data), ttl.Minutes())
+			}
 			return enhancedTwoLevelCache.SetBothLevels(key, data, ttl)
 		})
 	}
@@ -227,6 +234,14 @@ func NewSearchService(pluginManager *plugin.PluginManager) *SearchService {
 	return &SearchService{
 		pluginManager: pluginManager,
 	}
+}
+
+// keyPrefix 只取键前缀用于日志：完整键很长，日志里逐条打印会淹没时序。
+func keyPrefix(key string) string {
+	if len(key) > 8 {
+		return key[:8]
+	}
+	return key
 }
 
 // writeSearchCacheByCompleteness 按本轮完整度决定是否写主缓存、以及写多长 TTL，然后写入。
@@ -321,8 +336,8 @@ func mergeIntoMainCache(mainCache *cache.EnhancedTwoLevelCache, key string, newR
 			finalResults = mergeSearchResults(existingResults, newResults)
 			if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
 				if keyword != "" {
-					fmt.Printf("🔄 [%s:%s] 更新缓存| 原有: %d + 新增: %d = 合并后: %d\n",
-						pluginName, keyword, len(existingResults), len(newResults), len(finalResults))
+					fmt.Printf("🔄 [%s:%s] 更新缓存| 原有: %d + 新增: %d = 合并后: %d | TTL: %.0f分钟\n",
+						pluginName, keyword, len(existingResults), len(newResults), len(finalResults), ttl.Minutes())
 				}
 			}
 		} else {
