@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"pansou/model"
 	"pansou/plugin"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -1252,44 +1253,58 @@ func (p *PantaAsyncPlugin) recordResponseTime(d time.Duration) {
 // doRequestWithRetry 发送HTTP请求，带重试机制
 func (p *PantaAsyncPlugin) doRequestWithRetry(req *http.Request, client *http.Client) (*http.Response, error) {
 	var resp *http.Response
-	var err error
-	var startTime time.Time
 
-	// 重试循环
-	for retry := 0; retry <= maxRetries; retry++ {
-		// 如果不是第一次尝试，则等待一段时间
-		if retry > 0 {
-			// 使用指数退避算法计算等待时间
-			backoffTime := time.Duration(min(backoffBase*1<<uint(retry-1), maxBackoff)) * time.Millisecond
-			time.Sleep(backoffTime)
-
+	// 重试逻辑收敛到 util.DoWithRetry。特点：
+	// - 退避是**指数**的：第 k 次重试前等 min(backoffBase × 2^(k-1), maxBackoff)，
+	//   用 DelayFunc 显式表达（不依赖组件默认，也避免引入抖动）；
+	// - 只对**5xx 与传输错误**重试，其它状态码直接返回；
+	// - 每次重试都克隆请求（原请求可能已被关闭）；
+	// - 每次尝试都记录响应耗时（recordResponseTime），不能因为收敛而丢掉。
+	//
+	// 既有契约要保住：重试用尽时若手上有一个 5xx 响应，就把**该响应连同 nil error**
+	// 交给调用方（由调用方按状态码处理），而不是变成 error——原先的循环正是这样返回的。
+	err := util.DoWithRetry(util.RetryConfig{
+		Attempts: maxRetries + 1,
+		DelayFunc: func(attempt int) time.Duration {
+			return time.Duration(min(backoffBase*1<<uint(attempt), maxBackoff)) * time.Millisecond
+		},
+	}, func(attempt int) error {
+		if attempt > 0 {
 			// 创建新的请求，因为原请求可能已经被关闭
-			newReq := req.Clone(req.Context())
-			req = newReq
+			req = req.Clone(req.Context())
 		}
 
-		// 记录开始时间
-		startTime = time.Now()
+		startTime := time.Now()
+		r, doErr := client.Do(req)
+		p.recordResponseTime(time.Since(startTime))
 
-		// 发送请求
-		resp, err = client.Do(req)
-
-		// 记录响应时间
-		responseTime := time.Since(startTime)
-		p.recordResponseTime(responseTime)
-
-		// 如果请求成功，或者是不可重试的错误，则退出重试循环
-		if err == nil && resp.StatusCode < 500 {
-			break
+		if doErr == nil && r.StatusCode < 500 {
+			resp = r
+			return nil
 		}
-
-		// 如果请求失败，但响应不为nil，则关闭响应体
+		if doErr != nil {
+			if r != nil {
+				r.Body.Close()
+			}
+			return doErr
+		}
+		// 5xx：保留最后一个响应，交给下面的收尾处理
+		if resp != nil && resp != r {
+			resp.Body.Close()
+		}
+		resp = r
+		return fmt.Errorf("HTTP %d", r.StatusCode)
+	})
+	if err != nil {
+		if resp != nil && resp.StatusCode >= 500 {
+			return resp, nil
+		}
 		if resp != nil {
 			resp.Body.Close()
 		}
+		return nil, err
 	}
-
-	return resp, err
+	return resp, nil
 }
 
 // max 返回两个整数中的较大值

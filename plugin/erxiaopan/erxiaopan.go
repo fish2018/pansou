@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"slices"
 	"strings"
@@ -573,20 +574,31 @@ func normalizeShareLink(raw, nearby string) (model.Link, bool) {
 }
 
 func (p *ErxiaopanPlugin) fetchDocument(ctx context.Context, client *http.Client, target, referer string) (*goquery.Document, error) {
-	var lastErr error
-	for attempt := 0; attempt < requestAttempts; attempt++ {
+	var doc *goquery.Document
+
+	// 重试逻辑收敛到 util.DoWithRetry。这处有三个特点，逐一保住：
+	// - 等待**可被请求上下文取消**（原实现是 select ctx.Done + time.After，不是 time.Sleep），
+	//   所以等待留在闭包内、组件侧不等待；
+	// - 退避是**线性**的：第 k 次尝试前等 k × retryBackoff；
+	// - **4xx 与"页面超限"不该重试**：4xx 是目标明确拒绝（429 除外），超限页再取还是超限，
+	//   用 util.Abort 表达（原先靠 break / return 提前跳出）。
+	err := util.DoWithRetry(util.RetryConfig{
+		Attempts:  requestAttempts,
+		DelayFunc: func(int) time.Duration { return 0 }, // 等待全部在闭包内完成
+	}, func(attempt int) error {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return ctx.Err()
 			// 站点域名走 share-dns 轮换（TTL 1 秒），解析失败是常态而非异常，
 			// 每次重试都会重新建连并重新解析，退避重试比直接放弃更可靠。
 			case <-time.After(time.Duration(attempt) * retryBackoff):
 			}
 		}
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 		if err != nil {
-			return nil, fmt.Errorf("[%s] 创建请求失败: %w", p.Name(), err)
+			return util.Abort(fmt.Errorf("[%s] 创建请求失败: %w", p.Name(), err))
 		}
 		req.Header.Set("User-Agent", userAgent)
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -594,37 +606,38 @@ func (p *ErxiaopanPlugin) fetchDocument(ctx context.Context, client *http.Client
 		req.Header.Set("Referer", referer)
 		resp, err := client.Do(req)
 		if err != nil {
-			lastErr = err
-			continue
+			return err
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 		resp.Body.Close()
 		if readErr != nil {
-			lastErr = readErr
-			continue
+			return readErr
 		}
 		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, target)
+			statusErr := fmt.Errorf("HTTP %d: %s", resp.StatusCode, target)
 			// 4xx 是目标明确拒绝，重试没有意义；429 除外。
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
-				break
+				return util.Abort(statusErr)
 			}
-			continue
+			return statusErr
 		}
 		if len(body) > maxResponseBytes {
-			return nil, fmt.Errorf("[%s] 页面超过大小限制: %s", p.Name(), target)
+			return util.Abort(fmt.Errorf("[%s] 页面超过大小限制: %s", p.Name(), target))
 		}
-		doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
-		if err != nil {
-			lastErr = err
-			continue
+		parsed, parseErr := goquery.NewDocumentFromReader(bytes.NewReader(body))
+		if parseErr != nil {
+			return parseErr
 		}
-		return doc, nil
+		doc = parsed
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("[%s] 请求页面失败: %w", p.Name(), err)
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("请求未执行")
+	if doc == nil {
+		return nil, fmt.Errorf("[%s] 请求页面失败: 请求未执行", p.Name())
 	}
-	return nil, fmt.Errorf("[%s] 请求页面失败: %w", p.Name(), lastErr)
+	return doc, nil
 }
 
 func (p *ErxiaopanPlugin) internalURL(raw string, pathPattern *regexp.Regexp) string {

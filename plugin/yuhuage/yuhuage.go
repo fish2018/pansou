@@ -240,10 +240,22 @@ func (p *YuhuagePlugin) fetchDetailLinks(detailURL string) []model.Link {
 
 	client := &http.Client{Timeout: 15 * time.Second}
 
-	for retry := 0; retry <= MaxRetryCount; retry++ {
+	var links []model.Link
+
+	// 重试逻辑收敛到 util.DoWithRetry。特点是线性的**秒级**退避：第 k 次重试前等 k 秒
+	// （原实现是 time.Sleep(time.Duration(retry+1) * time.Second)，且最后一次不再等待）。
+	//
+	// 既有行为保持：重试用尽后**直接返回 nil 而不报错**（详情页拿不到就当作没有链接，
+	// 由上层决定），所以这里把组件的错误吞掉——这是原实现的选择，不是疏忽。
+	err := util.DoWithRetry(util.RetryConfig{
+		Attempts: MaxRetryCount + 1,
+		DelayFunc: func(attempt int) time.Duration {
+			return time.Duration(attempt+1) * time.Second
+		},
+	}, func(_ int) error {
 		req, err := http.NewRequest("GET", detailURL, nil)
 		if err != nil {
-			continue
+			return err
 		}
 
 		req.Header.Set("User-Agent", UserAgent)
@@ -251,38 +263,25 @@ func (p *YuhuagePlugin) fetchDetailLinks(detailURL string) []model.Link {
 
 		resp, err := client.Do(req)
 		if err != nil {
-			if retry < MaxRetryCount {
-				time.Sleep(time.Duration(retry+1) * time.Second)
-				continue
-			}
-			break
+			return err
 		}
 
 		if resp.StatusCode != 200 {
 			resp.Body.Close()
-			if retry < MaxRetryCount {
-				time.Sleep(time.Duration(retry+1) * time.Second)
-				continue
-			}
-			break
+			return fmt.Errorf("HTTP %d", resp.StatusCode)
 		}
 
 		body, err := util.ReadAllLimited(resp.Body, util.MaxUpstreamResponseBytes)
 		resp.Body.Close()
-
 		if err != nil {
-			if retry < MaxRetryCount {
-				time.Sleep(time.Duration(retry+1) * time.Second)
-				continue
-			}
-			break
+			return err
 		}
 
-		links := p.parseDetailLinks(string(body))
+		parsed := p.parseDetailLinks(string(body))
 
 		// 缓存结果
-		if len(links) > 0 {
-			p.detailCache.Store(detailURL, links)
+		if len(parsed) > 0 {
+			p.detailCache.Store(detailURL, parsed)
 			// 设置缓存过期
 			go func() {
 				time.Sleep(p.cacheTTL)
@@ -290,10 +289,13 @@ func (p *YuhuagePlugin) fetchDetailLinks(detailURL string) []model.Link {
 			}()
 		}
 
-		return links
+		links = parsed
+		return nil
+	})
+	if err != nil {
+		return nil
 	}
-
-	return nil
+	return links
 }
 
 // parseDetailLinks 解析详情页链接
