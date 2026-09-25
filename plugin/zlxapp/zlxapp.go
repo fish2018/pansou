@@ -153,18 +153,23 @@ func doRequestWithRetry(client *http.Client, req *http.Request) (*http.Response,
 	// 已知差异（如实记录）：上下文取消后，组件仍会把剩余尝试次数走完，只是每轮立即失败；
 	// 原实现是立刻返回。差别只体现在取消瞬间，且不再有等待。
 	err := util.DoWithRetry(util.RetryConfig{
-		Attempts:  maxRetries + 1,
-		DelayFunc: func(int) time.Duration { return 0 }, // 等待全部在闭包内完成
-	}, func(attempt int) error {
-		if attempt > 0 {
-			timer := time.NewTimer(time.Duration(attempt) * 200 * time.Millisecond)
+		Attempts: maxRetries + 1,
+		// 线性退避：第 k 次尝试前等 k × 200ms（DelayFunc 在失败后调用，故为 attempt+1）
+		DelayFunc: func(attempt int) time.Duration {
+			return time.Duration(attempt+1) * 200 * time.Millisecond
+		},
+		// 等待必须可被请求上下文取消（原实现是 NewTimer + select ctx.Done，不是 time.Sleep）
+		WaitFunc: func(wait time.Duration) error {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
 			select {
 			case <-timer.C:
+				return nil
 			case <-req.Context().Done():
-				timer.Stop()
 				return req.Context().Err()
 			}
-		}
+		},
+	}, func(int) error {
 		if err := req.Context().Err(); err != nil {
 			return err
 		}

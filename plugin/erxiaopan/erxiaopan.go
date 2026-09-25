@@ -578,24 +578,28 @@ func (p *ErxiaopanPlugin) fetchDocument(ctx context.Context, client *http.Client
 
 	// 重试逻辑收敛到 util.DoWithRetry。这处有三个特点，逐一保住：
 	// - 等待**可被请求上下文取消**（原实现是 select ctx.Done + time.After，不是 time.Sleep），
-	//   所以等待留在闭包内、组件侧不等待；
+	//   用 WaitFunc 表达；
 	// - 退避是**线性**的：第 k 次尝试前等 k × retryBackoff；
 	// - **4xx 与"页面超限"不该重试**：4xx 是目标明确拒绝（429 除外），超限页再取还是超限，
 	//   用 util.Abort 表达（原先靠 break / return 提前跳出）。
 	err := util.DoWithRetry(util.RetryConfig{
-		Attempts:  requestAttempts,
-		DelayFunc: func(int) time.Duration { return 0 }, // 等待全部在闭包内完成
-	}, func(attempt int) error {
-		if attempt > 0 {
+		Attempts: requestAttempts,
+		// 线性退避：第 k 次尝试前等 k × retryBackoff（DelayFunc 在失败后调用，故为 attempt+1）
+		DelayFunc: func(attempt int) time.Duration {
+			return time.Duration(attempt+1) * retryBackoff
+		},
+		// 等待可被上下文取消（原实现是 select ctx.Done + time.After，不是 time.Sleep）
+		WaitFunc: func(wait time.Duration) error {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
 			select {
+			case <-timer.C:
+				return nil
 			case <-ctx.Done():
 				return ctx.Err()
-			// 站点域名走 share-dns 轮换（TTL 1 秒），解析失败是常态而非异常，
-			// 每次重试都会重新建连并重新解析，退避重试比直接放弃更可靠。
-			case <-time.After(time.Duration(attempt) * retryBackoff):
 			}
-		}
-
+		},
+	}, func(int) error {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 		if err != nil {
 			return util.Abort(fmt.Errorf("[%s] 创建请求失败: %w", p.Name(), err))

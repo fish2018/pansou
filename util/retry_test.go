@@ -1,6 +1,7 @@
 package util
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync/atomic"
@@ -221,5 +222,120 @@ func TestDoWithRetryAbortDoesNotAffectNormalErrors(t *testing.T) {
 func TestAbortNilIsNil(t *testing.T) {
 	if Abort(nil) != nil {
 		t.Error("Abort(nil) 必须返回 nil")
+	}
+}
+
+// WaitFunc 收到组件算出的等待时长，并可在等待中中断重试。
+func TestDoWithRetryWaitFuncReceivesWaitAndCanAbort(t *testing.T) {
+	var waits []time.Duration
+	var calls int32
+
+	err := DoWithRetry(RetryConfig{
+		Attempts:   5,
+		BaseDelay:  100 * time.Millisecond,
+		Multiplier: 2,
+		WaitFunc: func(w time.Duration) error {
+			waits = append(waits, w)
+			if len(waits) == 2 {
+				return context.Canceled // 第二次等待时被中断
+			}
+			return nil
+		},
+	}, func(int) error {
+		atomic.AddInt32(&calls, 1)
+		return errors.New("一直失败")
+	})
+
+	if err == nil {
+		t.Fatal("中断后必须返回错误")
+	}
+	if len(waits) == 0 {
+		t.Fatal("WaitFunc 未被调用")
+	}
+	// 组件算出的等待应是倍率曲线：100ms、200ms、...
+	if waits[0] != 100*time.Millisecond {
+		t.Errorf("首个等待应为 100ms，实际 %v", waits[0])
+	}
+	if len(waits) >= 2 && waits[1] != 200*time.Millisecond {
+		t.Errorf("第二个等待应为 200ms，实际 %v", waits[1])
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("应透出中断原因，实际: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("中断后不该再尝试，实际 %d 次", got)
+	}
+	if strings.Contains(err.Error(), "重试 5 次后仍失败") {
+		t.Errorf("被中断不该被包装成重试耗尽: %v", err)
+	}
+}
+
+// 上下文取消的真实形态：等待期间 ctx 被取消 → 立即返回 ctx.Err()，不再尝试。
+func TestDoWithRetryWaitFuncHonoursContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls int32
+
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	err := DoWithRetry(RetryConfig{
+		Attempts:  10,
+		BaseDelay: 5 * time.Second, // 若无取消，这里会等 5 秒
+		WaitFunc: func(w time.Duration) error {
+			timer := time.NewTimer(w)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}, func(int) error {
+		atomic.AddInt32(&calls, 1)
+		return errors.New("一直失败")
+	})
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("应返回 context.Canceled，实际: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("取消后不该再尝试，实际 %d 次", got)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("取消应立即生效，实际等待 %v", elapsed)
+	}
+}
+
+// WaitFunc 返回 nil 时行为与默认等待一致（次数与顺序不受影响）。
+func TestDoWithRetryWaitFuncNilKeepsRetrying(t *testing.T) {
+	var calls int32
+	var waited []time.Duration
+	err := DoWithRetry(RetryConfig{
+		Attempts:  3,
+		BaseDelay: time.Millisecond,
+		WaitFunc: func(w time.Duration) error {
+			waited = append(waited, w)
+			return nil
+		},
+	}, func(attempt int) error {
+		atomic.AddInt32(&calls, 1)
+		if attempt == 2 {
+			return nil
+		}
+		return errors.New("失败")
+	})
+	if err != nil {
+		t.Fatalf("第三次成功应返回 nil: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("应尝试 3 次，实际 %d", calls)
+	}
+	if len(waited) != 2 {
+		t.Errorf("应在 2 次失败后各等待一次，实际 %d", len(waited))
 	}
 }

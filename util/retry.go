@@ -58,6 +58,26 @@ type RetryConfig struct {
 	DelayFunc func(attempt int) time.Duration
 	// OnRetry 在每次失败后、等待前调用（可为 nil），便于观测。
 	OnRetry func(attempt int, err error, wait time.Duration)
+
+	// WaitFunc 自定义"如何等待"，替代默认的 time.Sleep；返回非 nil 表示**立即停止重试**
+	// 并把该错误作为最终结果返回（不做"重试 N 次后仍失败"的包装——它不是重试耗尽，
+	// 而是被主动中断）。
+	//
+	// 存在的原因是原实现里有两处等的是**可被请求上下文取消**的等待（NewTimer + select
+	// ctx.Done），不是 time.Sleep。没有这个口子时，那两个站点只能把等待留在自己的闭包内、
+	// 组件侧 DelayFunc 返回 0——功能正确但形态特殊，也无法让取消语义在全仓统一。
+	//
+	//	WaitFunc: func(w time.Duration) error {
+	//		timer := time.NewTimer(w)
+	//		defer timer.Stop()
+	//		select {
+	//		case <-timer.C:
+	//			return nil
+	//		case <-ctx.Done():
+	//			return ctx.Err()
+	//		}
+	//	}
+	WaitFunc func(wait time.Duration) error
 }
 
 // DoWithRetry 反复执行 fn 直到它返回 nil 错误或尝试次数用尽。
@@ -89,7 +109,14 @@ func DoWithRetry(cfg RetryConfig, fn func(attempt int) error) error {
 			if cfg.OnRetry != nil {
 				cfg.OnRetry(attempt, err, wait)
 			}
-			time.Sleep(wait)
+			if cfg.WaitFunc != nil {
+				// 等待被中断（典型是上下文取消）：立即停止，不是重试耗尽
+				if waitErr := cfg.WaitFunc(wait); waitErr != nil {
+					return waitErr
+				}
+			} else if wait > 0 {
+				time.Sleep(wait)
+			}
 			continue
 		}
 		return nil
