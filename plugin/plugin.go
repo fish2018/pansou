@@ -114,6 +114,9 @@ var (
 	defaultMaxBackgroundWorkers = 20
 	defaultMaxBackgroundTasks   = 100
 
+	// 超时解析只在首次调用时打一行日志，便于确认配置是否生效
+	timeoutLogOnce sync.Once
+
 	// 缓存访问频率记录
 	cacheAccessCount = sync.Map{}
 
@@ -437,9 +440,10 @@ func recordCacheAccess(key string) {
 type BaseAsyncPlugin struct {
 	name               string
 	priority           int
-	client             *http.Client                                                          // 用于短超时的客户端
-	backgroundClient   *http.Client                                                          // 用于长超时的客户端
-	cacheTTL           time.Duration                                                         // 内存缓存有效期
+	client             *http.Client                                                          // 用于短超时的客户端（懒创建，见 GetClient）
+	backgroundClient   *http.Client                                                          // 用于长超时的客户端（懒创建）
+	clientOnce         sync.Once                                                             // 短超时客户端只建一次
+	backgroundOnce     sync.Once                                                             // 长超时客户端只建一次
 	mainCacheUpdater   func(string, []model.SearchResult, time.Duration, bool, string) error // 主缓存更新函数（支持IsFinal参数，接收原始数据，最后参数为关键词）
 	MainCacheKey       string                                                                // 主缓存键，导出字段
 	currentKeyword     string                                                                // 当前搜索的关键词，用于日志显示
@@ -455,28 +459,12 @@ func NewBaseAsyncPlugin(name string, priority int) *BaseAsyncPlugin {
 		initAsyncPlugin()
 	}
 
-	// 确定超时和缓存时间
-	responseTimeout := defaultAsyncResponseTimeout
-	processingTimeout := defaultPluginTimeout
-	cacheTTL := defaultCacheTTL
-
-	// 如果配置已初始化，则使用配置中的值
-	if config.AppConfig != nil {
-		responseTimeout = config.AppConfig.AsyncResponseTimeoutDur
-		processingTimeout = config.AppConfig.PluginTimeout
-		cacheTTL = time.Duration(config.AppConfig.AsyncCacheTTLHours) * time.Hour
-	}
-
+	// 超时与缓存有效期一律在调用时解析，不在这里读取：
+	// 插件是在各自包的 init() 里构造的，早于 main 中的 config.Init()，
+	// 此刻 config.AppConfig 还是 nil。见 pluginClientTimeouts。
 	return &BaseAsyncPlugin{
-		name:     name,
-		priority: priority,
-		client: &http.Client{
-			Timeout: responseTimeout,
-		},
-		backgroundClient: &http.Client{
-			Timeout: processingTimeout,
-		},
-		cacheTTL:           cacheTTL,
+		name:               name,
+		priority:           priority,
 		finalUpdateTracker: make(map[string]bool), // 初始化缓存更新追踪器
 		skipServiceFilter:  false,                 // 默认不跳过Service层过滤
 	}
@@ -489,28 +477,12 @@ func NewBaseAsyncPluginWithFilter(name string, priority int, skipServiceFilter b
 		initAsyncPlugin()
 	}
 
-	// 确定超时和缓存时间
-	responseTimeout := defaultAsyncResponseTimeout
-	processingTimeout := defaultPluginTimeout
-	cacheTTL := defaultCacheTTL
-
-	// 如果配置已初始化，则使用配置中的值
-	if config.AppConfig != nil {
-		responseTimeout = config.AppConfig.AsyncResponseTimeoutDur
-		processingTimeout = config.AppConfig.PluginTimeout
-		cacheTTL = time.Duration(config.AppConfig.AsyncCacheTTLHours) * time.Hour
-	}
-
+	// 超时与缓存有效期一律在调用时解析，不在这里读取：
+	// 插件是在各自包的 init() 里构造的，早于 main 中的 config.Init()，
+	// 此刻 config.AppConfig 还是 nil。见 pluginClientTimeouts。
 	return &BaseAsyncPlugin{
-		name:     name,
-		priority: priority,
-		client: &http.Client{
-			Timeout: responseTimeout,
-		},
-		backgroundClient: &http.Client{
-			Timeout: processingTimeout,
-		},
-		cacheTTL:           cacheTTL,
+		name:               name,
+		priority:           priority,
 		finalUpdateTracker: make(map[string]bool), // 初始化缓存更新追踪器
 		skipServiceFilter:  skipServiceFilter,     // 使用传入的过滤设置
 	}
@@ -550,9 +522,51 @@ func (p *BaseAsyncPlugin) SkipServiceFilter() bool {
 	return p.skipServiceFilter
 }
 
-// GetClient 返回短超时客户端
+// pluginClientTimeouts 在调用时解析插件客户端超时。
+//
+// 必须延后到调用时：插件在各自包的 init() 里构造，早于 main 中的
+// config.Init()，构造阶段读到的 config.AppConfig 恒为 nil。此前把超时写死在
+// 构造阶段，于是 ASYNC_RESPONSE_TIMEOUT / PLUGIN_TIMEOUT 一旦不是默认值就
+// 完全不生效（4s/30s 恰好等于硬编码默认值，所以默认部署看不出来）。
+func pluginClientTimeouts() (time.Duration, time.Duration) {
+	responseTimeout := defaultAsyncResponseTimeout
+	processingTimeout := defaultPluginTimeout
+	if config.AppConfig != nil {
+		responseTimeout = config.AppConfig.AsyncResponseTimeoutDur
+		processingTimeout = config.AppConfig.PluginTimeout
+	}
+	timeoutLogOnce.Do(func() {
+		fmt.Printf("[PLUGIN] 插件客户端超时按当前配置解析：响应 %v，处理 %v\n",
+			responseTimeout, processingTimeout)
+	})
+	return responseTimeout, processingTimeout
+}
+
+// getCacheTTL 与 pluginClientTimeouts 同理：缓存有效期也在调用时解析，
+// 避免 ASYNC_CACHE_TTL_HOURS 被构造阶段的默认值覆盖。
+func (p *BaseAsyncPlugin) getCacheTTL() time.Duration {
+	if config.AppConfig != nil {
+		return time.Duration(config.AppConfig.AsyncCacheTTLHours) * time.Hour
+	}
+	return defaultCacheTTL
+}
+
+// GetClient 返回短超时客户端（首次调用时按当前配置创建）
 func (p *BaseAsyncPlugin) GetClient() *http.Client {
+	p.clientOnce.Do(func() {
+		responseTimeout, _ := pluginClientTimeouts()
+		p.client = &http.Client{Timeout: responseTimeout}
+	})
 	return p.client
+}
+
+// backgroundHTTPClient 返回长超时客户端（首次调用时按当前配置创建）
+func (p *BaseAsyncPlugin) backgroundHTTPClient() *http.Client {
+	p.backgroundOnce.Do(func() {
+		_, processingTimeout := pluginClientTimeouts()
+		p.backgroundClient = &http.Client{Timeout: processingTimeout}
+	})
+	return p.backgroundClient
 }
 
 // ============================================================
@@ -583,12 +597,12 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 			cachedResult := cachedItems.(cachedResponse)
 
 			// 缓存完全有效（未过期且完整）
-			if time.Since(cachedResult.Timestamp) < p.cacheTTL && cachedResult.Complete {
+			if time.Since(cachedResult.Timestamp) < p.getCacheTTL() && cachedResult.Complete {
 				recordCacheHit()
 				recordCacheAccess(pluginSpecificCacheKey)
 
 				// 如果缓存接近过期（已用时间超过TTL的80%），在后台刷新缓存
-				if time.Since(cachedResult.Timestamp) > (p.cacheTTL * 4 / 5) {
+				if time.Since(cachedResult.Timestamp) > (p.getCacheTTL() * 4 / 5) {
 					go p.refreshCacheInBackground(keyword, pluginSpecificCacheKey, searchFunc, cachedResult, mainCacheKey, ext)
 				}
 
@@ -601,7 +615,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 				recordCacheAccess(pluginSpecificCacheKey)
 
 				// 标记为部分过期
-				if time.Since(cachedResult.Timestamp) >= p.cacheTTL {
+				if time.Since(cachedResult.Timestamp) >= p.getCacheTTL() {
 					// 在后台刷新缓存
 					go p.refreshCacheInBackground(keyword, pluginSpecificCacheKey, searchFunc, cachedResult, mainCacheKey, ext)
 
@@ -627,7 +641,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 		// 尝试获取工作槽
 		if !acquireWorkerSlot() {
 			// 工作池已满，使用快速响应客户端直接处理
-			results, err := searchFunc(p.client, keyword, ext)
+			results, err := searchFunc(p.GetClient(), keyword, ext)
 			if err != nil {
 				select {
 				case errorChan <- err:
@@ -658,7 +672,7 @@ func (p *BaseAsyncPlugin) AsyncSearch(
 		defer releaseWorkerSlot()
 
 		// 执行搜索
-		results, err := searchFunc(p.backgroundClient, keyword, ext)
+		results, err := searchFunc(p.backgroundHTTPClient(), keyword, ext)
 
 		// 检查是否已经响应
 		select {
@@ -866,12 +880,12 @@ func (p *BaseAsyncPlugin) AsyncSearchWithResult(
 			cachedResult := cachedItems.(cachedResponse)
 
 			// 缓存完全有效（未过期且完整）
-			if time.Since(cachedResult.Timestamp) < p.cacheTTL && cachedResult.Complete {
+			if time.Since(cachedResult.Timestamp) < p.getCacheTTL() && cachedResult.Complete {
 				recordCacheHit()
 				recordCacheAccess(pluginSpecificCacheKey)
 
 				// 如果缓存接近过期（已用时间超过TTL的80%），在后台刷新缓存
-				if time.Since(cachedResult.Timestamp) > (p.cacheTTL * 4 / 5) {
+				if time.Since(cachedResult.Timestamp) > (p.getCacheTTL() * 4 / 5) {
 					go p.refreshCacheInBackground(keyword, pluginSpecificCacheKey, searchFunc, cachedResult, mainCacheKey, ext)
 				}
 
@@ -890,7 +904,7 @@ func (p *BaseAsyncPlugin) AsyncSearchWithResult(
 				recordCacheAccess(pluginSpecificCacheKey)
 
 				// 标记为部分过期
-				if time.Since(cachedResult.Timestamp) >= p.cacheTTL {
+				if time.Since(cachedResult.Timestamp) >= p.getCacheTTL() {
 					// 在后台刷新缓存
 					go p.refreshCacheInBackground(keyword, pluginSpecificCacheKey, searchFunc, cachedResult, mainCacheKey, ext)
 				}
@@ -926,7 +940,7 @@ func (p *BaseAsyncPlugin) AsyncSearchWithResult(
 		// 尝试获取工作槽
 		if !acquireWorkerSlot() {
 			// 工作池已满，使用快速响应客户端直接处理
-			results, err := searchFunc(p.client, keyword, ext)
+			results, err := searchFunc(p.GetClient(), keyword, ext)
 			if err != nil {
 				select {
 				case errorChan <- err:
@@ -944,7 +958,7 @@ func (p *BaseAsyncPlugin) AsyncSearchWithResult(
 		defer releaseWorkerSlot()
 
 		// 使用长超时客户端进行搜索
-		results, err := searchFunc(p.backgroundClient, keyword, ext)
+		results, err := searchFunc(p.backgroundHTTPClient(), keyword, ext)
 		if err != nil {
 			select {
 			case errorChan <- err:
@@ -1007,7 +1021,7 @@ func (p *BaseAsyncPlugin) AsyncSearchWithResult(
 		// 🔧 恢复主缓存更新：使用统一的GOB序列化
 		// 传递原始数据，由主程序负责序列化
 		if mainCacheKey != "" && p.mainCacheUpdater != nil {
-			err := p.mainCacheUpdater(mainCacheKey, results, p.cacheTTL, true, p.currentKeyword)
+			err := p.mainCacheUpdater(mainCacheKey, results, p.getCacheTTL(), true, p.currentKeyword)
 			if err != nil {
 				fmt.Printf("❌ [%s] 及时完成缓存更新失败: %s | 错误: %v\n", p.name, mainCacheKey, err)
 			}
@@ -1058,7 +1072,7 @@ func (p *BaseAsyncPlugin) completeSearchInBackground(
 	}()
 
 	// 执行完整搜索
-	results, err := searchFunc(p.backgroundClient, keyword, ext)
+	results, err := searchFunc(p.backgroundHTTPClient(), keyword, ext)
 	if err != nil {
 		return
 	}
@@ -1076,7 +1090,7 @@ func (p *BaseAsyncPlugin) completeSearchInBackground(
 	// 🔧 恢复主缓存更新：使用统一的GOB序列化
 	// 传递原始数据，由主程序负责序列化
 	if mainCacheKey != "" && p.mainCacheUpdater != nil {
-		err := p.mainCacheUpdater(mainCacheKey, results, p.cacheTTL, true, p.currentKeyword)
+		err := p.mainCacheUpdater(mainCacheKey, results, p.getCacheTTL(), true, p.currentKeyword)
 		if err != nil {
 			fmt.Printf("❌ [%s] 后台完成缓存更新失败: %s | 错误: %v\n", p.name, mainCacheKey, err)
 		}
@@ -1109,7 +1123,7 @@ func (p *BaseAsyncPlugin) refreshCacheInBackground(
 	refreshStart := time.Now()
 
 	// 执行搜索
-	results, err := searchFunc(p.backgroundClient, keyword, ext)
+	results, err := searchFunc(p.backgroundHTTPClient(), keyword, ext)
 	if err != nil || len(results) == 0 {
 		return
 	}
@@ -1191,7 +1205,7 @@ func (p *BaseAsyncPlugin) updateMainCacheWithFinal(cacheKey string, results []mo
 	// 🔧 恢复异步插件缓存更新，使用修复后的统一序列化
 	// 传递原始数据，由主程序负责GOB序列化
 	if p.mainCacheUpdater != nil {
-		err := p.mainCacheUpdater(cacheKey, results, p.cacheTTL, isFinal, p.currentKeyword)
+		err := p.mainCacheUpdater(cacheKey, results, p.getCacheTTL(), isFinal, p.currentKeyword)
 		if err != nil {
 			fmt.Printf("❌ [%s] 主缓存更新失败: %s | 错误: %v\n", p.name, cacheKey, err)
 		}
