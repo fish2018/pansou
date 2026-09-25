@@ -372,11 +372,26 @@ func (p *NSGameAsyncPlugin) postSessionRaw(client *http.Client, path string, bod
 	return data, nil
 }
 
+// maxChallengeBits 是 sha256 摘要的位数，也是难度位的合法上界。
+const maxChallengeBits = 256
+
 func solveChallenge(challenge string, difficultyBits int) string {
+	// difficultyBits 直接来自第三方响应的 JSON（见 nsgameChallengeData），此前没有任何
+	// 边界校验：它是"摘要前缀零位数"，而 sum 是 [32]byte。difficultyBits >= 256 时
+	// fullBytes >= 32，下面 sum[i] 与 sum[fullBytes] 都会越界 panic；这跑在
+	// AsyncSearchWithResult 起的 goroutine 里（plugin.go:950），该 goroutine 没有
+	// recover，越界不是单次请求失败而是整个进程退出。负数则会让 fullBytes 为负、
+	// 循环不执行而静默返回错误 nonce，所以一并挡掉。
+	if difficultyBits < 0 || difficultyBits > maxChallengeBits {
+		return ""
+	}
 	for nonce := int64(0); nonce < 10000000; nonce++ {
 		sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", challenge, nonce)))
 		fullBytes, remainder := difficultyBits/8, difficultyBits%8
 		valid := true
+		if fullBytes > len(sum) {
+			return ""
+		}
 		for i := 0; i < fullBytes; i++ {
 			if sum[i] != 0 {
 				valid = false
