@@ -22,6 +22,12 @@ type RetryConfig struct {
 	// 抖动不是装饰：全仓的复制粘贴重试统一写死 500ms，上游一旦限流，所有并发插件会在
 	// 同一时刻重新打过去，把限流变成雪崩。加抖动把重试时刻铺开。
 	Jitter bool
+	// DelayFunc 直接决定第 attempt 次失败后的等待时长（attempt 从 0 起），优先级最高。
+	//
+	// 存在的原因是"退避曲线"并非只有倍率一种：仓里有线性退避（attempt×200ms）、
+	// 区间随机延迟（限流场景）、以及完全不退避的实现。要把它们也收敛进来，
+	// 就不能只提供 BaseDelay×Multiplier 这一种表达。返回 <=0 表示该次不等待。
+	DelayFunc func(attempt int) time.Duration
 	// OnRetry 在每次失败后、等待前调用（可为 nil），便于观测。
 	OnRetry func(attempt int, err error, wait time.Duration)
 }
@@ -70,6 +76,9 @@ func DoWithRetry(cfg RetryConfig, fn func(attempt int) error) error {
 
 // retryDelay 计算第 attempt 次失败后的等待时长（attempt 从 0 起）。
 func retryDelay(cfg RetryConfig, attempt int) time.Duration {
+	if cfg.DelayFunc != nil {
+		return cfg.DelayFunc(attempt)
+	}
 	wait := cfg.BaseDelay
 	if wait <= 0 {
 		wait = 500 * time.Millisecond // 与全仓既有重试保持一致的默认值

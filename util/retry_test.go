@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+var errAlways = errors.New("总是失败")
+
 func TestDoWithRetrySucceedsFirstTry(t *testing.T) {
 	var calls int32
 	err := DoWithRetry(RetryConfig{Attempts: 3, BaseDelay: time.Millisecond}, func(int) error {
@@ -124,5 +126,36 @@ func TestDoWithRetryOnRetryObservability(t *testing.T) {
 
 	if len(seen) != 2 {
 		t.Errorf("3 次尝试应有 2 次重试回调（最后一次失败不等），实际 %d", len(seen))
+	}
+}
+
+// DelayFunc 是"退避曲线不止倍率一种"的出路：线性、区间随机、完全不退避都能表达。
+func TestRetryDelayFuncOverridesEverything(t *testing.T) {
+	cfg := RetryConfig{
+		BaseDelay:  time.Second,
+		Multiplier: 8,
+		Jitter:     true,
+		DelayFunc:  func(attempt int) time.Duration { return time.Duration(attempt+1) * 100 * time.Millisecond },
+	}
+	// 线性：100ms, 200ms, 300ms——BaseDelay/Multiplier/Jitter 全部不参与
+	for attempt, want := range []time.Duration{100, 200, 300} {
+		if got := retryDelay(cfg, attempt); got != want*time.Millisecond {
+			t.Errorf("第 %d 次应为 %v，实际 %v", attempt, want*time.Millisecond, got)
+		}
+	}
+}
+
+// 返回 0 表示该次不等待（原先"完全不退避"的实现可原样表达）。
+func TestRetryDelayFuncCanExpressNoBackoff(t *testing.T) {
+	cfg := RetryConfig{DelayFunc: func(int) time.Duration { return 0 }}
+	if got := retryDelay(cfg, 3); got != 0 {
+		t.Errorf("应不等待，实际 %v", got)
+	}
+	// 且真的不会拖慢重试
+	start := time.Now()
+	_ = DoWithRetry(RetryConfig{Attempts: 4, DelayFunc: func(int) time.Duration { return 0 }},
+		func(int) error { return errAlways })
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Errorf("零延迟重试不该等待，耗时 %v", elapsed)
 	}
 }

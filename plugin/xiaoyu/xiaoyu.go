@@ -178,25 +178,35 @@ func setRequestHeaders(req *http.Request) {
 }
 
 func doRequestWithRetry(client *http.Client, req *http.Request) (*http.Response, error) {
-	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
-		}
+	var resp *http.Response
 
-		resp, err := client.Do(req.Clone(req.Context()))
+	// 重试逻辑收敛到 util.DoWithRetry。注意这处的退避是**线性**的（attempt × 200ms），
+	// 不是倍率退避——用 DelayFunc 原样表达，避免"迁移顺手把行为改掉"。
+	// 次数保持 maxRetries+1（原循环条件是 attempt <= maxRetries）。
+	err := util.DoWithRetry(util.RetryConfig{
+		Attempts: maxRetries + 1,
+		DelayFunc: func(attempt int) time.Duration {
+			// 原实现在第 k 次尝试前等 k×200ms；组件在第 j 次失败后等待再发第 j+1 次，
+			// 故取 (j+1)×200ms 与之逐项相同。
+			return time.Duration(attempt+1) * 200 * time.Millisecond
+		},
+	}, func(_ int) error {
+		r, err := client.Do(req.Clone(req.Context()))
 		if err != nil {
-			lastErr = err
-			continue
+			return err
 		}
-		if resp.StatusCode == http.StatusOK {
-			return resp, nil
+		if r.StatusCode == http.StatusOK {
+			resp = r
+			return nil
 		}
-
-		lastErr = fmt.Errorf("状态码 %d", resp.StatusCode)
-		resp.Body.Close()
+		status := r.StatusCode
+		r.Body.Close()
+		return fmt.Errorf("状态码 %d", status)
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, lastErr
+	return resp, nil
 }
 
 func parsePage(doc *goquery.Document) pageResult {
