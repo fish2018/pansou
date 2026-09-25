@@ -249,6 +249,12 @@ func injectMainCacheToAsyncPlugins(pluginManager *plugin.PluginManager, mainCach
 			return nil
 		}
 
+		// 整段"读现有 → 合并 → 写回"必须按缓存键互斥：同关键词下多个插件并发完成时
+		// （异步插件的常态），两个调用会读到同一份旧值、各自只并进自己那部分再写回，
+		// 后写覆盖先写，先完成那个插件的结果消失。见 main_cache_lock.go。
+		unlock := lockMainCacheKey(key)
+		defer unlock()
+
 		// 获取现有缓存数据进行合并
 		var finalResults []model.SearchResult
 		if existingData, hit, err := mainCache.Get(key); err == nil && hit {
