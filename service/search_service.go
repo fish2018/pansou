@@ -640,9 +640,13 @@ func (s *SearchService) searchChannelWithContext(parent context.Context, keyword
 	}
 
 	// 解析响应
-	results, _, err := util.ParseSearchResults(string(body), channel)
+	results, _, parseStatus, err := util.ParseSearchResultsWithStatus(string(body), channel)
 	if err != nil {
 		return nil, err
+	}
+	// 页面含消息块却解析不出条目，通常是 t.me 改版；显式告警而不是静默返回空。
+	if parseStatus == util.ParseStatusStructureChanged {
+		fmt.Printf("[searchTG] 频道 %s 的结果页含消息块但未解析出任何条目，页面结构可能已变\n", channel)
 	}
 
 	return results, nil

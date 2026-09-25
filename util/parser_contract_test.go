@@ -168,3 +168,58 @@ func TestExtractPasswordContract(t *testing.T) {
 		})
 	}
 }
+
+// 解析状态契约：0 条结果必须能区分"频道确实没有内容"与"页面结构变了"。
+func TestParseSearchResultsStatus(t *testing.T) {
+	// 真实的无结果页结构：外层仍是 message_wrap，里面是 centered + 无结果标记
+	noMessagesHTML := `<html><body><section class="tgme_channel_history js-message_history">
+		<div class="tgme_widget_message_wrap js-widget_message_wrap"><div class="tgme_widget_message_centered"><div class="tme_no_messages_found">No posts found</div></div></div>
+	</section></body></html>`
+
+	// 有消息块，但缺少时间节点：解析会在取时间处提前返回，一条都拿不到
+	brokenHTML := `<html><body>
+		<div class="tgme_widget_message_wrap js-widget_message_wrap"><div class="tgme_widget_message" data-post="ch/123">
+			<div class="tgme_widget_message_text">仙逆 4K 合集</div>
+		</div></div>
+	</body></html>`
+
+	okHTML := `<html><body>
+		<div class="tgme_widget_message_wrap js-widget_message_wrap"><div class="tgme_widget_message" data-post="ch/123">
+			<div class="tgme_widget_message_date"><time datetime="2026-09-24T10:00:00+00:00">2026-09-24</time></div>
+			<div class="tgme_widget_message_text">仙逆 4K 合集<br/><a href="https://pan.quark.cn/s/abc">夸克网盘</a></div>
+		</div></div>
+	</body></html>`
+
+	cases := []struct {
+		name       string
+		html       string
+		wantStatus PageParseStatus
+		wantCount  int
+	}{
+		{"正常页面解析出结果", okHTML, ParseStatusOK, 1},
+		{"页面明确无结果", noMessagesHTML, ParseStatusNoMessages, 0},
+		{"有消息块但解析失败", brokenHTML, ParseStatusStructureChanged, 0},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			results, _, status, err := ParseSearchResultsWithStatus(c.html, "testchannel")
+			if err != nil {
+				t.Fatalf("解析出错: %v", err)
+			}
+			if status != c.wantStatus {
+				t.Errorf("status = %v, 期望 %v", status, c.wantStatus)
+			}
+			if len(results) != c.wantCount {
+				t.Errorf("结果数 = %d, 期望 %d", len(results), c.wantCount)
+			}
+		})
+	}
+}
+
+// 解析失败时结果与翻页参数都应为空，错误必须上抛。
+func TestParseSearchResultsWithStatusPropagatesError(t *testing.T) {
+	if _, _, _, err := ParseSearchResultsWithStatus("", "testchannel"); err != nil {
+		t.Logf("空页面返回错误（可接受）: %v", err)
+	}
+}

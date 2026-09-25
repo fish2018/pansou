@@ -137,11 +137,35 @@ func normalize115PanURL(url string, password string) string {
 	return url
 }
 
-// ParseSearchResults 解析搜索结果页面
+// PageParseStatus 表示一次搜索结果页解析的可信程度。
+//
+// 引入它的原因：0 条结果既可能是"该频道确实没有匹配内容"，也可能是
+// "t.me 改版导致解析失效"。两者原先完全不可区分，站点一改版就会静默归零，
+// 只能等用户反馈才发现。
+type PageParseStatus int
+
+const (
+	// ParseStatusOK 正常解析出了消息。
+	ParseStatusOK PageParseStatus = iota
+	// ParseStatusNoMessages 页面明确给出无结果标记，0 条是可信结果。
+	ParseStatusNoMessages
+	// ParseStatusStructureChanged 页面含消息块却一条都没解析出来，
+	// 通常意味着页面结构已变，需要告警。
+	ParseStatusStructureChanged
+)
+
+// ParseSearchResults 解析搜索结果页面，只返回结果与翻页参数。
 func ParseSearchResults(html string, channel string) ([]model.SearchResult, string, error) {
+	results, nextPageParam, _, err := ParseSearchResultsWithStatus(html, channel)
+	return results, nextPageParam, err
+}
+
+// ParseSearchResultsWithStatus 在结果之外额外返回解析可信度，
+// 让调用方能区分"频道没有内容"与"解析失效"。
+func ParseSearchResultsWithStatus(html string, channel string) ([]model.SearchResult, string, PageParseStatus, error) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
-		return nil, "", err
+		return nil, "", ParseStatusStructureChanged, err
 	}
 
 	var results []model.SearchResult
@@ -569,7 +593,18 @@ func ParseSearchResults(html string, channel string) ([]model.SearchResult, stri
 		}
 	})
 
-	return results, nextPageParam, nil
+	// 判定本次解析的可信度，供调用方区分"频道没有内容"与"解析失效"。
+	status := ParseStatusOK
+	if len(results) == 0 {
+		switch {
+		case doc.Find(".tme_no_messages_found").Length() > 0:
+			status = ParseStatusNoMessages
+		case doc.Find(".tgme_widget_message_wrap").Length() > 0:
+			status = ParseStatusStructureChanged
+		}
+	}
+
+	return results, nextPageParam, status, nil
 }
 
 // CutTitleByKeywords 根据关键词进行裁剪，保留最前关键词前的部分
