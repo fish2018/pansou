@@ -1203,7 +1203,9 @@ func (s *CheckService) loadPersistentCache(key string) (cachedCheckResult, bool)
 
 	var entry cachedCheckResult
 	var found bool
-	_ = s.cacheDB.View(func(tx *bolt.Tx) error {
+	// 读取失败原先被 _ = 吞掉：表现出来只是"缓存未命中"，看起来一切正常，
+	// 实际上 DB 损坏/关闭时每次检查都会重读失败，却没有任何线索。
+	if err := s.cacheDB.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(checkCacheBucketName))
 		if bucket == nil {
 			return nil
@@ -1216,13 +1218,17 @@ func (s *CheckService) loadPersistentCache(key string) (cachedCheckResult, bool)
 
 		decoded, err := decodeCachedCheckEntry(raw)
 		if err != nil {
-			return nil
+			// 之前这里 return nil，把解码失败也变成了"未命中"；改成向上返回，
+			// 让事务把它当作错误交给外层记录——否则损坏的条目会被永久静默忽略。
+			return fmt.Errorf("解码检查缓存条目失败: %w", err)
 		}
 
 		entry = decoded
 		found = true
 		return nil
-	})
+	}); err != nil {
+		fmt.Printf("[CHECK] 读取检查缓存失败: %v\n", err)
+	}
 
 	return entry, found
 }
