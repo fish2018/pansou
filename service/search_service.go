@@ -229,6 +229,101 @@ func NewSearchService(pluginManager *plugin.PluginManager) *SearchService {
 	}
 }
 
+// mergeIntoMainCache 把 newResults 并入 key 对应的主缓存条目（读现有 → 合并 → 写回）。
+//
+// 抽成独立函数是为了可测：原先这段逻辑藏在 searchService 的闭包里，无法用并发探针
+// 验证"同一 key 的读-改-写是否真被串行化"，只能靠读代码下结论。
+//
+// 整段操作必须按缓存键互斥：同关键词下多个插件并发完成时（异步插件的常态），两个调用会
+// 读到同一份旧值、各自只并进自己那部分再写回，后写覆盖先写，先完成那个插件的结果消失。
+// 见 main_cache_lock.go。
+func mergeIntoMainCache(mainCache *cache.EnhancedTwoLevelCache, key string, newResults []model.SearchResult, ttl time.Duration, isFinal bool, keyword string, pluginName string) error {
+	// 整段"读现有 → 合并 → 写回"必须按缓存键互斥：同关键词下多个插件并发完成时
+	// （异步插件的常态），两个调用会读到同一份旧值、各自只并进自己那部分再写回，
+	// 后写覆盖先写，先完成那个插件的结果消失。见 main_cache_lock.go。
+	unlock := lockMainCacheKey(key)
+	defer unlock()
+
+	// 获取现有缓存数据进行合并
+	var finalResults []model.SearchResult
+	if existingData, hit, err := mainCache.Get(key); err == nil && hit {
+		var existingResults []model.SearchResult
+		if err := mainCache.GetSerializer().Deserialize(existingData, &existingResults); err == nil {
+			// 合并新旧结果，去重保留最完整的数据
+			finalResults = mergeSearchResults(existingResults, newResults)
+			if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
+				if keyword != "" {
+					fmt.Printf("🔄 [%s:%s] 更新缓存| 原有: %d + 新增: %d = 合并后: %d\n",
+						pluginName, keyword, len(existingResults), len(newResults), len(finalResults))
+				}
+			}
+		} else {
+			// 反序列化失败，使用新结果
+			finalResults = newResults
+			if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
+				displayKey := key[:8] + "..."
+				if keyword != "" {
+					fmt.Printf("[异步插件 %s] 缓存反序列化失败，使用新结果: %s(关键词:%s) | 结果数: %d\n", pluginName, displayKey, keyword, len(newResults))
+				} else {
+					fmt.Printf("[异步插件 %s] 缓存反序列化失败，使用新结果: %s | 结果数: %d\n", pluginName, key, len(newResults))
+				}
+			}
+		}
+	} else {
+		// 无现有缓存，直接使用新结果
+		finalResults = newResults
+		if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
+			displayKey := key[:8] + "..."
+			if keyword != "" {
+				fmt.Printf("[异步插件 %s] 初始缓存创建: %s(关键词:%s) | 结果数: %d\n", pluginName, displayKey, keyword, len(newResults))
+			} else {
+				fmt.Printf("[异步插件 %s] 初始缓存创建: %s | 结果数: %d\n", pluginName, key, len(newResults))
+			}
+		}
+	}
+
+	// 序列化合并后的结果
+	data, err := mainCache.GetSerializer().Serialize(finalResults)
+	if err != nil {
+		fmt.Printf("[缓存更新] 序列化失败: %s | 错误: %v\n", key, err)
+		return err
+	}
+
+	// 先更新内存缓存（立即可见）
+	if err := mainCache.SetMemoryOnly(key, data, ttl); err != nil {
+		return fmt.Errorf("内存缓存更新失败: %v", err)
+	}
+
+	// 使用新的缓存写入管理器处理磁盘写入（智能批处理）
+	if cacheWriteManager := globalCacheWriteManager; cacheWriteManager != nil {
+		operation := &cache.CacheOperation{
+			Key:        key,
+			Data:       finalResults, // 使用原始数据而不是序列化后的
+			TTL:        ttl,
+			IsFinal:    isFinal,
+			PluginName: pluginName,
+			Keyword:    keyword,
+			Priority:   2, // 中等优先级
+			Timestamp:  time.Now(),
+			DataSize:   len(data), // 序列化后的数据大小
+		}
+
+		// 根据是否为最终结果设置优先级
+		if isFinal {
+			operation.Priority = 1 // 高优先级
+		}
+
+		return cacheWriteManager.HandleCacheOperation(operation)
+	}
+
+	// 兜底：如果缓存写入管理器不可用，使用原有逻辑
+	if isFinal {
+		return mainCache.SetBothLevels(key, data, ttl)
+	} else {
+		return nil // 内存已更新，磁盘稍后批处理
+	}
+}
+
 // injectMainCacheToAsyncPlugins 将主缓存系统注入到异步插件中
 func injectMainCacheToAsyncPlugins(pluginManager *plugin.PluginManager, mainCache *cache.EnhancedTwoLevelCache) {
 	// 如果缓存或插件管理器不可用，直接返回
@@ -248,91 +343,7 @@ func injectMainCacheToAsyncPlugins(pluginManager *plugin.PluginManager, mainCach
 		if len(newResults) == 0 {
 			return nil
 		}
-
-		// 整段"读现有 → 合并 → 写回"必须按缓存键互斥：同关键词下多个插件并发完成时
-		// （异步插件的常态），两个调用会读到同一份旧值、各自只并进自己那部分再写回，
-		// 后写覆盖先写，先完成那个插件的结果消失。见 main_cache_lock.go。
-		unlock := lockMainCacheKey(key)
-		defer unlock()
-
-		// 获取现有缓存数据进行合并
-		var finalResults []model.SearchResult
-		if existingData, hit, err := mainCache.Get(key); err == nil && hit {
-			var existingResults []model.SearchResult
-			if err := mainCache.GetSerializer().Deserialize(existingData, &existingResults); err == nil {
-				// 合并新旧结果，去重保留最完整的数据
-				finalResults = mergeSearchResults(existingResults, newResults)
-				if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
-					if keyword != "" {
-						fmt.Printf("🔄 [%s:%s] 更新缓存| 原有: %d + 新增: %d = 合并后: %d\n",
-							pluginName, keyword, len(existingResults), len(newResults), len(finalResults))
-					}
-				}
-			} else {
-				// 反序列化失败，使用新结果
-				finalResults = newResults
-				if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
-					displayKey := key[:8] + "..."
-					if keyword != "" {
-						fmt.Printf("[异步插件 %s] 缓存反序列化失败，使用新结果: %s(关键词:%s) | 结果数: %d\n", pluginName, displayKey, keyword, len(newResults))
-					} else {
-						fmt.Printf("[异步插件 %s] 缓存反序列化失败，使用新结果: %s | 结果数: %d\n", pluginName, key, len(newResults))
-					}
-				}
-			}
-		} else {
-			// 无现有缓存，直接使用新结果
-			finalResults = newResults
-			if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
-				displayKey := key[:8] + "..."
-				if keyword != "" {
-					fmt.Printf("[异步插件 %s] 初始缓存创建: %s(关键词:%s) | 结果数: %d\n", pluginName, displayKey, keyword, len(newResults))
-				} else {
-					fmt.Printf("[异步插件 %s] 初始缓存创建: %s | 结果数: %d\n", pluginName, key, len(newResults))
-				}
-			}
-		}
-
-		// 序列化合并后的结果
-		data, err := mainCache.GetSerializer().Serialize(finalResults)
-		if err != nil {
-			fmt.Printf("[缓存更新] 序列化失败: %s | 错误: %v\n", key, err)
-			return err
-		}
-
-		// 先更新内存缓存（立即可见）
-		if err := mainCache.SetMemoryOnly(key, data, ttl); err != nil {
-			return fmt.Errorf("内存缓存更新失败: %v", err)
-		}
-
-		// 使用新的缓存写入管理器处理磁盘写入（智能批处理）
-		if cacheWriteManager := globalCacheWriteManager; cacheWriteManager != nil {
-			operation := &cache.CacheOperation{
-				Key:        key,
-				Data:       finalResults, // 使用原始数据而不是序列化后的
-				TTL:        ttl,
-				IsFinal:    isFinal,
-				PluginName: pluginName,
-				Keyword:    keyword,
-				Priority:   2, // 中等优先级
-				Timestamp:  time.Now(),
-				DataSize:   len(data), // 序列化后的数据大小
-			}
-
-			// 根据是否为最终结果设置优先级
-			if isFinal {
-				operation.Priority = 1 // 高优先级
-			}
-
-			return cacheWriteManager.HandleCacheOperation(operation)
-		}
-
-		// 兜底：如果缓存写入管理器不可用，使用原有逻辑
-		if isFinal {
-			return mainCache.SetBothLevels(key, data, ttl)
-		} else {
-			return nil // 内存已更新，磁盘稍后批处理
-		}
+		return mergeIntoMainCache(mainCache, key, newResults, ttl, isFinal, keyword, pluginName)
 	}
 
 	// 获取所有插件
