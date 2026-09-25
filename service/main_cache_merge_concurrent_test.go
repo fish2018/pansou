@@ -143,3 +143,73 @@ func TestUnlockedMergeLosesResultsControl(t *testing.T) {
 	}
 	t.Logf("对照实验符合预期：不加锁时 %d 个插件只留下 %d 条结果", pluginCount, len(got))
 }
+
+// 最终写入**不许把缓存写小**。
+//
+// 这是验收测试（docker-compose 全量配置、真实搜索）抓到的缺陷：本次请求只拿到部分结果时
+// （71 个插件里往往只有几个在异步窗口内返回），原先的最终写入直接覆盖，把后台插件已经并进
+// 主缓存的结果丢掉——实测从 30 条覆盖成 1 条，随后命中缓存只返回 1 条。
+func TestWriteFinalMainCacheDoesNotShrink(t *testing.T) {
+	c := withMainCacheConfig(t)
+
+	const key = "最终写入不许变小"
+
+	// 模拟后台插件已经把 8 条并进主缓存
+	backfill := make([]model.SearchResult, 0, 8)
+	for i := 0; i < 8; i++ {
+		backfill = append(backfill, model.SearchResult{
+			UniqueID: fmt.Sprintf("后台-%d", i),
+			Title:    fmt.Sprintf("后台插件 %d 的结果", i),
+		})
+	}
+	if err := mergeIntoMainCache(c, key, backfill, time.Minute, true, "关键词", "后台"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(readMergedResults(t, c, key)); got != 8 {
+		t.Fatalf("前置条件不成立：应有 8 条，实际 %d", got)
+	}
+
+	// 本次请求只拿到 1 条（异步窗口内只有一个插件返回）
+	writeFinalMainCache(c, key, []model.SearchResult{{
+		UniqueID: "本轮-0",
+		Title:    "本轮唯一的结果",
+	}}, time.Minute)
+
+	got := readMergedResults(t, c, key)
+	if len(got) < 9 {
+		ids := make([]string, 0, len(got))
+		for _, r := range got {
+			ids = append(ids, r.UniqueID)
+		}
+		t.Fatalf("最终写入把缓存写小了：应有 9 条（后台 8 + 本轮 1），实际 %d 条 %v", len(got), ids)
+	}
+}
+
+// 对照实验：直接覆盖（修复前的行为）确实会把缓存写小——证明上面那条用例测得出来。
+func TestFinalWriteOverwriteShrinksControl(t *testing.T) {
+	c := withMainCacheConfig(t)
+
+	const key = "对照实验覆盖变小"
+
+	backfill := make([]model.SearchResult, 0, 8)
+	for i := 0; i < 8; i++ {
+		backfill = append(backfill, model.SearchResult{UniqueID: fmt.Sprintf("后台-%d", i)})
+	}
+	if err := mergeIntoMainCache(c, key, backfill, time.Minute, true, "关键词", "后台"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 修复前的行为：直接序列化本轮结果并覆盖
+	data, err := c.GetSerializer().Serialize([]model.SearchResult{{UniqueID: "本轮-0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetBothLevels(key, data, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := len(readMergedResults(t, c, key)); got != 1 {
+		t.Fatalf("对照实验失效：直接覆盖竟然保留了 %d 条，说明这个探针测不出问题", got)
+	}
+	t.Log("对照实验符合预期：直接覆盖后只剩 1 条（8 条后台结果被丢弃）")
+}

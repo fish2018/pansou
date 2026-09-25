@@ -229,6 +229,41 @@ func NewSearchService(pluginManager *plugin.PluginManager) *SearchService {
 	}
 }
 
+// writeFinalMainCache 写入一次搜索的最终结果到主缓存。
+//
+// 必须**先与缓存里已有的合并**，不能直接覆盖。本次请求常常只拿到部分结果——71 个插件里往往
+// 只有几个在异步窗口内返回，其余还在后台，而后台插件是边走边并进主缓存的。若直接覆盖，
+// 本次较小的结果集会把后台已经并进去的结果丢掉，而且**静默**。
+//
+// 实测（docker-compose 全量配置、关键词"无职转生"）：后台把缓存并到 30 条后，最终写入覆盖成
+// 1 条，随后命中缓存只返回 1 条。这与"后写覆盖先写"是同一类问题，所以同样按键互斥。
+//
+// 抽成函数是为了可测——这段逻辑原本内联在 goroutine 里，无法用用例锁住"不许变小"。
+// 返回值是**合并后实际写入**的条数——不是本次请求自己的条数。日志若打请求自己的条数，
+// 会出现"缓存更新完成 | 结果数: 1"而缓存里其实是 15 条这种误导性输出（实测踩过）。
+func writeFinalMainCache(cache *cache.EnhancedTwoLevelCache, key string, results []model.SearchResult, ttl time.Duration) int {
+	unlock := lockMainCacheKey(key)
+	defer unlock()
+
+	merged := results
+	if existing, hit, getErr := cache.Get(key); getErr == nil && hit {
+		var existingResults []model.SearchResult
+		if derr := cache.GetSerializer().Deserialize(existing, &existingResults); derr == nil && len(existingResults) > 0 {
+			merged = mergeSearchResults(existingResults, results)
+		}
+	}
+
+	data, err := cache.GetSerializer().Serialize(merged)
+	if err != nil {
+		fmt.Printf("[主程序] 缓存序列化失败: %s | 错误: %v\n", key, err)
+		return 0
+	}
+
+	// 使用同步方式确保数据写入磁盘
+	cache.SetBothLevels(key, data, ttl)
+	return len(merged)
+}
+
 // mergeIntoMainCache 把 newResults 并入 key 对应的主缓存条目（读现有 → 合并 → 写回）。
 //
 // 抽成独立函数是为了可测：原先这段逻辑藏在 searchService 的闭包里，无法用并发探针
@@ -1602,18 +1637,10 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 			go func(res []model.SearchResult, kw string, key string, cacheTTL time.Duration) {
 				// 使用增强版缓存，确保与异步插件使用相同的序列化器
 				if enhancedTwoLevelCache != nil {
-					data, err := enhancedTwoLevelCache.GetSerializer().Serialize(res)
-					if err != nil {
-						fmt.Printf("[主程序] 缓存序列化失败: %s | 错误: %v\n", key, err)
-						return
-					}
-
-					// 主程序最后更新，覆盖可能有问题的异步插件缓存
-					// 使用同步方式确保数据写入磁盘
-					enhancedTwoLevelCache.SetBothLevels(key, data, cacheTTL)
+					written := writeFinalMainCache(enhancedTwoLevelCache, key, res, cacheTTL)
 					if config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
-						fmt.Printf("[主程序] 缓存更新完成: %s | 结果数: %d | TTL: %.0f分钟",
-							key, len(res), cacheTTL.Minutes())
+						fmt.Printf("[主程序] 缓存更新完成: %s | 本次 %d 条 -> 合并后 %d 条 | TTL: %.0f分钟",
+							key, len(res), written, cacheTTL.Minutes())
 					}
 				}
 			}(allResults, keyword, cacheKey, ttl)
