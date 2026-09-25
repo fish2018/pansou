@@ -626,7 +626,7 @@ func (s *SearchService) searchChannelWithContext(parent context.Context, keyword
 	// 状态码判定：429/403/5xx 等都不是可用页面，按失败上报，
 	// 这样"频道被限流"与"频道没有匹配内容"不会混为一谈。
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("频道 %s 返回状态码 %d", channel, resp.StatusCode)
+		return nil, &httpStatusError{channel: channel, code: resp.StatusCode}
 	}
 
 	// 读取响应体（带上限）
@@ -1242,9 +1242,10 @@ func mergeResultsByType(results []model.SearchResult, keyword string, cloudTypes
 // 池按完成顺序返回结果，与提交顺序无关，所以由任务自己带回频道名，
 // 这样才能准确区分"频道失败"、"频道超时未完成"与"频道确实没有匹配内容"。
 type tgChannelResult struct {
-	channel string
-	results []model.SearchResult
-	err     error
+	channel  string
+	results  []model.SearchResult
+	err      error
+	duration time.Duration
 }
 
 // searchTG 搜索TG频道
@@ -1281,8 +1282,9 @@ func (s *SearchService) searchTG(keyword string, channels []string, forceRefresh
 	for _, channel := range channels {
 		ch := channel // 创建副本，避免闭包问题
 		tasks = append(tasks, func(ctx context.Context) interface{} {
+			start := time.Now()
 			channelResults, err := s.searchChannelWithContext(ctx, keyword, ch)
-			return &tgChannelResult{channel: ch, results: channelResults, err: err}
+			return &tgChannelResult{channel: ch, results: channelResults, err: err, duration: time.Since(start)}
 		})
 	}
 
@@ -1305,7 +1307,7 @@ func (s *SearchService) searchTG(keyword string, channels []string, forceRefresh
 		if !ok {
 			continue
 		}
-		outcome.observe(channelResult.channel, channelResult.err)
+		outcome.observe(channelResult.channel, channelResult.err, channelResult.duration)
 		if channelResult.err == nil {
 			results = append(results, channelResult.results...)
 		}
@@ -1513,9 +1515,10 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 			// 插件的Search方法已经负责异步调度、插件缓存和后台刷新。
 			// 这里直接调用，避免再包一层AsyncSearch导致嵌套等待和重复超时。
 			// 批任务的超时时间通过 ext 传给插件，插件基类据此在到点后立刻返回。
+			start := time.Now()
 			pluginResults, err := plugin.Search(keyword, pluginExtWithContext(ext, ctx))
 
-			return &pluginBatchResult{name: pluginName, results: pluginResults, err: err}
+			return &pluginBatchResult{name: pluginName, results: pluginResults, err: err, duration: time.Since(start)}
 		})
 	}
 
@@ -1544,7 +1547,7 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 		if !ok {
 			continue
 		}
-		outcome.observe(pluginResult.name, pluginResult.err)
+		outcome.observe(pluginResult.name, pluginResult.err, pluginResult.duration)
 		if pluginResult.err != nil {
 			continue
 		}
@@ -1599,9 +1602,10 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 // pluginBatchResult 携带插件名的批任务结果，理由同 tgChannelResult：
 // 池按完成顺序返回结果，必须由任务自己带回标识才能准确统计完整度。
 type pluginBatchResult struct {
-	name    string
-	results []model.SearchResult
-	err     error
+	name     string
+	results  []model.SearchResult
+	err      error
+	duration time.Duration
 }
 
 // backfillPlugins 在后台补搜批任务超时未返回的插件，并把合并后的结果写入缓存。

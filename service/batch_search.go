@@ -1,11 +1,69 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"pansou/model"
 )
+
+// httpStatusError 携带状态码的请求失败。
+// 用类型而不是错误字符串传递状态码，是为了按原因归类失败——
+// "被限流"和"频道不存在"需要完全不同的处置。
+type httpStatusError struct {
+	channel string
+	code    int
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("频道 %s 返回状态码 %d", e.channel, e.code)
+}
+
+// failureClass 把错误归成可直接统计的类别。
+func failureClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	var se *httpStatusError
+	if errors.As(err, &se) {
+		switch {
+		case se.code == http.StatusTooManyRequests:
+			return "限流429"
+		case se.code == http.StatusForbidden:
+			return "禁止403"
+		case se.code == http.StatusNotFound:
+			return "不存在404"
+		case se.code >= 500:
+			return "服务端5xx"
+		default:
+			return fmt.Sprintf("状态码%d", se.code)
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "超时"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "已取消"
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return "网络错误"
+	}
+	return "其它错误"
+}
+
+// taskTiming 记录单个任务的耗时与结果，用于定位慢项。
+type taskTiming struct {
+	id       string
+	duration time.Duration
+	err      error
+}
 
 // batchSearchOutcome 记录一次批量搜索（TG 频道或插件）的完整度。
 //
@@ -15,28 +73,100 @@ import (
 //
 // 本类型不依赖全局配置，TTL 与补齐开关都由调用方传入，便于单测覆盖各分支。
 type batchSearchOutcome struct {
-	total     int
-	succeeded int
-	failed    int
-	returned  map[string]bool
-	missing   []string
+	total       int
+	succeeded   int
+	failed      int
+	returned    map[string]bool
+	missing     []string
+	timings     []taskTiming
+	failClasses map[string]int
+	// errSamples 保留每类失败的示例错误文本：归类（如"其它错误"）不足以定位问题，
+	// 需要一条原始报错才能知道到底是超时、解析失败还是上游拒绝。
+	errSamples map[string]string
 }
 
 func newBatchSearchOutcome(total int) *batchSearchOutcome {
 	return &batchSearchOutcome{
-		total:    total,
-		returned: make(map[string]bool, total),
+		total:       total,
+		returned:    make(map[string]bool, total),
+		failClasses: make(map[string]int),
+		errSamples:  make(map[string]string),
 	}
 }
 
-// observe 记录一个已返回任务的结果，err 非 nil 表示该任务失败。
-func (o *batchSearchOutcome) observe(id string, err error) {
+// observe 记录一个已返回任务的结果与耗时，err 非 nil 表示该任务失败。
+func (o *batchSearchOutcome) observe(id string, err error, duration time.Duration) {
 	o.returned[id] = true
+	o.timings = append(o.timings, taskTiming{id: id, duration: duration, err: err})
 	if err != nil {
 		o.failed++
+		class := failureClass(err)
+		o.failClasses[class]++
+		if _, seen := o.errSamples[class]; !seen {
+			o.errSamples[class] = trimErrText(err.Error())
+		}
 		return
 	}
 	o.succeeded++
+}
+
+// slowestTasks 返回耗时最长的前 n 个任务，用于找出拖慢整批的少数项。
+func (o *batchSearchOutcome) slowestTasks(n int) []taskTiming {
+	sorted := make([]taskTiming, len(o.timings))
+	copy(sorted, o.timings)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].duration > sorted[j].duration
+	})
+	if len(sorted) > n {
+		return sorted[:n]
+	}
+	return sorted
+}
+
+// failureSummary 把失败原因按出现次数降序拼成一行，便于直接读日志判断症结。
+func (o *batchSearchOutcome) failureSummary(limit int) string {
+	if len(o.failClasses) == 0 {
+		return ""
+	}
+	type kv struct {
+		k string
+		v int
+	}
+	items := make([]kv, 0, len(o.failClasses))
+	for k, v := range o.failClasses {
+		items = append(items, kv{k, v})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].v != items[j].v {
+			return items[i].v > items[j].v
+		}
+		return items[i].k < items[j].k
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	parts := make([]string, 0, len(items))
+	for _, it := range items {
+		parts = append(parts, fmt.Sprintf("%s×%d", it.k, it.v))
+	}
+	summary := strings.Join(parts, " ")
+	// 附上最高频失败的一条原始报错，避免只看到"其它错误×N"却无从下手
+	if len(items) > 0 {
+		if sample := o.errSamples[items[0].k]; sample != "" {
+			summary += fmt.Sprintf("（示例: %s）", sample)
+		}
+	}
+	return summary
+}
+
+// trimErrText 压缩错误文本，只保留足够定位问题的一段。
+func trimErrText(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	const maxLen = 100
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }
 
 // finalize 依据提交时的标识列表算出超时未返回的任务。
@@ -81,13 +211,33 @@ func (o *batchSearchOutcome) shouldBackfill(enabled bool) bool {
 	return o.timedOut()*3 <= o.total
 }
 
-// logSummary 输出一行完整度摘要，便于线上判断这次是"慢"还是"坏"。
+// logSummary 输出完整度摘要与慢项明细，便于判断这次是"慢"还是"坏"。
+// 只在存在失败或超时未完成时输出，正常批次不产生噪音。
 func (o *batchSearchOutcome) logSummary(source, keyword string) {
 	if o.timedOut() == 0 && o.failed == 0 {
 		return
 	}
-	fmt.Printf("[%s] %s：成功 %d/%d，失败 %d，超时未完成 %d\n",
+	fmt.Printf("[%s] %s：成功 %d/%d，失败 %d，超时未完成 %d",
 		source, keyword, o.succeeded, o.total, o.failed, o.timedOut())
+	if summary := o.failureSummary(5); summary != "" {
+		fmt.Printf("；失败原因 %s", summary)
+	}
+	fmt.Println()
+
+	// 慢项明细：这些是真正决定批截止该定多长的项。
+	// 这里只报告不自动剔除——自动剔除会静默丢掉仍在产出结果的频道，
+	// 与"兜底数据要完整"的目标冲突，是否裁剪应由部署方按实测决定。
+	for _, tm := range o.slowestTasks(5) {
+		if tm.duration < 200*time.Millisecond {
+			break
+		}
+		state := "成功"
+		if tm.err != nil {
+			state = "失败(" + failureClass(tm.err) + ")"
+		}
+		fmt.Printf("[%s] %s：慢项 %s 耗时 %dms %s\n",
+			source, keyword, tm.id, tm.duration.Milliseconds(), state)
+	}
 }
 
 // mergeResults 把多组结果按顺序合并，供后台补齐复用。

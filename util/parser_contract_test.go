@@ -190,6 +190,15 @@ func TestParseSearchResultsStatus(t *testing.T) {
 		</div></div>
 	</body></html>`
 
+	// 消息结构完好但整条不含受支持的网盘链接：0 条结果属于正常，
+	// 不能被当成站点改版（真实频道 Lsp115/wpzyk 就是这种页面）。
+	noLinksHTML := `<html><body>
+		<div class="tgme_widget_message_wrap js-widget_message_wrap"><div class="tgme_widget_message" data-post="ch/124">
+			<div class="tgme_widget_message_date"><time datetime="2026-09-24T10:00:00+00:00">2026-09-24</time></div>
+			<div class="tgme_widget_message_text">仙逆 讨论贴，没有网盘链接</div>
+		</div></div>
+	</body></html>`
+
 	cases := []struct {
 		name       string
 		html       string
@@ -199,6 +208,7 @@ func TestParseSearchResultsStatus(t *testing.T) {
 		{"正常页面解析出结果", okHTML, ParseStatusOK, 1},
 		{"页面明确无结果", noMessagesHTML, ParseStatusNoMessages, 0},
 		{"有消息块但解析失败", brokenHTML, ParseStatusStructureChanged, 0},
+		{"消息完好但无网盘链接不算结构失效", noLinksHTML, ParseStatusOK, 0},
 	}
 
 	for _, c := range cases {

@@ -1,7 +1,10 @@
 package service
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,7 +65,7 @@ func TestBatchSearchOutcomeCacheTTL(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			o := newBatchSearchOutcome(len(c.submitted))
 			for id, err := range c.observed {
-				o.observe(id, err)
+				o.observe(id, err, 10*time.Millisecond)
 			}
 			o.finalize(c.submitted)
 
@@ -129,7 +132,7 @@ func TestBatchSearchOutcomeShouldBackfill(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			o := newBatchSearchOutcome(len(c.submitted))
 			for id, err := range c.observed {
-				o.observe(id, err)
+				o.observe(id, err, 10*time.Millisecond)
 			}
 			o.finalize(c.submitted)
 
@@ -143,8 +146,8 @@ func TestBatchSearchOutcomeShouldBackfill(t *testing.T) {
 func TestBatchSearchOutcomeFinalizeKeepsSubmittedOrder(t *testing.T) {
 	submitted := []string{"c1", "c2", "c3", "c4"}
 	o := newBatchSearchOutcome(len(submitted))
-	o.observe("c3", nil)
-	o.observe("c1", nil)
+	o.observe("c3", nil, 10*time.Millisecond)
+	o.observe("c1", nil, 10*time.Millisecond)
 	o.finalize(submitted)
 
 	missing := o.missingIDs()
@@ -159,8 +162,8 @@ func TestBatchSearchOutcomeFinalizeKeepsSubmittedOrder(t *testing.T) {
 func TestBatchSearchOutcomeComplete(t *testing.T) {
 	submitted := []string{"a", "b"}
 	o := newBatchSearchOutcome(len(submitted))
-	o.observe("a", nil)
-	o.observe("b", errors.New("failed"))
+	o.observe("a", nil, 10*time.Millisecond)
+	o.observe("b", errors.New("failed"), 10*time.Millisecond)
 	o.finalize(submitted)
 
 	// 失败是常态（站点改版、单站限流），不应被当成"这次批量搜索没跑完"
@@ -169,5 +172,63 @@ func TestBatchSearchOutcomeComplete(t *testing.T) {
 	}
 	if o.timedOut() != 0 {
 		t.Errorf("timedOut() = %d, 期望 0", o.timedOut())
+	}
+}
+
+func TestFailureClass(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"限流", &httpStatusError{channel: "c", code: 429}, "限流429"},
+		{"禁止访问", &httpStatusError{channel: "c", code: 403}, "禁止403"},
+		{"频道不存在", &httpStatusError{channel: "c", code: 404}, "不存在404"},
+		{"服务端错误", &httpStatusError{channel: "c", code: 503}, "服务端5xx"},
+		{"其它状态码", &httpStatusError{channel: "c", code: 302}, "状态码302"},
+		{"包装后的超时仍可识别", fmt.Errorf("请求失败: %w", context.DeadlineExceeded), "超时"},
+		{"普通错误", errors.New("boom"), "其它错误"},
+		{"无错误", nil, ""},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := failureClass(c.err); got != c.want {
+				t.Errorf("failureClass() = %q, 期望 %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestBatchSearchOutcomeSlowestAndFailureSummary(t *testing.T) {
+	o := newBatchSearchOutcome(4)
+	o.observe("fast", nil, 5*time.Millisecond)
+	o.observe("slow", nil, 900*time.Millisecond)
+	o.observe("rate-limited", &httpStatusError{channel: "rate-limited", code: 429}, 20*time.Millisecond)
+	o.observe("also-limited", &httpStatusError{channel: "also-limited", code: 429}, 20*time.Millisecond)
+	o.finalize([]string{"fast", "slow", "rate-limited", "also-limited"})
+
+	slow := o.slowestTasks(2)
+	if len(slow) != 2 || slow[0].id != "slow" {
+		t.Fatalf("slowestTasks() = %+v, 期望首位是 slow", slow)
+	}
+	if slow[1].id != "rate-limited" && slow[1].id != "also-limited" {
+		t.Errorf("slowestTasks() 次位 = %s, 期望是两个限流项之一", slow[1].id)
+	}
+
+	summary := o.failureSummary(5)
+	if !strings.HasPrefix(summary, "限流429×2") {
+		t.Errorf("failureSummary() = %q, 期望以 \"限流429×2\" 开头", summary)
+	}
+	// 摘要必须带一条示例报错，否则"其它错误×N"这类归类无从定位
+	if !strings.Contains(summary, "429") || !strings.Contains(summary, "示例") {
+		t.Errorf("failureSummary() = %q, 期望包含示例错误", summary)
+	}
+	// 全部成功时不应产生失败摘要
+	clean := newBatchSearchOutcome(1)
+	clean.observe("ok", nil, time.Millisecond)
+	clean.finalize([]string{"ok"})
+	if got := clean.failureSummary(5); got != "" {
+		t.Errorf("无失败时 failureSummary() = %q, 期望空串", got)
 	}
 }

@@ -172,6 +172,10 @@ func ParseSearchResultsWithStatus(html string, channel string) ([]model.SearchRe
 	}
 
 	var results []model.SearchResult
+	// recognized 统计"能被识别为一条消息"的块数（通过 data-post 与时间校验）。
+	// 它和 len(results) 是两件事：消息识别成功但整条不含受支持的网盘链接时，
+	// 该消息会被丢弃，这属于正常情况，不能据此判断页面结构变了。
+	recognized := 0
 
 	// 查找消息块
 	doc.Find(".tgme_widget_message_wrap").Each(func(i int, s *goquery.Selection) {
@@ -203,6 +207,8 @@ func ParseSearchResultsWithStatus(html string, channel string) ([]model.SearchRe
 		if err != nil {
 			return
 		}
+
+		recognized++
 
 		// 获取消息文本元素
 		messageTextElem := messageDiv.Find(".tgme_widget_message_text")
@@ -596,12 +602,16 @@ func ParseSearchResultsWithStatus(html string, channel string) ([]model.SearchRe
 	})
 
 	// 判定本次解析的可信度，供调用方区分"频道没有内容"与"解析失效"。
+	//
+	// 注意不能用 len(results)==0 作为失效依据：消息识别成功但整条不含受支持的
+	// 网盘链接时同样得到 0 条结果，那是正常页面。只有"页面里明明有消息块，
+	// 却一个都识别不出来"才说明结构变了。
 	status := ParseStatusOK
 	if len(results) == 0 {
 		switch {
 		case doc.Find(".tme_no_messages_found").Length() > 0:
 			status = ParseStatusNoMessages
-		case doc.Find(".tgme_widget_message_wrap").Length() > 0:
+		case recognized == 0 && doc.Find(".tgme_widget_message_wrap").Length() > 0:
 			status = ParseStatusStructureChanged
 		}
 	}
