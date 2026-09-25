@@ -170,7 +170,7 @@ func (p *XiaozhangPlugin) searchImpl(client *http.Client, keyword string, ext ma
 			return nil, fmt.Errorf("创建gzip reader失败: %w", err)
 		}
 		defer gzReader.Close()
-		reader = gzReader
+		reader = util.NewCappedReader(gzReader, util.MaxDecompressedBytes)
 	}
 
 	// 解析HTML
@@ -437,7 +437,7 @@ func (p *XiaozhangPlugin) extractDetailPageLinks(resp *http.Response, pageURL st
 			return nil
 		}
 		defer gzReader.Close()
-		reader = gzReader
+		reader = util.NewCappedReader(gzReader, util.MaxDecompressedBytes)
 	}
 
 	doc, err := goquery.NewDocumentFromReader(reader)

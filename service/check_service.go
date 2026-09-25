@@ -1391,7 +1391,7 @@ func decompressResponseBody(raw []byte, acceptedEncoding string, contentEncoding
 			return raw, err
 		}
 		defer reader.Close()
-		return io.ReadAll(reader)
+		return util.ReadAllDecompressed(reader, int64(len(raw)))
 	}
 
 	if strings.Contains(encoding, "deflate") {
@@ -1400,7 +1400,7 @@ func decompressResponseBody(raw []byte, acceptedEncoding string, contentEncoding
 			return raw, err
 		}
 		defer reader.Close()
-		return io.ReadAll(reader)
+		return util.ReadAllDecompressed(reader, int64(len(raw)))
 	}
 
 	return raw, nil

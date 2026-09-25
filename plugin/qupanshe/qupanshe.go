@@ -183,7 +183,7 @@ func (p *QupanshePlugin) getFormhash(client *http.Client) (string, error) {
 			return "", fmt.Errorf("创建gzip读取器失败: %w", err)
 		}
 		defer gzipReader.Close()
-		reader = gzipReader
+		reader = util.NewCappedReader(gzipReader, util.MaxDecompressedBytes)
 	}
 
 	// 解析HTML
@@ -346,7 +346,7 @@ func (p *QupanshePlugin) getSearchResults(client *http.Client, searchURL, keywor
 			return nil, fmt.Errorf("创建gzip读取器失败: %w", err)
 		}
 		defer gzipReader.Close()
-		reader = gzipReader
+		reader = util.NewCappedReader(gzipReader, util.MaxDecompressedBytes)
 	}
 
 	// 解析HTML

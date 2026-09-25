@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -355,7 +356,7 @@ func (p *Xb6vPlugin) getResponseReader(resp *http.Response) (io.Reader, error) {
 		if err != nil {
 			return nil, fmt.Errorf("创建gzip reader失败: %w", err)
 		}
-		reader = gzReader
+		reader = util.NewCappedReader(gzReader, util.MaxDecompressedBytes)
 	}
 
 	return reader, nil

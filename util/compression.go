@@ -3,7 +3,6 @@ package util
 import (
 	"bytes"
 	"compress/gzip"
-	"io/ioutil"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -130,6 +129,10 @@ func DecompressData(data []byte) ([]byte, error) {
 	}
 	defer gz.Close()
 
-	// 读取解压后的数据
-	return ioutil.ReadAll(gz)
+	// 读取解压后的数据，并按绝对上限封顶。
+	//
+	// 这里只做绝对上限、不套压缩比：本函数解压的是**自写缓存**的数据（不是不可信上游），
+	// 而缓存里高度重复的 JSON 合法地超过 100:1——按比值拦会误伤真实数据。
+	// 压缩比那一层留给上游响应路径（见 ReadAllDecompressed 的调用点）。
+	return ReadAllLimited(NewCappedReader(gz, MaxDecompressedBytes), MaxDecompressedBytes)
 }

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"pansou/util"
 	"regexp"
 	"strings"
 	"sync"
@@ -199,7 +200,7 @@ func (p *LibvioPlugin) getResponseReader(resp *http.Response) (io.Reader, error)
 			return nil, fmt.Errorf("创建gzip reader失败: %w", err)
 		}
 		// 注意：不要在这里关闭gzReader，它需要在外部使用
-		reader = gzReader
+		reader = util.NewCappedReader(gzReader, util.MaxDecompressedBytes)
 	}
 
 	return reader, nil
