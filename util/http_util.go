@@ -1,7 +1,6 @@
 package util
 
 import (
-	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -11,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/net/proxy"
+	"golang.org/x/net/http/httpproxy"
 	"pansou/config"
 )
 
@@ -59,9 +58,11 @@ func upstreamPoolSettings() (int, time.Duration) {
 // 2 条空闲连接：并发突发结束后多余连接立刻被关闭，下一轮搜索必须重新做
 // TCP+TLS 握手。实测（5 轮 × 8 并发，同一主机）新建连接 32 条降至 8 条。
 //
-// 这里刻意只调连接池，不动 Proxy：DefaultTransport 的 ProxyFromEnvironment
-// 是插件当前唯一有效的代理来源（共享客户端只认 config.ProxyURL，不认
-// HTTP_PROXY 环境变量），改动它会直接破坏插件的代理行为。
+// 除了连接池，这里还要统一代理解析：DefaultTransport 自带的
+// ProxyFromEnvironment 只识别 HTTP_PROXY/HTTPS_PROXY/NO_PROXY，不认识
+// 本项目文档中的 PROXY，也不认识 ALL_PROXY。插件路径恰恰全走
+// DefaultTransport，所以只设置 PROXY 或 ALL_PROXY 时插件会整体退回直连
+// （TG 频道路径走共享客户端，不受影响）。详见 BuildProxyFunc。
 func TuneDefaultTransport() {
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
@@ -71,8 +72,25 @@ func TuneDefaultTransport() {
 	transport.MaxIdleConnsPerHost = maxIdleConnsPerHost
 	transport.MaxIdleConns = max(100, maxIdleConnsPerHost)
 	transport.IdleConnTimeout = idleConnTimeout
-	fmt.Printf("[HTTP] 已调优 DefaultTransport 连接池：每主机空闲连接 %d，保活 %v（插件均使用该连接池）\n",
-		maxIdleConnsPerHost, idleConnTimeout)
+
+	rawProxyURL := ""
+	if config.AppConfig != nil {
+		rawProxyURL = config.AppConfig.ProxyURL
+	}
+	if err := applyProxyFunc(transport, rawProxyURL); err != nil {
+		fmt.Printf("[HTTP] 代理解析失败，插件路径退回标准环境变量代理: %v\n", err)
+	}
+
+	fmt.Printf("[HTTP] 已调优 DefaultTransport：每主机空闲连接 %d，保活 %v，代理=%s（插件均使用该连接池）\n",
+		maxIdleConnsPerHost, idleConnTimeout, describeProxy(rawProxyURL))
+}
+
+// describeProxy 用于启动日志，避免把含账号密码的代理地址整条打出来。
+func describeProxy(rawProxyURL string) string {
+	if strings.TrimSpace(rawProxyURL) == "" {
+		return "标准环境变量(HTTP_PROXY/HTTPS_PROXY/NO_PROXY)"
+	}
+	return "已配置代理"
 }
 
 // NewHTTPClient 创建HTTP客户端，可按需指定本客户端使用的代理。
@@ -111,7 +129,7 @@ func NewHTTPClient(proxyURL string) (*http.Client, error) {
 		}).DialContext,
 	}
 
-	if err := applyProxy(transport, proxyURL); err != nil {
+	if err := applyProxyFunc(transport, proxyURL); err != nil {
 		return nil, err
 	}
 
@@ -124,45 +142,81 @@ func NewHTTPClient(proxyURL string) (*http.Client, error) {
 	return client, nil
 }
 
-func applyProxy(transport *http.Transport, rawProxyURL string) error {
-	rawProxyURL = strings.TrimSpace(rawProxyURL)
-	if rawProxyURL == "" {
-		return nil
+// BuildProxyFunc 构造统一的代理解析函数。
+//
+// 代理来源优先级由 config.getProxyURL 决定：PROXY 优先，其次兼容
+// HTTPS_PROXY/HTTP_PROXY/ALL_PROXY。这里必须显式构造，不能依赖
+// http.ProxyFromEnvironment——它只识别 HTTP_PROXY/HTTPS_PROXY/NO_PROXY，
+// 不认识本项目文档中的 PROXY，也不认识 ALL_PROXY。插件路径走的是
+// http.DefaultTransport，此前正是因此漏掉了这两种配置：
+// 只设置 PROXY 或 ALL_PROXY 时，插件会全部退回直连。
+//
+// 显式配置代理时按 NO_PROXY 放行直连；未配置任何代理时交回
+// http.ProxyFromEnvironment，保持标准语义。
+func BuildProxyFunc(rawProxyURL string, noProxy string) (func(*url.URL) (*url.URL, error), error) {
+	raw := strings.TrimSpace(rawProxyURL)
+	if raw == "" {
+		// 保持标准语义，含 ProxyFromEnvironment 对环境变量的单次缓存行为
+		return func(u *url.URL) (*url.URL, error) {
+			return http.ProxyFromEnvironment(&http.Request{URL: u})
+		}, nil
 	}
 
-	proxyURL, err := url.Parse(rawProxyURL)
+	normalized, err := normalizeProxyURL(raw)
 	if err != nil {
-		return fmt.Errorf("代理地址解析失败: %w", err)
+		return nil, err
+	}
+
+	cfg := &httpproxy.Config{
+		HTTPProxy:  normalized,
+		HTTPSProxy: normalized,
+		NoProxy:    strings.TrimSpace(noProxy),
+	}
+	return cfg.ProxyFunc(), nil
+}
+
+// normalizeProxyURL 校验并归一化代理地址。
+// socks5h 归一化为 socks5：Transport 原生支持 socks5，两者都本地解析域名。
+func normalizeProxyURL(raw string) (string, error) {
+	proxyURL, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("代理地址解析失败: %w", err)
 	}
 	if proxyURL.Scheme == "" || proxyURL.Host == "" {
-		return fmt.Errorf("代理地址必须包含协议和主机")
+		return "", fmt.Errorf("代理地址必须包含协议和主机")
 	}
 
 	switch strings.ToLower(proxyURL.Scheme) {
 	case "socks5", "socks5h":
-		if proxyURL.Scheme == "socks5h" {
-			clone := *proxyURL
-			clone.Scheme = "socks5"
-			proxyURL = &clone
-		}
-
-		// 创建SOCKS5代理拨号器
-		dialer, err := proxy.FromURL(proxyURL, proxy.Direct)
-		if err != nil {
-			return fmt.Errorf("SOCKS5代理初始化失败: %w", err)
-		}
-
-		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
-		}
+		clone := *proxyURL
+		clone.Scheme = "socks5"
+		return clone.String(), nil
 	case "http", "https":
-		// HTTP/HTTPS代理
-		transport.Proxy = http.ProxyURL(proxyURL)
+		return proxyURL.String(), nil
 	default:
-		return fmt.Errorf("不支持的代理协议: %s", proxyURL.Scheme)
+		return "", fmt.Errorf("不支持的代理协议: %s", proxyURL.Scheme)
 	}
+}
 
+// applyProxyFunc 把统一解析出的代理解析函数装到 transport 上。
+// Transport.Proxy 的签名是 func(*http.Request)，httpproxy 给的是
+// func(*url.URL)，这里做一次适配。
+func applyProxyFunc(transport *http.Transport, rawProxyURL string) error {
+	proxyFunc, err := BuildProxyFunc(rawProxyURL, configuredNoProxy())
+	if err != nil {
+		return err
+	}
+	transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		return proxyFunc(req.URL)
+	}
 	return nil
+}
+
+func configuredNoProxy() string {
+	if config.AppConfig != nil {
+		return config.AppConfig.NoProxy
+	}
+	return ""
 }
 
 // GetHTTPClient 获取HTTP客户端

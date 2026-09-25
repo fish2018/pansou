@@ -19,6 +19,7 @@ type Config struct {
 	UseProxy           bool
 	HTTPProxyURL       string
 	HTTPSProxyURL      string
+	NoProxy            string
 	// 缓存相关配置
 	CacheEnabled    bool
 	CachePath       string
@@ -84,6 +85,7 @@ func Init() {
 		UseProxy:           proxyURL != "",
 		HTTPProxyURL:       getHTTPProxyURL(),
 		HTTPSProxyURL:      getHTTPSProxyURL(),
+		NoProxy:            getNoProxy(),
 		// 缓存相关配置
 		CacheEnabled:    getCacheEnabled(),
 		CachePath:       getCachePath(),
@@ -232,6 +234,17 @@ func getProxyURL() string {
 		}
 	}
 	return ""
+}
+
+// getNoProxy 读取 NO_PROXY/no_proxy。
+//
+// 作用域仅限"显式配置了代理"的场景：http.Transport 在 Proxy 为固定地址时
+// 不会自行处理 NO_PROXY，需要由调用方按该变量放行直连。
+func getNoProxy() string {
+	if noProxy := strings.TrimSpace(os.Getenv("NO_PROXY")); noProxy != "" {
+		return noProxy
+	}
+	return strings.TrimSpace(os.Getenv("no_proxy"))
 }
 
 func getHTTPProxyURL() string {
