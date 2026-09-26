@@ -1,4 +1,4 @@
-package main
+package audit
 
 import (
 	"os"

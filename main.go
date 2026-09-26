@@ -41,7 +41,8 @@ import (
 	_ "pansou/plugin/dygang"
 	_ "pansou/plugin/dyyj"
 	_ "pansou/plugin/dyyjpro"
-	_ "pansou/plugin/erxiao"
+
+	// _ "pansou/plugin/erxiao"
 	_ "pansou/plugin/erxiaopan"
 	_ "pansou/plugin/feikuai"
 	_ "pansou/plugin/gaoqing888"
@@ -53,6 +54,7 @@ import (
 	_ "pansou/plugin/hunhepan"
 	_ "pansou/plugin/ikantv"
 	_ "pansou/plugin/jsnoteclub"
+
 	//_ "pansou/plugin/jupansou"
 	_ "pansou/plugin/jutoushe"
 	_ "pansou/plugin/kkv"
@@ -78,7 +80,8 @@ import (
 	_ "pansou/plugin/quarkres"
 	_ "pansou/plugin/quarksoo"
 	_ "pansou/plugin/quarktv"
-	_ "pansou/plugin/qupanshe"
+
+	// _ "pansou/plugin/qupanshe"
 	_ "pansou/plugin/rrbt"
 	_ "pansou/plugin/shandian"
 	_ "pansou/plugin/sopanya"
