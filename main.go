@@ -150,6 +150,10 @@ func initApp() {
 
 	// 确保异步插件系统初始化
 	plugin.InitAsyncPluginSystem()
+
+	// 后台常驻探测 t.me 可达性：被墙时 TG 阶段直接跳过，省掉 111 个必然挂满超时的频道请求。
+	// 探测在后台跑，搜索路径只读结论，不引入额外时延。
+	service.StartTGReachabilityProbe()
 }
 
 // startServer 启动Web服务器

@@ -70,6 +70,8 @@ func SetupRouter(searchService *service.SearchService) *gin.Engine {
 				// 只报事实不做淘汰——窗口内零产出不代表无数据（内容仍会经后台补齐进缓存），
 				// 是否停用由部署方按这里的名单决定。
 				"liveness": service.LivenessSnapshot(),
+				// TG 可达性：被墙时 TG 阶段会被直接跳过，这里给出结论、原因与探测时间。
+				"tg": service.TGReachabilitySnapshot(),
 			}
 
 			// 只有当插件启用时才返回插件相关信息

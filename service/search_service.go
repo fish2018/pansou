@@ -1386,6 +1386,16 @@ func (s *SearchService) searchTG(keyword string, channels []string, forceRefresh
 	}
 
 	// 缓存未命中或强制刷新，执行实际搜索
+
+	// TG 可达性门：t.me 被墙时不是"连接被拒绝"而是"连接被静默丢包"，111 个频道请求会全部挂满
+	// 超时（实测 [searchTG] 成功 0/111、超时未完成 111，整阶段稳定 4.00 秒），换来的结果恒为 0 条。
+	// 门开时直接返回：不写缓存（网络不通的空结果写进 60 分钟 TTL 会在恢复后继续骗人），
+	// 也不计入频道存活失败（这些频道根本没被试过）。
+	if !TGReachable() {
+		fmt.Printf("[searchTG] %s：t.me 当前不可达，跳过 TG 阶段（%s）\n", keyword, tgReason())
+		return nil, nil
+	}
+
 	var results []model.SearchResult
 
 	// 使用工作池并行搜索多个频道
