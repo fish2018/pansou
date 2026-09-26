@@ -1,7 +1,7 @@
 # 构建阶段
 # 使用 --platform=$BUILDPLATFORM 确保构建器始终在运行 Actions 的机器的原生架构上运行 (通常是 linux/amd64)
 # $BUILDPLATFORM 是 buildx 自动提供的变量
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 # 安装构建依赖
 RUN apk add --no-cache git ca-certificates tzdata
