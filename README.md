@@ -98,7 +98,7 @@ cd pansou
 | **PORT** | 服务端口 | `8888` | 修改服务监听端口 |
 | **PROXY** | SOCKS5代理 | 无 | 如：`PROXY=socks5://127.0.0.1:1080` |
 | **HTTPS_PROXY/HTTP_PROXY** | HTTPS/HTTP代理 | 无 | 如：`HTTPS_PROXY=http://127.0.0.1:1080`,`HTTP_PROXY=http://127.0.0.1:1080` |
-| **CHANNELS** | 默认搜索的TG频道 | `tgsearchers3` | 多个频道用逗号分隔 |
+| **CHANNELS** | 默认搜索的TG频道 | `tgsearchers7` | 多个频道用逗号分隔 |
 | **ENABLED_PLUGINS** | 指定启用插件，多个插件用逗号分隔 | 无 | 必须显式指定 |
 
 #### 认证配置（可选）
