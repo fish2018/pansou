@@ -45,15 +45,9 @@ const (
 	MaxConcurrentUsers   = 10 // 最多使用的用户数
 	MaxConcurrentDetails = 50 // 最大并发详情请求数
 
-	// 发布预算的取值依据：框架默认观察窗口 4 秒（ASYNC_RESPONSE_TIMEOUT），
-	// 留 0.8 秒给"结果回传 + 框架收尾"，其余时间全部用于抓取。
-	defaultAsyncResponseWindow = 4 * time.Second
-	publishSafetyMargin        = 800 * time.Millisecond
 	// reloginBudget 重登（PoW + 登录 + 落盘）的实测耗时量级：判断"值不值得同步等"。
-	reloginBudget    = 4 * time.Second
-	minPublishBudget = 1800 * time.Millisecond
-	maxPublishBudget = 8 * time.Second
-	DebugLog         = false // 调试日志开关（排查问题时改为true）
+	reloginBudget = 4 * time.Second
+	DebugLog      = false // 调试日志开关（排查问题时改为true）
 )
 
 // 默认账户配置（可通过Web界面添加更多账户）
@@ -2963,19 +2957,10 @@ func (p *GyingPlugin) fetchAllDetails(searchData *SearchData, scraper *cloudscra
 // **整体丢弃**——不是少几条，而是一条都没有。所以按"窗口 - 安全余量"定预算，
 // 到点就交已拿到的：部署方把窗口调大，预算随之放大，能真正换来更完整的详情，
 // 而不是白等一批会被丢掉的结果。
+// publishBudget 见 plugin.PublishBudget：窗口减去回传余量，允许部署方通过
+// ASYNC_RESPONSE_TIMEOUT 换到更完整的抓取。
 func (p *GyingPlugin) publishBudget() time.Duration {
-	window := defaultAsyncResponseWindow
-	if config.AppConfig != nil && config.AppConfig.AsyncResponseTimeoutDur > 0 {
-		window = config.AppConfig.AsyncResponseTimeoutDur
-	}
-	budget := window - publishSafetyMargin
-	if budget < minPublishBudget {
-		budget = minPublishBudget
-	}
-	if budget > maxPublishBudget {
-		budget = maxPublishBudget
-	}
-	return budget
+	return plugin.PublishBudget()
 }
 
 // fetchDetail 获取详情

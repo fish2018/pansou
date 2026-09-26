@@ -556,6 +556,9 @@ func (p *QQPDPlugin) Initialize() error {
 	// 启动定期清理任务
 	go p.startCleanupTask()
 
+	// 后台预热频道索引（首次解析 guild_id 很慢，不能留给第一次搜索）
+	go p.warmupChannelIndex()
+
 	p.initialized = true
 	return nil
 }
@@ -632,6 +635,8 @@ func (p *QQPDPlugin) SearchWithResult(keyword string, ext map[string]interface{}
 	message := ""
 	if searchErr != nil {
 		message = searchErr.Error()
+		// 失效频道要在"无结果直接返回"之前处理，否则它永远不会被摘掉
+		p.pruneDeadChannels(searchErr)
 		if len(results) == 0 {
 			return model.PluginSearchResult{Results: []model.SearchResult{}, IsFinal: true, Message: message}, searchErr
 		}
@@ -1337,11 +1342,49 @@ func (p *QQPDPlugin) buildChannelTasks(users []*User) []ChannelTask {
 	return tasks
 }
 
+// warmupChannelIndex 启动时后台解析所有频道的 guild_id 并落盘缓存。
+//
+// guild_id 的首次解析要跑一轮上游请求，实测会让"进程刚起来后的第一次搜索"
+// 一条都交不出来（10 个频道全在解析，3.2 秒预算内没有一条返回）。放到启动阶段
+// 后台做，第一次搜索就能直接用缓存。
+func (p *QQPDPlugin) warmupChannelIndex() {
+	users := p.getActiveUsers()
+	if len(users) == 0 {
+		return
+	}
+
+	tasks := p.buildChannelTasks(users)
+	if len(tasks) == 0 {
+		return
+	}
+
+	start := time.Now()
+	resolved, err := p.resolveChannelTasks(tasks)
+	if err != nil {
+		fmt.Printf("[QQPD] ⚠️  频道索引预热部分失败: %v\n", err)
+	}
+
+	valid := 0
+	for _, task := range resolved {
+		if validGuildID(task.GuildID) {
+			valid++
+		}
+	}
+	fmt.Printf("[QQPD] ✅ 频道索引预热完成：%d/%d 个频道可用，耗时 %.1fs\n",
+		valid, len(tasks), time.Since(start).Seconds())
+}
+
 // executeTasks 并发执行所有频道搜索任务
 func (p *QQPDPlugin) executeTasks(tasks []ChannelTask, keyword string) ([]model.SearchResult, error) {
+	// 发布截止：框架只等 AsyncResponseTimeout（默认 4 秒），到点还没交出的结果会被整体
+	// 丢弃——不是少几条，而是一条都没有。频道一多、上游一慢，整批等待必然超线，
+	// 所以到点先把已经拿到的结果交出去，未完成的请求在后台自行结束。
+	publishDeadline := time.Now().Add(plugin.PublishBudget())
+
 	tasks, resolveErr := p.resolveChannelTasks(tasks)
 	var allResults []model.SearchResult
 	taskErrors := []error{resolveErr}
+	skipped := 0
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
@@ -1357,6 +1400,14 @@ func (p *QQPDPlugin) executeTasks(tasks []ChannelTask, keyword string) ([]model.
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
+			// 预算已经用完，连请求都不发
+			if time.Now().After(publishDeadline) {
+				mu.Lock()
+				skipped++
+				mu.Unlock()
+				return
+			}
+
 			// 搜索单个频道（使用预先获取的guild_id）
 			results, err := p.searchSingleChannel(keyword, task.Cookie, task.ChannelID, task.GuildID)
 
@@ -1370,8 +1421,118 @@ func (p *QQPDPlugin) executeTasks(tasks []ChannelTask, keyword string) ([]model.
 		}(task)
 	}
 
-	wg.Wait()
-	return allResults, errors.Join(taskErrors...)
+	// 有界等待：到点就带着已经拿到的结果返回
+	allDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(allDone)
+	}()
+
+	timedOut := false
+	if remaining := time.Until(publishDeadline); remaining > 0 {
+		select {
+		case <-allDone:
+		case <-time.After(remaining):
+			timedOut = true
+		}
+	} else {
+		timedOut = true
+	}
+
+	mu.Lock()
+	snapshot := make([]model.SearchResult, len(allResults))
+	copy(snapshot, allResults)
+	errs := append([]error(nil), taskErrors...)
+	skippedCount := skipped
+	mu.Unlock()
+
+	if timedOut {
+		fmt.Printf("[QQPD] ⏱️ 触发发布截止，先返回 %d 条（未开始 %d 个 / 共 %d 个频道）；关键词 %q\n",
+			len(snapshot), skippedCount, len(tasks), keyword)
+	}
+
+	return snapshot, errors.Join(errs...)
+}
+
+// deadChannelFailureThreshold 频道被源站判定"不存在"后，连续失败多少次就摘掉它。
+//
+// code=10003 是确定性回答（重试多少次都一样），但网络抖动可能让错误误判一次，
+// 所以留一次容错：连续两次才动手。
+const deadChannelFailureThreshold = 2
+
+// deadChannelFailures 记录失效频道的累计失败次数（进程内有效）。
+var (
+	deadChannelFailuresMu sync.Mutex
+	deadChannelFailures   = map[string]int{}
+)
+
+// pruneDeadChannels 识别"频道已不存在"的失败，连续命中到阈值就从用户配置里摘掉。
+//
+// 留着失效频道不只是噪音：它每次搜索都要占用一个并发位并等满一轮上游超时，
+// 频道越多，正常频道被拖出发布窗口的概率越大。
+func (p *QQPDPlugin) pruneDeadChannels(searchErr error) {
+	if searchErr == nil {
+		return
+	}
+
+	matches := qqpdReDeadChannel.FindAllStringSubmatch(searchErr.Error(), -1)
+	if len(matches) == 0 {
+		return
+	}
+
+	dead := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		dead[m[1]] = true
+	}
+
+	deadChannelFailuresMu.Lock()
+	var toRemove []string
+	for channel := range dead {
+		deadChannelFailures[channel]++
+		if deadChannelFailures[channel] >= deadChannelFailureThreshold {
+			toRemove = append(toRemove, channel)
+		}
+	}
+	deadChannelFailuresMu.Unlock()
+
+	for _, channel := range toRemove {
+		p.removeChannelFromAllUsers(channel)
+	}
+}
+
+// removeChannelFromAllUsers 从所有用户的频道配置里移除指定频道并落盘。
+func (p *QQPDPlugin) removeChannelFromAllUsers(channel string) {
+	changed := 0
+	p.users.Range(func(key, value interface{}) bool {
+		user := value.(*User)
+
+		kept := user.Channels[:0]
+		removed := false
+		for _, c := range user.Channels {
+			if c == channel {
+				removed = true
+				continue
+			}
+			kept = append(kept, c)
+		}
+		if !removed {
+			return true
+		}
+
+		user.Channels = kept
+		delete(user.ChannelGuildIDs, channel)
+		if err := p.saveUser(user); err != nil {
+			fmt.Printf("[QQPD] ⚠️  移除失效频道 %s 后保存失败: %v\n", channel, err)
+			return true
+		}
+		changed++
+		return true
+	})
+
+	if changed > 0 {
+		fmt.Printf("[QQPD] 🧹 频道 %s 连续 %d 次报「频道不存在」，已从 %d 个用户的配置中移除\n",
+			channel, deadChannelFailureThreshold, changed)
+	}
 }
 
 func (p *QQPDPlugin) searchSingleChannel(keyword, cookieStr, channelID, guildID string) ([]model.SearchResult, error) {
@@ -2236,4 +2397,6 @@ var (
 	qqpdRe3 = regexp.MustCompile(`ptuiCB\('0','0','([^']+)'`)
 	qqpdRe4 = regexp.MustCompile(`ptsigx=([A-Za-z0-9]+)`)
 	qqpdRe5 = regexp.MustCompile(`uin=(\d+)`)
+	// qqpdReDeadChannel 从错误信息里认出"频道已不存在"的失败，用于清理用户配置。
+	qqpdReDeadChannel = regexp.MustCompile(`频道 (\S+): \[QQPD\] 获取频道信息失败`)
 )

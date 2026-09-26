@@ -1056,7 +1056,13 @@ func (p *WeiboPlugin) refreshCookie(cookieStr string) string {
 }
 
 func (p *WeiboPlugin) executeTasks(tasks []UserTask, keyword string) []model.SearchResult {
+	// 发布截止：框架只等 AsyncResponseTimeout（默认 4 秒），到点还没交出的结果会被整体
+	// 丢弃。单个用户要翻 3 页、每页还要拉一轮评论，实测要 8.5 秒，整批等待必然超线，
+	// 所以到点先把已经拿到的结果交出去，未完成的请求在后台自行结束。
+	publishDeadline := time.Now().Add(plugin.PublishBudget())
+
 	var allResults []model.SearchResult
+	skipped := 0
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
@@ -1070,6 +1076,14 @@ func (p *WeiboPlugin) executeTasks(tasks []UserTask, keyword string) []model.Sea
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
+			// 预算已经用完，连请求都不发
+			if time.Now().After(publishDeadline) {
+				mu.Lock()
+				skipped++
+				mu.Unlock()
+				return
+			}
+
 			results := p.searchUserWeibo(t.UserID, t.Cookie, keyword)
 
 			mu.Lock()
@@ -1078,16 +1092,46 @@ func (p *WeiboPlugin) executeTasks(tasks []UserTask, keyword string) []model.Sea
 		}(task)
 	}
 
-	wg.Wait()
-	return allResults
+	// 有界等待：到点就带着已经拿到的结果返回
+	allDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(allDone)
+	}()
+
+	timedOut := false
+	if remaining := time.Until(publishDeadline); remaining > 0 {
+		select {
+		case <-allDone:
+		case <-time.After(remaining):
+			timedOut = true
+		}
+	} else {
+		timedOut = true
+	}
+
+	mu.Lock()
+	snapshot := make([]model.SearchResult, len(allResults))
+	copy(snapshot, allResults)
+	skippedCount := skipped
+	mu.Unlock()
+
+	if timedOut {
+		fmt.Printf("[Weibo] ⏱️ 触发发布截止，先返回 %d 条（未开始 %d 个 / 共 %d 个用户）；关键词 %q\n",
+			len(snapshot), skippedCount, len(tasks), keyword)
+	}
+
+	return snapshot
 }
 
 func (p *WeiboPlugin) searchUserWeibo(uid, cookie, keyword string) []model.SearchResult {
 	var results []model.SearchResult
 	maxPages := 3
 
+	// 单个请求超时收紧到 15 秒：发布窗口只有 4 秒，30 秒的客户端超时意味着
+	// 请求即使已经被放弃，底层连接还要再挂着跑很久。
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 15 * time.Second,
 	}
 
 	for page := 1; page <= maxPages; page++ {
