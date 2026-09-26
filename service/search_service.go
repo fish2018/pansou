@@ -1618,7 +1618,7 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 		batchTimeout = config.AppConfig.PluginTimeout
 	}
 	if batchTimeout <= 0 {
-		batchTimeout = 30 * time.Second
+		batchTimeout = 10 * time.Second
 	}
 	results := pool.ExecuteBatchWithTimeout(tasks, concurrency, batchTimeout)
 
@@ -1708,7 +1708,7 @@ func (s *SearchService) backfillPlugins(cacheKey, keyword string, missing []stri
 	// 补齐批次独立预算，取批截止与插件自身响应超时的较大者，给慢插件留出生路。
 	batchTimeout := config.AppConfig.PluginTimeout
 	if batchTimeout <= 0 {
-		batchTimeout = 30 * time.Second
+		batchTimeout = 10 * time.Second
 	}
 
 	tasks := make([]pool.Task, 0, len(availablePlugins))

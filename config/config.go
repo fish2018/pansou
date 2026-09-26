@@ -486,15 +486,24 @@ func getOptimizeMemory() bool {
 	return enabled != "false" && enabled != "0"
 }
 
-// 从环境变量获取插件超时时间（秒），如果未设置则使用默认值
+// 从环境变量获取插件超时时间（秒），如果未设置则使用默认值 10 秒（2026-09-25 由 30 秒调整）。
+//
+// 这个值一身兼三职：没自定义超时的插件的后台 HTTP 客户端上限、插件批任务软截止的回退值、
+// 后台补齐批截止的回退值。隔离实测（全量配置、关键词"凡人修仙传"、各自全新缓存）：
+// 仅 TG 频道 3.46 秒、仅 71 插件 30.00 秒（正好等于当时的软截止）、单插件逐个跑最慢 4.04 秒。
+// 用户等待由"插件批任务等满软截止"决定，与 TG 路径无关；30 秒档与 8 秒档在三个关键词上
+// 结果条数相同（821/452/1851 对 821/455/1877），即那 22 秒是纯等待。
+//
+// 注意：单插件逐个跑测不出并发争抢（71 个插件共用一个出口时任务会明显变慢），
+// 所以不要用那份数据去定单个插件的超时值。需要更长等待的部署用 PLUGIN_TIMEOUT 覆盖。
 func getPluginTimeout() int {
 	timeoutEnv := os.Getenv("PLUGIN_TIMEOUT")
 	if timeoutEnv == "" {
-		return 30 // 默认30秒
+		return 10
 	}
 	timeout, err := strconv.Atoi(timeoutEnv)
 	if err != nil || timeout <= 0 {
-		return 30
+		return 10
 	}
 	return timeout
 }
