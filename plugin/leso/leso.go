@@ -14,6 +14,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 
+	"pansou/config"
 	"pansou/model"
 	"pansou/plugin"
 )
@@ -110,6 +111,8 @@ func (p *Plugin) searchImpl(client *http.Client, keyword string, ext map[string]
 	results := make([]model.SearchResult, 0, len(items))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	var failed int
+	var firstErr error
 	sem := make(chan struct{}, maxConcurrency)
 	for _, item := range items {
 		item := item
@@ -118,16 +121,29 @@ func (p *Plugin) searchImpl(client *http.Client, keyword string, ext map[string]
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			result, ok := p.fetchDetail(client, item)
-			if !ok {
+			result, err := p.fetchDetail(client, item)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				failed++
+				if firstErr == nil {
+					firstErr = err
+				}
 				return
 			}
-			mu.Lock()
 			results = append(results, result)
-			mu.Unlock()
 		}()
 	}
 	wg.Wait()
+	// 搜索页明明列出了条目，却一条详情都没抓下来，这不是"没资源"而是链路出了问题。
+	// 之前这里静默返回 0 条，和"关键词确实没有结果"完全分不清：
+	// 全量 65 插件同跑时实测就是这个状态，日志里只留一个 leso=0，看不出原因。
+	if len(results) == 0 && failed == len(items) {
+		return nil, fmt.Errorf("[%s] %d 个搜索条目详情页全部抓取失败: %w", p.Name(), failed, firstErr)
+	}
+	if failed > 0 && config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
+		fmt.Printf("[%s] %d/%d 个条目详情页抓取失败，首个原因: %v\n", p.Name(), failed, len(items), firstErr)
+	}
 	return plugin.FilterResultsByKeyword(results, keyword), nil
 }
 
@@ -144,40 +160,77 @@ func (p *Plugin) fetchSearch(client *http.Client, keyword string) (*goquery.Docu
 	}
 	setHeaders(req, baseURL+"/")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := client.Do(req)
+	doc, err := p.loadDocument(ctx, client, req, 6<<20)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] 搜索请求失败: %w", p.Name(), err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("[%s] 搜索请求返回 HTTP %d", p.Name(), resp.StatusCode)
-	}
-	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, 6<<20))
-	if err != nil {
-		return nil, fmt.Errorf("[%s] 解析搜索结果失败: %w", p.Name(), err)
 	}
 	return doc, nil
 }
 
-func (p *Plugin) fetchDetail(client *http.Client, item searchItem) (model.SearchResult, bool) {
+// loadDocument 发一次请求并把响应体解析成文档。
+//
+// Discuz 的 search.php 对 POST 会回 302 跳到带 searchid 的结果页，详情页也可能跳转。
+// 这里不依赖调用方 client 的重定向策略（部署里可能被设成不跟随），遇到 3xx 就自己按
+// Location 再取一次，并且把状态码原样带进错误文本——排查时能直接看出是超时还是被拒。
+func (p *Plugin) loadDocument(ctx context.Context, client *http.Client, req *http.Request, limit int64) (*goquery.Document, error) {
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if isRedirectStatus(resp.StatusCode) {
+		location := strings.TrimSpace(resp.Header.Get("Location"))
+		resp.Body.Close()
+		if location == "" {
+			return nil, fmt.Errorf("HTTP %d 但响应缺少 Location", resp.StatusCode)
+		}
+		next, err := http.NewRequestWithContext(ctx, http.MethodGet, resolveLocation(req.URL, location), nil)
+		if err != nil {
+			return nil, err
+		}
+		setHeaders(next, baseURL+"/")
+		if resp, err = client.Do(next); err != nil {
+			return nil, err
+		}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return goquery.NewDocumentFromReader(io.LimitReader(resp.Body, limit))
+}
+
+func isRedirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveLocation(base *url.URL, location string) string {
+	parsed, err := url.Parse(location)
+	if err != nil {
+		return baseURL + "/" + strings.TrimPrefix(location, "/")
+	}
+	if base == nil {
+		return parsed.String()
+	}
+	return base.ResolveReference(parsed).String()
+}
+
+func (p *Plugin) fetchDetail(client *http.Client, item searchItem) (model.SearchResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, item.detailURL, nil)
 	if err != nil {
-		return model.SearchResult{}, false
+		return model.SearchResult{}, fmt.Errorf("构造请求失败: %w", err)
 	}
 	setHeaders(req, baseURL+"/")
-	resp, err := client.Do(req)
+	doc, err := p.loadDocument(ctx, client, req, 8<<20)
 	if err != nil {
-		return model.SearchResult{}, false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return model.SearchResult{}, false
-	}
-	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return model.SearchResult{}, false
+		return model.SearchResult{}, err
 	}
 	contentNode := doc.Find("td[id^='postmessage_'], td.t_f").First()
 	if contentNode.Length() == 0 {
@@ -187,7 +240,7 @@ func (p *Plugin) fetchDetail(client *http.Client, item searchItem) (model.Search
 	contentText := cleanText(contentNode.Text())
 	links := extractLinks(contentHTML + "\n" + contentText)
 	if len(links) == 0 {
-		return model.SearchResult{}, false
+		return model.SearchResult{}, fmt.Errorf("详情页无可用链接")
 	}
 
 	title := item.title
@@ -221,7 +274,7 @@ func (p *Plugin) fetchDetail(client *http.Client, item searchItem) (model.Search
 	if imageURL != "" {
 		result.Images = []string{imageURL}
 	}
-	return result, true
+	return result, nil
 }
 
 func parseSearchItems(doc *goquery.Document) []searchItem {
