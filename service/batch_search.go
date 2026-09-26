@@ -343,6 +343,22 @@ func (o *batchSearchOutcome) logSummary(source, keyword string) {
 			source, keyword, strings.Join(names, " "), suffix)
 	}
 
+	// 超时未返回明细：这些任务在批截止前没交回结果，是"批截止该定多长"的另一半证据。
+	// 上面只列得出已完成项的耗时，而未返回项恰恰没有耗时——它就是需要被观察的对象，
+	// 只列名字也能看出是"少数卡住的"还是"大批没轮到"（后者说明并发度不够，加超时没用）。
+	if o.timedOut() > 0 {
+		names := make([]string, len(o.missing))
+		copy(names, o.missing)
+		sort.Strings(names)
+		suffix := ""
+		if len(names) > 12 {
+			suffix = fmt.Sprintf(" 等 %d 个", len(names))
+			names = names[:12]
+		}
+		fmt.Printf("[%s] %s：超时未返回: %s%s\n",
+			source, keyword, strings.Join(names, " "), suffix)
+	}
+
 	// 慢项明细：这些是真正决定批截止该定多长的项。
 	// 这里只报告不自动剔除——自动剔除会静默丢掉仍在产出结果的频道，
 	// 与"兜底数据要完整"的目标冲突，是否裁剪应由部署方按实测决定。
