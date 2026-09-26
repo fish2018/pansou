@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"hash/fnv"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"time"
+
+	"pansou/util/cpu"
 )
 
 // ShardedDiskCache 分片磁盘缓存
@@ -27,7 +28,7 @@ func NewShardedDiskCache(baseDir string, shardCount, maxSizeMB int) (*ShardedDis
 // NewOptimizedShardedDiskCache 创建优化的分片磁盘缓存（动态分片数）
 func NewOptimizedShardedDiskCache(baseDir string, maxSizeMB int) (*ShardedDiskCache, error) {
 	// 动态确定分片数量：与内存缓存保持一致的策略
-	shardCount := runtime.NumCPU() * 2
+	shardCount := cpu.SchedulableCount() * 2
 	if shardCount < 4 {
 		shardCount = 4
 	}

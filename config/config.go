@@ -3,11 +3,12 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
+
+	"pansou/util/cpu"
 )
 
 // Config 应用配置结构
@@ -617,7 +618,7 @@ func getAsyncMaxBackgroundWorkers() int {
 
 	// 自动计算：根据CPU核心数计算
 	// 每个CPU核心分配5个工作者，最小20个
-	cpuCount := runtime.NumCPU()
+	cpuCount := cpu.SchedulableCount()
 	workers := cpuCount * 5
 
 	// 确保至少有20个工作者
@@ -741,7 +742,7 @@ func getHTTPMaxConns() int {
 
 	// 自动计算：根据CPU核心数计算
 	// 每个CPU核心分配200个连接，最小1000个
-	cpuCount := runtime.NumCPU()
+	cpuCount := cpu.SchedulableCount()
 	maxConns := cpuCount * 200
 
 	// 确保至少有1000个连接

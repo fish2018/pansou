@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"pansou/util/cpu"
 )
 
 // 全局清理任务相关变量（单例模式）
@@ -60,7 +61,7 @@ func NewShardedMemoryCache(maxItems int, maxSizeMB int) *ShardedMemoryCache {
 	// README 一直把 SHARD_COUNT 列在环境变量表里，但代码从来没有读过它——
 	// 文档承诺了一个不存在的开关。这里把承诺兑现：显式值优先，非法值忽略并回落到推算值，
 	// 免得一个手滑的 SHARD_COUNT=0 变成零分片缓存。
-	shardCount := resolveShardCount(runtime.NumCPU())
+	shardCount := resolveShardCount(cpu.SchedulableCount())
 
 	// 确保分片数是2的幂，便于使用掩码进行快速取模
 	shardCount = nextPowerOfTwo(shardCount)

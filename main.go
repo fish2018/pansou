@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -22,6 +21,7 @@ import (
 	"pansou/service"
 	"pansou/util"
 	"pansou/util/cache"
+	"pansou/util/cpu"
 
 	// 以下是插件的空导入，用于触发各插件的init函数，实现自动注册
 	// 添加新插件时，只需在此处添加对应的导入语句即可
@@ -341,8 +341,8 @@ func printServiceInfo(port string, pluginManager *plugin.PluginManager) {
 	if os.Getenv("HTTP_MAX_CONNS") != "" {
 		maxConnsMsg = "(由环境变量指定)"
 	} else {
-		cpuCount := runtime.NumCPU()
-		maxConnsMsg = fmt.Sprintf("(自动计算: CPU核心数%d × 200)", cpuCount)
+		cpuCount := cpu.SchedulableCount()
+		maxConnsMsg = fmt.Sprintf("(自动计算: GOMAXPROCS=%d × 200)", cpuCount)
 	}
 
 	fmt.Printf("HTTP服务器配置: 读取超时=%v %s, 写入超时=%v %s, 空闲超时=%v, 最大连接数=%d %s\n",
@@ -358,8 +358,8 @@ func printServiceInfo(port string, pluginManager *plugin.PluginManager) {
 		if os.Getenv("ASYNC_MAX_BACKGROUND_WORKERS") != "" {
 			workersMsg = "(由环境变量指定)"
 		} else {
-			cpuCount := runtime.NumCPU()
-			workersMsg = fmt.Sprintf("(自动计算: CPU核心数%d × 5)", cpuCount)
+			cpuCount := cpu.SchedulableCount()
+			workersMsg = fmt.Sprintf("(自动计算: GOMAXPROCS=%d × 5)", cpuCount)
 		}
 
 		// 检查任务数量是否由环境变量指定

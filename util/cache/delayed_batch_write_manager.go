@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"pansou/model"
+	"pansou/util/cpu"
 )
 
 // CacheWriteStrategy 缓存写入策略
@@ -165,7 +166,7 @@ func (c *CacheWriteConfig) calculateOptimalBatchInterval() time.Duration {
 // calculateOptimalBatchSize 计算最优批量大小
 func (c *CacheWriteConfig) calculateOptimalBatchSize() int {
 	// 基于CPU核心数和内存动态计算
-	numCPU := runtime.NumCPU()
+	numCPU := cpu.SchedulableCount()
 
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
