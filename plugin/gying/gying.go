@@ -42,9 +42,18 @@ import (
 
 // 插件配置参数
 const (
-	MaxConcurrentUsers   = 10    // 最多使用的用户数
-	MaxConcurrentDetails = 50    // 最大并发详情请求数
-	DebugLog             = false // 调试日志开关（排查问题时改为true）
+	MaxConcurrentUsers   = 10 // 最多使用的用户数
+	MaxConcurrentDetails = 50 // 最大并发详情请求数
+
+	// 发布预算的取值依据：框架默认观察窗口 4 秒（ASYNC_RESPONSE_TIMEOUT），
+	// 留 0.8 秒给"结果回传 + 框架收尾"，其余时间全部用于抓取。
+	defaultAsyncResponseWindow = 4 * time.Second
+	publishSafetyMargin        = 800 * time.Millisecond
+	// reloginBudget 重登（PoW + 登录 + 落盘）的实测耗时量级：判断"值不值得同步等"。
+	reloginBudget    = 4 * time.Second
+	minPublishBudget = 1800 * time.Millisecond
+	maxPublishBudget = 8 * time.Second
+	DebugLog         = false // 调试日志开关（排查问题时改为true）
 )
 
 // 默认账户配置（可通过Web界面添加更多账户）
@@ -961,6 +970,12 @@ func (p *GyingPlugin) loadAllUsers() {
 		if err := json.Unmarshal(data, &user); err != nil {
 			continue
 		}
+
+		// 落盘的 last_warmup_at 描述的是**上一个进程**里的 scraper 状态，进程一重启，
+		// 内存里的防爬链路就没了，而这个时间戳还在，于是 10 分钟 TTL 内会跳过预热、
+		// 直接拿着旧 cookie 去搜——站点回 403，插件就把结果报成失败。
+		// 所以加载时一律清零，让启动预热真正跑一遍（实测只需 1.7 秒）。
+		user.LastWarmupAt = time.Time{}
 
 		// 过滤条件：status必须是active
 		if user.Status != "active" {
@@ -2515,10 +2530,20 @@ func (p *GyingPlugin) warmUpAllSessions() {
 
 func (p *GyingPlugin) searchWithScraperWithRetry(keyword string, scraper *cloudscraper.Scraper, user *User) ([]model.SearchResult, error) {
 	retryStart := time.Now()
+	publishDeadline := retryStart.Add(p.publishBudget())
+
 	// 预热只在会话变冷时做一次：它同时完成 PoW 校验与防爬 cookie 刷新。
+	//
+	// 但它本身要 1.7 秒以上，和搜索相加必然顶穿 4 秒窗口。实测带着已存的
+	// browser_verified + app_auth 直接搜通常能出结果，所以只剩很少预算时改为后台预热，
+	// 让本次搜索先把结果交出去；下一次搜索就用上预热好的会话。
 	if p.needsWarmup(user) {
-		if warmErr := p.warmupSession(scraper, user); warmErr != nil && DebugLog {
-			fmt.Printf("[Gying] ⚠️  搜索前预热失败（继续尝试搜索）: %v\n", warmErr)
+		if time.Until(publishDeadline) > p.publishBudget()/2 {
+			if warmErr := p.warmupSession(scraper, user); warmErr != nil && DebugLog {
+				fmt.Printf("[Gying] ⚠️  搜索前预热失败（继续尝试搜索）: %v\n", warmErr)
+			}
+		} else {
+			go p.warmupSessionBackground(user)
 		}
 	}
 
@@ -2531,6 +2556,23 @@ func (p *GyingPlugin) searchWithScraperWithRetry(keyword string, scraper *clouds
 
 	// 检测是否为403错误
 	if err != nil && strings.Contains(err.Error(), "403") {
+		// 有结果就先交付：重登实测 8~20 秒，同步做必然超出窗口、把结果一起拖没。
+		// 修复动作转后台，下一次搜索自然恢复正常。
+		if len(results) > 0 {
+			fmt.Printf("[Gying] ⚠️  搜索返回 403，但已拿到 %d 条结果，先交付并在后台重新登录；关键词 %q\n",
+				len(results), keyword)
+			go p.reloginUserBackground(user)
+			return results, nil
+		}
+
+		// 一条都没有时，剩余预算不足重登的话同步做也没意义（结果照样超窗口被丢），
+		// 直接返回错误，让后台把会话修好，下一次搜索再交付。
+		if time.Until(publishDeadline) < reloginBudget {
+			fmt.Printf("[Gying] ⚠️  搜索返回 403 且无结果，剩余预算不足重登，本次返回错误、后台修复会话；关键词 %q\n", keyword)
+			go p.reloginUserBackground(user)
+			return nil, err
+		}
+
 		fmt.Printf("[Gying] ⚠️  搜索返回 403（会话失效），准备重新登录；关键词 %q\n", keyword)
 		if DebugLog {
 			fmt.Printf("[Gying] ⚠️  检测到403错误，尝试重新登录用户 %s\n", user.Username)
@@ -2577,6 +2619,34 @@ func (p *GyingPlugin) searchWithScraperWithRetry(keyword string, scraper *clouds
 	}
 
 	return results, err
+}
+
+// warmupSessionBackground 后台预热：用插件自己的 scraper 实例，不阻塞本次搜索。
+func (p *GyingPlugin) warmupSessionBackground(user *User) {
+	scraperVal, ok := p.scrapers.Load(user.Hash)
+	if !ok {
+		return
+	}
+	scraper, ok := scraperVal.(*cloudscraper.Scraper)
+	if !ok || scraper == nil {
+		return
+	}
+	if err := p.warmupSession(scraper, user); err != nil {
+		fmt.Printf("[Gying] ⚠️  后台预热用户 %s 失败: %v\n", user.Username, err)
+		return
+	}
+	fmt.Printf("[Gying] ✅ 后台预热完成（用户 %s）\n", user.Username)
+}
+
+// reloginUserBackground 后台重新登录：同步重登会把插件推出框架观察窗口，
+// 有结果时先交付、再在后台把会话修好。
+func (p *GyingPlugin) reloginUserBackground(user *User) {
+	if err := p.reloginUser(user); err != nil {
+		fmt.Printf("[Gying] ⚠️  后台重新登录用户 %s 失败: %v\n", user.Username, err)
+		return
+	}
+	user.LastWarmupAt = time.Now()
+	fmt.Printf("[Gying] ✅ 后台重新登录完成（用户 %s），下一次搜索将使用新会话\n", user.Username)
 }
 
 // searchWithScraper 使用scraper搜索
@@ -2693,13 +2763,14 @@ func (p *GyingPlugin) searchWithScraper(keyword string, scraper *cloudscraper.Sc
 	// 放在这里意味着每次搜索都多一次完整页面请求，冷路径会被顶出框架观察窗口。
 
 	// 4. 并发请求详情接口
-	results, err := p.fetchAllDetails(&searchData, scraper, keyword)
+	results, err := p.fetchAllDetails(&searchData, scraper, keyword, searchStart.Add(p.publishBudget()))
 	if err != nil {
 		if DebugLog {
 			fmt.Printf("[Gying] fetchAllDetails 失败: %v\n", err)
 			fmt.Printf("[Gying] ---------- searchWithScraper 结束 ----------\n")
 		}
-		return nil, err
+		// 带上已拿到的结果一起返回：调用方在有结果时可先交付、把重登放到后台。
+		return results, err
 	}
 
 	if DebugLog {
@@ -2718,7 +2789,7 @@ func (p *GyingPlugin) searchWithScraper(keyword string, scraper *cloudscraper.Sc
 }
 
 // fetchAllDetails 并发获取所有详情
-func (p *GyingPlugin) fetchAllDetails(searchData *SearchData, scraper *cloudscraper.Scraper, keyword string) ([]model.SearchResult, error) {
+func (p *GyingPlugin) fetchAllDetails(searchData *SearchData, scraper *cloudscraper.Scraper, keyword string, publishDeadline time.Time) ([]model.SearchResult, error) {
 	if DebugLog {
 		fmt.Printf("[Gying] >>> fetchAllDetails 开始\n")
 		fmt.Printf("[Gying] 需要获取 %d 个详情，关键词: %s\n", len(searchData.L.I), keyword)
@@ -2733,7 +2804,12 @@ func (p *GyingPlugin) fetchAllDetails(searchData *SearchData, scraper *cloudscra
 
 	successCount := 0
 	failCount := 0
+	skippedByDeadline := 0
 	has403 := false
+
+	// 实测同一个关键词，整体耗时在 3.4 / 3.5 / 4.1 / 11.4 秒之间抖动（慢的那次是站点
+	// 又发了一次验证，或某条详情特别慢），撞上 4 秒窗口就是全空。截止时间由调用方按
+	// "窗口 - 安全余量"从搜索开始算好传进来，这里只负责到点收工、把已拿到的交出去。
 
 	// 将关键词转为小写，用于不区分大小写的匹配
 	keywordLower := strings.ToLower(keyword)
@@ -2753,6 +2829,14 @@ func (p *GyingPlugin) fetchAllDetails(searchData *SearchData, scraper *cloudscra
 				return
 			}
 			mu.Unlock()
+
+			// 已过预算就别再发新请求了：拿到的先交出去，好过整批被窗口丢掉。
+			if time.Now().After(publishDeadline) {
+				mu.Lock()
+				skippedByDeadline++
+				mu.Unlock()
+				return
+			}
 
 			// 检查标题是否包含搜索关键词
 			if !searchData.hasAlignedIndex(index) {
@@ -2822,24 +2906,76 @@ func (p *GyingPlugin) fetchAllDetails(searchData *SearchData, scraper *cloudscra
 		}(i)
 	}
 
-	wg.Wait()
+	// 有界等待：预算内全跑完最好；到点就交已拿到的，剩下的请求在后台自行结束。
+	// 不能直接 wg.Wait()——单条详情自身超时较长，一条慢的就能把整批拖出窗口。
+	allDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(allDone)
+	}()
+	timedOut := false
+	remaining := time.Until(publishDeadline)
+	if remaining < 0 {
+		remaining = 0
+	}
+	select {
+	case <-allDone:
+	case <-time.After(remaining):
+		timedOut = true
+	}
 
-	// 检查是否有403错误
+	// 后台 goroutine 可能仍在 append，务必在锁内做快照，避免读到半更新的切片头。
+	mu.Lock()
+	snapshot := make([]model.SearchResult, len(results))
+	copy(snapshot, results)
+	success, failed, skipped := successCount, failCount, skippedByDeadline
+	mu.Unlock()
+
+	if timedOut {
+		fmt.Printf("[Gying] ⏱️  触发发布截止，先返回 %d 条（成功 %d / 失败 %d / 未开始 %d，共 %d 个候选）；关键词 %q\n",
+			len(snapshot), success, failed, skipped, len(searchData.L.I), keyword)
+	}
+
+	// 检查是否有403错误。
+	//
+	// 关键：这里要连同已拿到的结果一起返回，不能只回错误。详情阶段的 403 往往只影响
+	// 其中几条，整批丢弃等于把"已经能出的结果"换成"什么都返回"，而同步重登又要 8 秒
+	// 以上、必然超出框架 4 秒窗口——最后用户看到的是一条都没有。
 	select {
 	case err := <-errChan:
-		if DebugLog {
-			fmt.Printf("[Gying] <<< fetchAllDetails 检测到403错误，需要重新登录\n")
-		}
-		return nil, err
+		fmt.Printf("[Gying] ⚠️  详情阶段遇到 403（已保留 %d 条已拿到的结果），交回调用方决定是否重登；关键词 %q\n",
+			len(snapshot), keyword)
+		return snapshot, err
 	default:
 	}
 
 	if DebugLog {
 		fmt.Printf("[Gying] <<< fetchAllDetails 完成: 成功=%d, 失败=%d, 总计=%d\n",
-			successCount, failCount, len(searchData.L.I))
+			success, failed, len(searchData.L.I))
 	}
 
-	return results, nil
+	return snapshot, nil
+}
+
+// publishBudget 从"搜索开始"算起、本插件必须交出结果的时间预算。
+//
+// 框架只等 AsyncResponseTimeout（默认 4 秒）就发布结果，超时未返回的插件会被
+// **整体丢弃**——不是少几条，而是一条都没有。所以按"窗口 - 安全余量"定预算，
+// 到点就交已拿到的：部署方把窗口调大，预算随之放大，能真正换来更完整的详情，
+// 而不是白等一批会被丢掉的结果。
+func (p *GyingPlugin) publishBudget() time.Duration {
+	window := defaultAsyncResponseWindow
+	if config.AppConfig != nil && config.AppConfig.AsyncResponseTimeoutDur > 0 {
+		window = config.AppConfig.AsyncResponseTimeoutDur
+	}
+	budget := window - publishSafetyMargin
+	if budget < minPublishBudget {
+		budget = minPublishBudget
+	}
+	if budget > maxPublishBudget {
+		budget = maxPublishBudget
+	}
+	return budget
 }
 
 // fetchDetail 获取详情

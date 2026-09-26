@@ -21,6 +21,16 @@ import (
 //
 // 站点自 2026 起加了两层门：先过 browser_pow 计算验证（24 小时 browser_verified），
 // 搜索还必须带登录会话。这个用例把每一层的真实响应落盘，用来定位断在哪一层。
+// diagStorageDir 本次诊断用的存储目录：默认临时目录；设了 GYING_DIAG_STORAGE
+// 就用它（指向真实 cache/gying_users 时，登录结果会落盘给端到端验收复用）。
+func diagStorageDir(t *testing.T) string {
+	t.Helper()
+	if dir := os.Getenv("GYING_DIAG_STORAGE"); dir != "" {
+		return dir
+	}
+	return t.TempDir()
+}
+
 func TestGyingDiagnoseSearch(t *testing.T) {
 	if os.Getenv("GYING_DIAG") == "" {
 		t.Skip("未设置 GYING_DIAG=1，跳过 gying 站点诊断")
@@ -31,7 +41,7 @@ func TestGyingDiagnoseSearch(t *testing.T) {
 		t.Skip("需要 GYING_TEST_USERNAME / GYING_TEST_PASSWORD")
 	}
 
-	dir := t.TempDir()
+	dir := diagStorageDir(t)
 	oldStorage := StorageDir
 	StorageDir = dir
 	t.Cleanup(func() { StorageDir = oldStorage })
@@ -127,7 +137,7 @@ func TestGyingDiagnoseProductionPath(t *testing.T) {
 		t.Skip("需要 GYING_TEST_USERNAME / GYING_TEST_PASSWORD")
 	}
 
-	dir := t.TempDir()
+	dir := diagStorageDir(t)
 	oldStorage := StorageDir
 	StorageDir = dir
 	t.Cleanup(func() { StorageDir = oldStorage })
@@ -216,7 +226,7 @@ func TestGyingDiagnoseLatency(t *testing.T) {
 	}
 
 	oldStorage := StorageDir
-	StorageDir = t.TempDir()
+	StorageDir = diagStorageDir(t)
 	t.Cleanup(func() { StorageDir = oldStorage })
 
 	p := &GyingPlugin{BaseAsyncPlugin: plugin.NewBaseAsyncPlugin("gying", 3), baseURL: DefaultGyingBaseURL}
@@ -280,7 +290,7 @@ func TestGyingDiagnosePowFloor(t *testing.T) {
 	}
 
 	oldStorage := StorageDir
-	StorageDir = t.TempDir()
+	StorageDir = diagStorageDir(t)
 	oldFloor := powMinSolveTime
 	powMinSolveTime = 0
 	t.Cleanup(func() { StorageDir = oldStorage; powMinSolveTime = oldFloor })
@@ -328,7 +338,7 @@ func TestGyingDiagnosePhases(t *testing.T) {
 	}
 
 	oldStorage := StorageDir
-	StorageDir = t.TempDir()
+	StorageDir = diagStorageDir(t)
 	t.Cleanup(func() { StorageDir = oldStorage })
 
 	p := &GyingPlugin{BaseAsyncPlugin: plugin.NewBaseAsyncPlugin("gying", 3), baseURL: DefaultGyingBaseURL}
@@ -366,7 +376,7 @@ func TestGyingDiagnosePhases(t *testing.T) {
 
 	// 阶段2：详情并发
 	t2 := time.Now()
-	results, err := p.fetchAllDetails(&searchData, scraper, "一人之下")
+	results, err := p.fetchAllDetails(&searchData, scraper, "一人之下", time.Now().Add(p.publishBudget()))
 	d2 := time.Since(t2)
 	if err != nil {
 		t.Fatalf("fetchAllDetails 失败: %v", err)
