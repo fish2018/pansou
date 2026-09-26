@@ -22,6 +22,7 @@ import (
 	"pansou/util"
 	"pansou/util/cache"
 	"pansou/util/cpu"
+	"pansou/util/memlimit"
 
 	// 以下是插件的空导入，用于触发各插件的init函数，实现自动注册
 	// 添加新插件时，只需在此处添加对应的导入语句即可
@@ -110,6 +111,15 @@ import (
 var globalCacheWriteManager *cache.DelayedBatchWriteManager
 
 func main() {
+	// 容器内存配额可见：按 cgroup 配额设置 Go 堆软上限（automemlimit 的做法，取配额的 9/10，
+	// 留 10% 给 goroutine 栈、运行时结构和堆外内存）。必须在做任何重分配之前执行。
+	// 容器外、配额无限、或部署方已显式设置 GOMEMLIMIT 时都是 no-op，理由打在日志里便于核对。
+	if limit, reason := memlimit.ApplyFromCgroup(); limit > 0 {
+		fmt.Printf("[启动] 堆软上限 GOMEMLIMIT=%dMB（%s）\n", limit/(1<<20), reason)
+	} else {
+		fmt.Printf("[启动] 未设置堆软上限：%s\n", reason)
+	}
+
 	// 初始化应用
 	initApp()
 
