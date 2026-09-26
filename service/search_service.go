@@ -1610,7 +1610,10 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 	if config.AppConfig != nil && config.AppConfig.OutboundMaxConcurrency > 0 {
 		outboundLimit = config.AppConfig.OutboundMaxConcurrency
 	}
-	concurrency = effectiveFanoutConcurrency(concurrency, len(availablePlugins), outboundLimit)
+	// 出口上限不再取固定值，而由持续累积观测的控制器给出：未观察到排队与丢弃就逐步放宽，
+	// 观察到就退回安全水位。部署方的 OUTBOUND_MAX_CONCURRENCY 是天花板，不是工作点。
+	adaptive := sharedAdaptiveConcurrency(len(availablePlugins), outboundLimit)
+	concurrency = effectiveFanoutConcurrency(concurrency, len(availablePlugins), adaptive.limitValue())
 
 	// 短作业优先：按历史 p50 升序提交，让"4 秒就能拿到的结果"不再排在慢插件后面。
 	// 连续被截止放弃的插件由追踪器做老化提升，避免长作业饥饿（SJF 的已知缺陷）。
@@ -1698,8 +1701,10 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 		if pluginResult.err == nil {
 			tracker.observe(pluginResult.name, pluginResult.duration)
 			tracker.markReturned(pluginResult.name)
+			adaptive.observeTask(pluginResult.duration)
 		} else if errors.Is(pluginResult.err, errOutboundGateClosed) {
 			tracker.markTimedOut(pluginResult.name)
+			adaptive.observeDropped()
 		}
 		if pluginResult.err != nil {
 			// 失败项也要进逐项记录：否则"插件产出 N 个"这一行会漏掉失败的插件，
@@ -1725,6 +1730,10 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 		tracker.markTimedOut(name)
 	}
 	outcome.logSummary("searchPlugins", keyword)
+	// 每次批任务结束调整一次出口并发：这就是"持续积累观测、逐步调整"的落点。
+	if changed, before, after, reason := adaptive.adjust(); changed {
+		fmt.Printf("🎚️ [%s] 出口并发 %d -> %d（%s）\n", keyword, before, after, reason)
+	}
 	if line := tracker.statsLine(6); line != "" && config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
 		fmt.Printf("[插件耗时分布] %s：%s（p50/p90）\n", keyword, line)
 	}
