@@ -46,7 +46,8 @@ func TestDeriveBatchDeadlineByWaves(t *testing.T) {
 		{"两波：71 任务 / 36 并发", 71, 36, perTask, 0, 10 * time.Second, 9 * time.Second},
 		{"多波被上限截断", 71, 10, perTask, 0, 10 * time.Second, 10 * time.Second},
 		{"显式覆盖优先于公式", 71, 71, perTask, 8 * time.Second, 10 * time.Second, 8 * time.Second},
-		{"无样本时用默认每任务预算", 71, 71, 0, 0, 10 * time.Second, 5 * time.Second},
+		// 用常量表达期望值，避免改了 defaultPerTaskBudget 而测试还盯着旧数字。
+		{"无样本时用默认每任务预算", 71, 71, 0, 0, 10 * time.Second, defaultPerTaskBudget + batchDeadlineMargin},
 		{"公式值过小时抬到下限", 1, 71, 100 * time.Millisecond, 0, 10 * time.Second, 4 * time.Second},
 	}
 	for _, c := range cases {

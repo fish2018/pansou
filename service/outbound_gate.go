@@ -143,5 +143,11 @@ const (
 	// minBatchDeadline 下限：即便公式算出很小，也要留住 4 秒异步窗口的完整长度。
 	minBatchDeadline = 4 * time.Second
 	// defaultPerTaskBudget 无历史样本时的每任务耗时假设，取异步窗口长度。
+	//
+	// 注意：批截止只决定"HTTP 响应何时返回"，**不决定发布什么数据**。
+	// 实测把它从 4 秒抬到 6 秒后，响应从 5.0 秒变 7.0 秒，而插件（4 秒完成）
+	// 依旧被记为"超时未返回"、结果依旧为空——因为异步插件的结果发布窗口由
+	// plugin 包的 AsyncResponseTimeout（默认 4 秒）决定，与这里无关。
+	// 所以"插件慢到窗口外"要在 ASYNC_RESPONSE_TIMEOUT 上调，别在这里抬。
 	defaultPerTaskBudget = 4 * time.Second
 )
