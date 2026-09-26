@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -139,7 +140,16 @@ type livenessReport struct {
 	DegradedPlugins   []livenessItem `json:"degraded_plugins,omitempty"`
 	FailingChannels   []livenessItem `json:"failing_channels,omitempty"`
 	ZeroYieldChannels []livenessItem `json:"zero_yield_channels,omitempty"`
-	Note              string         `json:"note"`
+	// 各分类截断前的完整数量。列表每类最多 livenessTopN 条，此前只有列表没有总数，
+	// 超出部分会被静默隐藏；消费方用 count > len(items) 判断是否被截断。
+	FailingPluginCount    int `json:"failing_plugin_count"`
+	ZeroYieldPluginCount  int `json:"zero_yield_plugin_count"`
+	DegradedPluginCount   int `json:"degraded_plugin_count"`
+	FailingChannelCount   int `json:"failing_channel_count"`
+	ZeroYieldChannelCount int `json:"zero_yield_channel_count"`
+	// 被截断分类的文字说明，一眼看出名单不完整。
+	Truncated []string `json:"truncated,omitempty"`
+	Note      string   `json:"note"`
 }
 
 const livenessNote = "每轮搜索累积，滑动窗口 20 轮：failing=有报错且从未产出；zero_yield=无报错但从未产出（其内容通常经后台补齐进入缓存，不代表无数据，不要据此删除）；" +
@@ -223,7 +233,7 @@ func (r *livenessRegistry) snapshot() livenessReport {
 				degraded = append(degraded, it)
 			}
 		}
-		byFailures := func(s []livenessItem) {
+		byFailures := func(s []livenessItem) []livenessItem {
 			sort.Slice(s, func(i, j int) bool {
 				if s[i].Failed != s[j].Failed {
 					return s[i].Failed > s[j].Failed
@@ -231,18 +241,45 @@ func (r *livenessRegistry) snapshot() livenessReport {
 				return s[i].Name < s[j].Name
 			})
 			if len(s) > livenessTopN {
-				s = s[:livenessTopN]
+				return s[:livenessTopN]
 			}
+			return s
 		}
-		byFailures(failing)
-		byFailures(zero)
-		byFailures(degraded)
+		failing = byFailures(failing)
+		zero = byFailures(zero)
+		degraded = byFailures(degraded)
 		return
 	}
 
 	rep.FailingPlugins, rep.ZeroYieldPlugins, rep.DegradedPlugins = fill(plugins, rep.PluginStatus)
 	rep.FailingChannels, rep.ZeroYieldChannels, _ = fill(channels, rep.ChannelStatus)
+
+	// 完整数量：状态统计表是未截断的，直接取它，不能用 len(列表)
+	rep.FailingPluginCount = rep.PluginStatus["failing"]
+	rep.ZeroYieldPluginCount = rep.PluginStatus["zero_yield"]
+	rep.DegradedPluginCount = rep.PluginStatus["degraded"]
+	rep.FailingChannelCount = rep.ChannelStatus["failing"]
+	rep.ZeroYieldChannelCount = rep.ChannelStatus["zero_yield"]
+
+	rep.Truncated = truncationNotes(map[string]int{
+		"failing_plugins":     rep.FailingPluginCount - len(rep.FailingPlugins),
+		"zero_yield_plugins":  rep.ZeroYieldPluginCount - len(rep.ZeroYieldPlugins),
+		"degraded_plugins":    rep.DegradedPluginCount - len(rep.DegradedPlugins),
+		"failing_channels":    rep.FailingChannelCount - len(rep.FailingChannels),
+		"zero_yield_channels": rep.ZeroYieldChannelCount - len(rep.ZeroYieldChannels),
+	})
 	return rep
+}
+
+// truncationNotes 生成"某分类被截断了几条"的说明，未截断则为空。
+func truncationNotes(hidden map[string]int) []string {
+	var out []string
+	for _, k := range []string{"failing_plugins", "zero_yield_plugins", "degraded_plugins", "failing_channels", "zero_yield_channels"} {
+		if hidden[k] > 0 {
+			out = append(out, fmt.Sprintf("%s 还有 %d 条未列出（每类最多 %d 条）", k, hidden[k], livenessTopN))
+		}
+	}
+	return out
 }
 
 // LivenessSnapshot 供 API 层调用。

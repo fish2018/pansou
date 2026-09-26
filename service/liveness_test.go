@@ -1,6 +1,9 @@
 package service
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func newTestLiveness() *livenessRegistry {
 	return &livenessRegistry{
@@ -129,3 +132,41 @@ func TestLivenessSnapshotsAreIsolated(t *testing.T) {
 type errStub struct{}
 
 func (errStub) Error() string { return "搜索响应状态码异常: 403" }
+
+func TestLivenessCountsSurviveTopNTruncation(t *testing.T) {
+	r := newTestLiveness()
+	// 造 50 个全部失败的插件：超过每类 40 条上限
+	for i := 0; i < 50; i++ {
+		name := fmt.Sprintf("dead-%02d", i)
+		for k := 0; k < 6; k++ {
+			r.record(r.plugins, name, 0, errStub{})
+		}
+	}
+	rep := r.snapshot()
+	if len(rep.FailingPlugins) != livenessTopN {
+		t.Fatalf("列表应被截断到 %d 条, 实际 %d", livenessTopN, len(rep.FailingPlugins))
+	}
+	// 关键：总数必须仍是完整的 50，否则前端无从知道名单被截断过
+	if rep.FailingPluginCount != 50 {
+		t.Fatalf("完整数量应为 50, 实际 %d", rep.FailingPluginCount)
+	}
+	if rep.PluginStatus["failing"] != 50 {
+		t.Fatalf("状态统计应为 50, 实际 %d", rep.PluginStatus["failing"])
+	}
+	if len(rep.Truncated) == 0 {
+		t.Fatal("被截断时必须给出说明，否则超出部分被静默隐藏")
+	}
+	if rep.FailingPluginCount-len(rep.FailingPlugins) != 10 {
+		t.Fatalf("应显示还有 10 条未列出, 实际 %d", rep.FailingPluginCount-len(rep.FailingPlugins))
+	}
+}
+
+func TestLivenessNoTruncationNoteWhenUnderLimit(t *testing.T) {
+	r := newTestLiveness()
+	for i := 0; i < 3; i++ {
+		r.record(r.plugins, fmt.Sprintf("p-%d", i), 0, errStub{})
+	}
+	if len(r.snapshot().Truncated) != 0 {
+		t.Fatal("未截断时不该出现截断说明")
+	}
+}
