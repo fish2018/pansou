@@ -66,6 +66,10 @@ func SetupRouter(searchService *service.SearchService) *gin.Engine {
 				"plugins_enabled": pluginsEnabled,
 				"channels":        channels,
 				"channels_count":  channelsCount,
+				// 存活观测：累积每轮产出/报错，一眼看出哪些插件与频道是失效的。
+				// 只报事实不做淘汰——窗口内零产出不代表无数据（内容仍会经后台补齐进缓存），
+				// 是否停用由部署方按这里的名单决定。
+				"liveness": service.LivenessSnapshot(),
 			}
 
 			// 只有当插件启用时才返回插件相关信息

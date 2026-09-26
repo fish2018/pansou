@@ -1423,6 +1423,8 @@ func (s *SearchService) searchTG(keyword string, channels []string, forceRefresh
 		if channelResult.err == nil {
 			results = append(results, channelResult.results...)
 		}
+		// 存活观测：频道侧同样累积，便于在 /api/health 里看到哪个频道长期没动静。
+		ObserveChannel(channelResult.channel, len(channelResult.results), channelResult.err)
 	}
 
 	outcome.finalize(channels)
@@ -1710,6 +1712,7 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 			// 失败项也要进逐项记录：否则"插件产出 N 个"这一行会漏掉失败的插件，
 			// 看日志的人无从确认它到底跑没跑。
 			outcome.observeYield(pluginResult.name, 0, pluginResult.duration, pluginResult.err)
+			ObservePlugin(pluginResult.name, 0, pluginResult.err)
 			continue
 		}
 		// 只添加有链接的结果到最终结果中，同时统计每个插件本轮的可用产出
@@ -1721,6 +1724,8 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 			}
 		}
 		outcome.observeYield(pluginResult.name, contributed, pluginResult.duration, nil)
+		// 存活观测：累积"这个插件连续多少轮没产出/在报错"，供 /api/health 查看。
+		ObservePlugin(pluginResult.name, contributed, nil)
 	}
 
 	outcome.finalize(submitted)
