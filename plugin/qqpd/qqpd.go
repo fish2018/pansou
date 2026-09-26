@@ -141,7 +141,9 @@ const HTMLTemplate = `<!DOCTYPE html>
             padding: 15px;
             border-radius: 6px;
             margin-top: 10px;
-        }
+        
+          overflow-x: hidden;
+          overflow-wrap: anywhere;}
         .hidden { display: none; }
         .alert {
             padding: 12px 15px;
