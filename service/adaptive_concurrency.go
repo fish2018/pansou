@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -57,41 +56,19 @@ const (
 	adaptiveFloorRelax = 0.125
 	// adaptiveMinLimit 并发下限：低于此值单轮波动会直接放大成"少拿到结果"。
 	adaptiveMinLimit = 8
-	// adaptiveInitialPerCore 起始并发按 CPU 核数的上限（每核 4 个）。
-	//
-	// 并发控制里唯一"拍"出来的数就是起始值，其余全由观测决定。给它一个硬件上界，
-	// 是为了避免单核小机器开局就并发十几个出网任务；而当核数 ≥ 任务数/16 时该上界不生效，
-	// 8 核机器上 71 个任务的起始值仍是 71/4=17，与加此上界之前完全一致（无用例变化即证）。
-	adaptiveInitialPerCore = 4
 )
-
-// adaptiveInitialLimit 计算自适应并发的起始值：任务数的四分之一，用 CPU 核数设上界，下限 8。
-//
-//	为什么只看硬件里的 CPU、不看内存：单个并发任务的内存占用已被每个响应的读取上限兜住
-//	（util.ReadAllLimited），不随并发线性膨胀；而"系统可用内存"在 Go 里要么拿不到
-//	（runtime 只暴露堆），要么需要平台相关代码或第三方依赖，收益不抵复杂度。
-//
-//	真正的安全网是观测：只要出现排队（p90 超过历史地板 1.6 倍）或被出口门丢弃，
-//	并发立刻降到 85%。规格只是起点，行为才是依据。
-func adaptiveInitialLimit(taskCount, cores int) float64 {
-	initial := float64(taskCount) / 4
-	if cores > 0 {
-		if hardwareCap := float64(cores * adaptiveInitialPerCore); initial > hardwareCap {
-			initial = hardwareCap
-		}
-	}
-	if initial < adaptiveMinLimit {
-		initial = adaptiveMinLimit
-	}
-	return initial
-}
 
 func newAdaptiveConcurrency(taskCount, ceiling int) *adaptiveConcurrency {
 	if ceiling <= 0 {
 		ceiling = defaultOutboundMaxConcurrency
 	}
 	maxLimit := float64(ceiling)
-	initial := adaptiveInitialLimit(taskCount, runtime.NumCPU())
+	// 初始值取任务数的四分之一：对未知部署先保守起步，再由观测逐步爬升。
+	// 这也正是"逐步调整"的体现——不预设答案，只给一个安全的起点。
+	initial := float64(taskCount) / 4
+	if initial < adaptiveMinLimit {
+		initial = adaptiveMinLimit
+	}
 	if initial > maxLimit {
 		initial = maxLimit
 	}
