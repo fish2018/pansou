@@ -128,3 +128,42 @@ func TestAdaptiveIgnoresCorruptState(t *testing.T) {
 		t.Fatalf("损坏的状态文件应降级为初始值 17, 实际 %d", got)
 	}
 }
+
+// 起始并发是并发控制里唯一"拍"出来的数，用 CPU 核数给它上界。
+// 重点验证两件事：① 小机器不再开局就打满；② 8 核及以上与加此上界之前完全一致（no-op）。
+func TestAdaptiveInitialLimitByCores(t *testing.T) {
+	cases := []struct {
+		name      string
+		taskCount int
+		cores     int
+		want      float64
+	}{
+		{"71 任务 / 8 核：与旧实现一致（71/4）", 71, 8, 17.75},
+		{"71 任务 / 2 核：被核数上界压到 8", 71, 2, 8},
+		{"71 任务 / 1 核：下限 8 保护，不降到 4", 71, 1, 8},
+		{"400 任务 / 32 核：任务数仍是主约束", 400, 32, 100},
+		{"400 任务 / 2 核：被核数上界压到 8", 400, 2, 8},
+		{"4 任务 / 8 核：下限 8 保护", 4, 8, 8},
+		{"核数未知（0）：退回按任务数计算", 71, 0, 17.75},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := adaptiveInitialLimit(tc.taskCount, tc.cores); got != tc.want {
+				t.Errorf("自适应起始并发 = %v, 期望 %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// 常见部署（核数充裕）下起始值必须与旧实现逐位一致，否则此前所有实测都要重跑。
+func TestAdaptiveInitialLimitIsNoopOnWideMachines(t *testing.T) {
+	for _, taskCount := range []int{20, 50, 69, 71, 111, 128} {
+		legacy := float64(taskCount) / 4
+		if legacy < adaptiveMinLimit {
+			legacy = adaptiveMinLimit
+		}
+		if got := adaptiveInitialLimit(taskCount, 8); got != legacy {
+			t.Errorf("任务数 %d / 8 核：起始值 %v 与旧实现 %v 不一致（有用例会因此改变）", taskCount, got, legacy)
+		}
+	}
+}
