@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -200,6 +201,17 @@ func calculateCompletenessScore(result model.SearchResult) int {
 // SearchService 搜索服务
 type SearchService struct {
 	pluginManager *plugin.PluginManager
+	// pluginTiming 记录每插件近期耗时与连续被放弃轮次，供批截止推导与短作业优先排序使用。
+	pluginTiming *pluginTimingTracker
+}
+
+// timing 惰性初始化耗时追踪器：SearchService 也可能被测试直接构造，
+// 不在构造函数里强制初始化，避免零值实例出现 nil 解引用。
+func (s *SearchService) timing() *pluginTimingTracker {
+	if s.pluginTiming == nil {
+		s.pluginTiming = newPluginTimingTracker()
+	}
+	return s.pluginTiming
 }
 
 // NewSearchService 创建搜索服务实例并确保缓存可用
@@ -1591,9 +1603,37 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 		concurrency = config.AppConfig.DefaultConcurrency
 	}
 
+	// 扇出并行度与调用方的 conc 解耦：调用方给得少时补足到任务数（否则 71 个插件会被
+	// 一个偏小的客户端参数压成多波，实测 conc=10 时 70/71 个任务在截止前根本没轮到），
+	// 给得多时以出口总闸收口，防止并发无上限地压向同一个出口。
+	outboundLimit := defaultOutboundMaxConcurrency
+	if config.AppConfig != nil && config.AppConfig.OutboundMaxConcurrency > 0 {
+		outboundLimit = config.AppConfig.OutboundMaxConcurrency
+	}
+	concurrency = effectiveFanoutConcurrency(concurrency, len(availablePlugins), outboundLimit)
+
+	// 短作业优先：按历史 p50 升序提交，让"4 秒就能拿到的结果"不再排在慢插件后面。
+	// 连续被截止放弃的插件由追踪器做老化提升，避免长作业饥饿（SJF 的已知缺陷）。
+	tracker := s.timing()
+	ordered := make([]plugin.AsyncSearchPlugin, 0, len(availablePlugins))
+	sjfEnabled := config.AppConfig == nil || config.AppConfig.PluginSJFEnabled
+	if sjfEnabled && len(availablePlugins) > 1 {
+		byName := make(map[string]plugin.AsyncSearchPlugin, len(availablePlugins))
+		names := make([]string, 0, len(availablePlugins))
+		for _, p := range availablePlugins {
+			byName[p.Name()] = p
+			names = append(names, p.Name())
+		}
+		for _, name := range tracker.sortedByShortestFirst(names) {
+			ordered = append(ordered, byName[name])
+		}
+	} else {
+		ordered = availablePlugins
+	}
+
 	// 使用工作池执行并行搜索
-	tasks := make([]pool.Task, 0, len(availablePlugins))
-	for _, p := range availablePlugins {
+	tasks := make([]pool.Task, 0, len(ordered))
+	for _, p := range ordered {
 		plugin := p // 创建副本，避免闭包问题
 		pluginName := plugin.Name()
 		tasks = append(tasks, func(ctx context.Context) interface{} {
@@ -1605,6 +1645,12 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 			// 这里直接调用，避免再包一层AsyncSearch导致嵌套等待和重复超时。
 			// 批任务的超时时间与主缓存键都通过 ext 传给插件。
 			start := time.Now()
+			// 出口总闸：没取到槽位就直接返回，把等待时间让给已经拿到槽位的任务，
+			// 而不是排队等一个可能已经超过截止的槽位。
+			if !acquireOutbound(ctx) {
+				return &pluginBatchResult{name: pluginName, err: errOutboundGateClosed, duration: time.Since(start)}
+			}
+			defer releaseOutbound()
 			pluginResults, err := plugin.Search(keyword, pluginExtWithContext(ext, ctx, cacheKey))
 
 			return &pluginBatchResult{name: pluginName, results: pluginResults, err: err, duration: time.Since(start)}
@@ -1613,12 +1659,20 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 
 	// 插件批任务的软截止：默认沿用 PluginTimeout 语义（PLUGIN_BATCH_TIMEOUT_SECONDS
 	// 为 0 时），避免截掉磁力搜索这类本身较慢的插件结果。
-	batchTimeout := config.AppConfig.PluginBatchTimeout
-	if batchTimeout <= 0 {
-		batchTimeout = config.AppConfig.PluginTimeout
+	// 截止不再拍固定秒数，改为按波次推导：ceil(任务数/有效并发) × 每任务 p90 + 余量。
+	// 显式设置 PLUGIN_BATCH_TIMEOUT_SECONDS 时以它为准（部署方的显式意图优先于公式），
+	// 上限仍取 PLUGIN_TIMEOUT，避免公式把等待拉得比长超时还长。
+	var override, cap time.Duration
+	if config.AppConfig != nil {
+		override = config.AppConfig.PluginBatchTimeout
+		cap = config.AppConfig.PluginTimeout
 	}
-	if batchTimeout <= 0 {
-		batchTimeout = 10 * time.Second
+	perTaskP90, sampleCount := tracker.aggregateP90()
+	batchTimeout := deriveBatchDeadline(len(tasks), concurrency, perTaskP90, override, cap)
+	if sampleCount > 0 {
+		fmt.Printf("🧮 [%s] 批截止由波次推导：任务 %d / 并发 %d = %d 波 × 每任务p90 %v + 余量 = %v（样本 %d）\n",
+			keyword, len(tasks), concurrency,
+			(len(tasks)+concurrency-1)/concurrency, perTaskP90.Round(time.Millisecond), batchTimeout, sampleCount)
 	}
 	results := pool.ExecuteBatchWithTimeout(tasks, concurrency, batchTimeout)
 
@@ -1630,7 +1684,7 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 	outcome.requireYieldTracking()
 	submitted := make([]string, 0, len(availablePlugins))
 
-	for _, p := range availablePlugins {
+	for _, p := range ordered {
 		submitted = append(submitted, p.Name())
 	}
 
@@ -1640,6 +1694,13 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 			continue
 		}
 		outcome.observe(pluginResult.name, pluginResult.err, pluginResult.duration)
+		// 正常返回的记入耗时分布并清老化计数；被出口闸挡回的记一次"没轮到"。
+		if pluginResult.err == nil {
+			tracker.observe(pluginResult.name, pluginResult.duration)
+			tracker.markReturned(pluginResult.name)
+		} else if errors.Is(pluginResult.err, errOutboundGateClosed) {
+			tracker.markTimedOut(pluginResult.name)
+		}
 		if pluginResult.err != nil {
 			// 失败项也要进逐项记录：否则"插件产出 N 个"这一行会漏掉失败的插件，
 			// 看日志的人无从确认它到底跑没跑。
@@ -1658,7 +1719,15 @@ func (s *SearchService) searchPlugins(keyword string, plugins []string, forceRef
 	}
 
 	outcome.finalize(submitted)
+	// 超时未返回的插件记一次"没轮到"：连续两轮后会被老化提升到最前，
+	// 避免短作业优先把它们永久压在后排。
+	for _, name := range outcome.missingIDs() {
+		tracker.markTimedOut(name)
+	}
 	outcome.logSummary("searchPlugins", keyword)
+	if line := tracker.statsLine(6); line != "" && config.AppConfig != nil && config.AppConfig.AsyncLogEnabled {
+		fmt.Printf("[插件耗时分布] %s：%s（p50/p90）\n", keyword, line)
+	}
 
 	// 缓存写入按完整度分流，与频道路径同一套判定：
 	// 全失败不写、有插件超时写短TTL、其余写正常TTL。

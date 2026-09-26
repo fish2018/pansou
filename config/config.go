@@ -69,8 +69,14 @@ type Config struct {
 	// 字段与 CACHE_PARTIAL_TTL_MINUTES 环境变量保留，仅为兼容既有部署，改它不再有效果。
 	CachePartialTTLMinutes int // 已废弃：不再参与 TTL 选择
 	// 插件批任务配置
-	PluginBatchTimeout    time.Duration // 插件批任务软截止
-	PluginBackfillEnabled bool          // 超时后是否后台补齐缺失插件
+	PluginBatchTimeout time.Duration // 插件批任务软截止
+	// OutboundMaxConcurrency 整个进程的出口并发总闸。扇出并行度按任务数给足之后，
+	// 由这道闸防止并发无上限地压向同一个出口（代理/带宽/对方站点限流）。
+	OutboundMaxConcurrency int
+	// PluginSJFEnabled 是否按"历史耗时升序"提交插件任务（短作业优先）。
+	// 留出开关是为了能在同一次实验里把排序效果与截止变化分开测量。
+	PluginSJFEnabled      bool
+	PluginBackfillEnabled bool // 超时后是否后台补齐缺失插件
 	// 认证相关配置
 	AuthEnabled     bool              // 是否启用认证
 	AuthUsers       map[string]string // 用户名:密码映射
@@ -135,8 +141,10 @@ func Init() {
 		TGBackfillEnabled:       getTGBackfillEnabled(),
 		CachePartialTTLMinutes:  getCachePartialTTL(),
 		// 插件批任务配置
-		PluginBatchTimeout:    time.Duration(getPluginBatchTimeout()) * time.Second,
-		PluginBackfillEnabled: getPluginBackfillEnabled(),
+		PluginBatchTimeout:     time.Duration(getPluginBatchTimeout()) * time.Second,
+		OutboundMaxConcurrency: getOutboundMaxConcurrency(),
+		PluginSJFEnabled:       getPluginSJFEnabled(),
+		PluginBackfillEnabled:  getPluginBackfillEnabled(),
 		// 认证相关配置
 		AuthEnabled:     getAuthEnabled(),
 		AuthUsers:       getAuthUsers(),
@@ -484,6 +492,30 @@ func getOptimizeMemory() bool {
 		return true // 默认启用
 	}
 	return enabled != "false" && enabled != "0"
+}
+
+// 从环境变量获取是否启用短作业优先提交，默认启用。
+func getPluginSJFEnabled() bool {
+	env := os.Getenv("PLUGIN_SJF_ENABLED")
+	if env != "" {
+		return env != "false" && env != "0"
+	}
+	return true
+}
+
+// 从环境变量获取出口并发总闸，默认 128。
+//
+// 实测依据：插件扇出若跟随调用方的 conc=10，71 个任务要 7.1 波、约 30 秒，且 70/71 个
+// 任务在批截止前根本没轮到；给到任务数后一波 4.05 秒结束。给足扇出后必须有一道总闸，
+// 否则并发会随插件数无限增长。128 允许 71 个插件同时起跑并留出频道侧与后台补齐的余量。
+func getOutboundMaxConcurrency() int {
+	env := os.Getenv("OUTBOUND_MAX_CONCURRENCY")
+	if env != "" {
+		if v, err := strconv.Atoi(env); err == nil && v > 0 {
+			return v
+		}
+	}
+	return 128
 }
 
 // 从环境变量获取插件超时时间（秒），如果未设置则使用默认值 10 秒（2026-09-25 由 30 秒调整）。
