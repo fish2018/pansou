@@ -29,6 +29,7 @@ PanSou是一个高性能的网盘资源搜索API服务，支持TG搜索和自定
 [qqpd搜索插件文档](plugin/qqpd/README.md)  
 [gying搜索插件文档](plugin/gying/README.md)   
 [weibo搜索插件文档](plugin/weibo/README.md)   
+[woniu（蜗牛 I 4K）搜索插件文档](plugin/woniu/README.md)   
 [常见问题总结](https://github.com/fish2018/pansou/issues/46)  
 [TG/QQ频道/插件/微博](https://github.com/fish2018/pansou/issues/4)
 
