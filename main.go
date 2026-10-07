@@ -94,6 +94,7 @@ import (
 	_ "pansou/plugin/u3c3"
 	_ "pansou/plugin/wanou"
 	_ "pansou/plugin/weibo"
+	_ "pansou/plugin/woniu"
 	_ "pansou/plugin/xb6v"
 	_ "pansou/plugin/xdpan"
 	_ "pansou/plugin/xiaokupan"
