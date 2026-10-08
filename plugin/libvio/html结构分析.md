@@ -1,8 +1,15 @@
 # libvio插件HTML结构分析
 
+> **2026-10 入口变更**：主域名现为 `https://libvio.host`（`www.libvio.mov` 已失效）。
+> 站点在入口套了一层 **CDN 浏览器验证**：纯 HTTP 客户端一律 403，响应头带
+> `x-cdn-challenge: required`，正文是一段浏览器端 SHA-256 前导零挑战。插件需解出
+> nonce、提交后拿到 `__cdn_verified` cookie（Max-Age 1800）才能访问搜索/详情/播放三级页面，
+> 实现见 `libvio.go` 中 `solveCDNChallenge` / `solvePowNonce` / `cdnGuard`。
+> 下文页面结构经实测（携带该 cookie 后）仍然适用。
+
 ## 网站信息
 - 网站名称：LIBVIO
-- 主域名：https://www.libvio.mov
+- 主域名：https://libvio.host
 - 网站类型：影视资源在线播放/下载网站
 - 特点：提供网盘下载链接（夸克、UC等）
 

@@ -1,8 +1,11 @@
 package libvio
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +13,7 @@ import (
 	"net/url"
 	"pansou/util"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +32,30 @@ const (
 	MaxPages       = 1 // 最大搜索页数（暂时只搜索第一页）
 )
 
+// 站点自 2026-10 起在入口套了一层 CDN 浏览器验证：纯 HTTP 客户端一律 403，
+// 响应头带 x-cdn-challenge: required，正文是一段浏览器端 SHA-256 前导零挑战。
+// 解出 nonce 后服务端用 302 + Set-Cookie 下发 __cdn_verified（Max-Age 1800），
+// 后续请求带上它才能拿到真正的页面。不走完这套握手，搜索/详情/播放三级全是 403。
+const (
+	powCookieName   = "__cdn_pow"
+	verifiedName    = "__cdn_verified"
+	challengeHeader = "X-CDN-Challenge"
+
+	// 服务端 __cdn_verified 的有效期是 1800 秒，提前 5 分钟作废，
+	// 免得在边界上拿着刚好过期的 cookie 白撞一次 403 再重来。
+	verifiedTTL = 25 * time.Minute
+
+	// 挑战难度是 SHA-256 前 4 个 hex（16 bit 前导零），期望约 6.5 万次尝试。
+	// 上限给到 2^22 纯属熔断：正常机器远用不到，只是为了不出现无限循环。
+	powMaxAttempts = 1 << 22
+
+	// 判定挑战页时需要检视的正文上限。
+	challengeProbeBytes = 64 << 10
+
+	// 读取挑战页正文的上限。
+	challengeReadLimit = 1 << 20
+)
+
 // LibvioPlugin LIBVIO插件
 type LibvioPlugin struct {
 	*plugin.BaseAsyncPlugin
@@ -35,6 +63,7 @@ type LibvioPlugin struct {
 	detailCache sync.Map // 缓存详情页结果
 	playCache   sync.Map // 缓存播放页结果
 	cacheTTL    time.Duration
+	cdn         cdnGuard // CDN 浏览器验证握手状态，见 cdn_pow.go
 }
 
 // NewLibvioPlugin 创建新的LIBVIO插件实例
@@ -93,20 +122,72 @@ func (p *LibvioPlugin) setRequestHeaders(req *http.Request, referer string) {
 	}
 }
 
-// doRequest 发送HTTP请求
+// doRequest 发送HTTP请求，命中 CDN 浏览器验证时自动完成握手后重试。
 func (p *LibvioPlugin) doRequest(client *http.Client, url string, referer string) (*http.Response, error) {
+	used := p.cdn.get()
+	resp, err := p.doRequestOnce(client, url, referer, used)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusForbidden {
+		return resp, nil
+	}
+
+	// 403 有两种：CDN 浏览器验证和地域封禁。后者重试多少次都一样。
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, challengeProbeBytes))
+	resp.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if !isChallengeBody(resp.Header, body) {
+		// 不是验证页：把正文还回去，让调用方按原样处理这个 403。
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return resp, nil
+	}
+
+	// 同一时刻只做一次握手；等锁期间可能已经有别的请求解好了。
+	p.cdn.solveMu.Lock()
+	defer p.cdn.solveMu.Unlock()
+
+	verified := p.cdn.get()
+	if verified == "" || verified == used {
+		if verified != "" && verified == used {
+			// 手里的 cookie 被服务端否掉了（过期或被吊销），作废重解。
+			p.cdn.set("")
+		}
+		verified, err = p.solveCDNChallenge(client)
+		if err != nil {
+			return nil, fmt.Errorf("过 CDN 浏览器验证失败: %w", err)
+		}
+		p.cdn.set(verified)
+	}
+
+	return p.doRequestOnce(client, url, referer, verified)
+}
+
+// doRequestOnce 发送单次请求，verified 非空时附加 CDN 验证 cookie。
+func (p *LibvioPlugin) doRequestOnce(client *http.Client, url string, referer string, verified string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	p.setRequestHeaders(req, referer)
-
-	if p.debugMode {
-		log.Printf("[Libvio] 发送请求: %s", url)
+	if verified != "" {
+		req.Header.Set("Cookie", verifiedName+"="+verified)
 	}
 
-	resp, err := client.Do(req)
+	if p.debugMode {
+		log.Printf("[Libvio] 发送请求: %s (已过验证=%v)", url, verified != "")
+	}
+
+	// 不借用 client 的 cookie jar：验证 cookie 完全由插件自己维护，
+	// 让 jar 再追加一份只会产生重复的 Cookie 头。
+	reqClient := *client
+	reqClient.Jar = nil
+
+	resp, err := reqClient.Do(req)
 	if err != nil {
 		if p.debugMode {
 			log.Printf("[Libvio] 请求失败: %v", err)
@@ -119,6 +200,118 @@ func (p *LibvioPlugin) doRequest(client *http.Client, url string, referer string
 	}
 
 	return resp, nil
+}
+
+// cdnGuard 在插件内共享 CDN 验证 cookie。
+// 详情页并发是 6，没有它每个被拦的请求都要重解一遍 PoW。
+type cdnGuard struct {
+	mu       sync.Mutex // 保护 cookie/expireAt
+	solveMu  sync.Mutex // 串行化握手，避免并发解同一道题
+	cookie   string
+	expireAt time.Time
+}
+
+// get 返回当前可用的验证 cookie，没有或已过期时返回空串。
+func (g *cdnGuard) get() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.cookie == "" || time.Now().After(g.expireAt) {
+		return ""
+	}
+	return g.cookie
+}
+
+func (g *cdnGuard) set(cookie string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.cookie = cookie
+	g.expireAt = time.Now().Add(verifiedTTL)
+}
+
+// isChallengeBody 判断这个 403 是不是 CDN 浏览器验证。
+// 403 在本站有两种：浏览器验证和地域封禁，后者重试多少次都一样，必须先分开。
+// 响应头是快判据，但实测部分节点只给正文，所以用正文特征兜底。
+func isChallengeBody(header http.Header, body []byte) bool {
+	if strings.EqualFold(header.Get(challengeHeader), "required") {
+		return true
+	}
+	return bytes.Contains(body, []byte(powCookieName))
+}
+
+// solveCDNChallenge 走完一次 CDN 握手，返回 __cdn_verified 的值。
+func (p *LibvioPlugin) solveCDNChallenge(client *http.Client) (string, error) {
+	// 挑战参数由服务端按请求注入，每次都不一样，必须先取一次挑战页。
+	challengeResp, err := p.doRequestOnce(client, BaseURL+"/", BaseURL, "")
+	if err != nil {
+		return "", fmt.Errorf("获取验证页失败: %w", err)
+	}
+	defer challengeResp.Body.Close()
+
+	reader, err := p.getResponseReader(challengeResp)
+	if err != nil {
+		return "", err
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, challengeReadLimit))
+	if err != nil {
+		return "", fmt.Errorf("读取验证页失败: %w", err)
+	}
+
+	params := powParamRegex.FindSubmatch(body)
+	if params == nil {
+		return "", fmt.Errorf("验证页未包含 PoW 参数 (HTTP %d)", challengeResp.StatusCode)
+	}
+	ts, sig, diff, mode := string(params[1]), string(params[2]), string(params[3]), string(params[4])
+
+	nonce, err := solvePowNonce(sig, diff)
+	if err != nil {
+		return "", err
+	}
+
+	powCookie := fmt.Sprintf("%s=%s_%s_%d_%s", powCookieName, ts, mode, nonce, sig)
+
+	// 答案在 302 响应的 Set-Cookie 里，所以这一跳必须自己读、不能跟随重定向。
+	submitClient := *client
+	submitClient.Jar = nil
+	submitClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	submitReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, BaseURL+"/", nil)
+	if err != nil {
+		return "", err
+	}
+	p.setRequestHeaders(submitReq, BaseURL)
+	submitReq.Header.Set("Cookie", powCookie)
+
+	submitResp, err := submitClient.Do(submitReq)
+	if err != nil {
+		return "", fmt.Errorf("提交 PoW 失败: %w", err)
+	}
+	defer submitResp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(submitResp.Body, challengeProbeBytes))
+
+	for _, cookie := range submitResp.Cookies() {
+		if cookie.Name == verifiedName && cookie.Value != "" {
+			return cookie.Value, nil
+		}
+	}
+	return "", fmt.Errorf("提交 PoW 后未收到 %s (HTTP %d)", verifiedName, submitResp.StatusCode)
+}
+
+// solvePowNonce 求满足 SHA-256(SIG + nonce) 以 diff 为前缀的最小 nonce。
+func solvePowNonce(sig, diff string) (int, error) {
+	sigLen := len(sig)
+	buf := make([]byte, sigLen, sigLen+20)
+	copy(buf, sig)
+
+	for nonce := 0; nonce < powMaxAttempts; nonce++ {
+		buf = strconv.AppendInt(buf[:sigLen], int64(nonce), 10)
+		sum := sha256.Sum256(buf)
+		if strings.HasPrefix(hex.EncodeToString(sum[:]), diff) {
+			return nonce, nil
+		}
+	}
+	return 0, fmt.Errorf("PoW 未在 %d 次尝试内解出 (难度 %s)", powMaxAttempts, diff)
 }
 
 // searchImpl 实际的搜索实现
@@ -715,4 +908,8 @@ func init() {
 var (
 	libvioRe1 = regexp.MustCompile(`/detail/(\d+)\.html`)
 	libvioRe2 = regexp.MustCompile(`var\s+player_aaaa\s*=\s*({[^}]+})`)
+
+	// powParamRegex 匹配 CDN 挑战页注入的四个参数。
+	// 真实页面形如：var TS = "1791465351", SIG = "aea3e8...", DIFF = "0000", MODE = "auto";
+	powParamRegex = regexp.MustCompile(`var TS = "(\d+)", SIG = "([0-9a-f]+)", DIFF = "([^"]+)", MODE = "([^"]+)"`)
 )

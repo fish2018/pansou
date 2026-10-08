@@ -1,9 +1,17 @@
 # Zhizhen HTML 数据结构分析
 
+> **2026-10 域名变更**：本站已迁到"花卷"模板，现役入口是 `http://www.mihdr.top`。
+> 旧域名 `www.miqk.cc`、`mihdr.top`（不带 www）均已无解析，`xiaomi666.fun` 更是早已失效。
+> 注意两点：**必须用 http**——该域名的 HTTPS 在 Cloudflare 侧直接握手失败（`sslv3 alert
+> handshake failure`，curl 与 Go 原生 TLS 都一样）；**超时要放大到 25s**——回源实测搜索页
+> 1.9~17.8s、详情页 6.8~14.2s，原先 8s/6s 会在传输完成前截断。下文 HTML 结构（
+> `.module-search-item`、`#download-list .module-row-one`、`[data-clipboard-text]`）经实测
+> 仍完全适用，解析代码无需改动。
+
 ## 基本信息
 - **数据源类型**: HTML 网页
-- **搜索URL格式**: `https://xiaomi666.fun/index.php/vod/search/wd/{关键词}.html`
-- **详情URL格式**: `https://xiaomi666.fun/index.php/vod/detail/id/{资源ID}.html`
+- **搜索URL格式**: `http://www.mihdr.top/index.php/vod/search/wd/{关键词}.html`
+- **详情URL格式**: `http://www.mihdr.top/index.php/vod/detail/id/{资源ID}.html`
 - **数据特点**: 视频点播(VOD)系统网页，提供HTML格式的影视资源数据
 - **特殊说明**: 使用独立域名，HTML结构与muou插件相同
 

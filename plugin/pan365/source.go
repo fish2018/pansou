@@ -94,7 +94,10 @@ func (p *Pan365Plugin) requestJSON(ctx context.Context, client *http.Client, met
 		return fmt.Errorf("[%s] 创建请求失败: %w", pluginName, err)
 	}
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/json")
+	// 站点 WAF 会拒绝 Accept 恰好等于 application/json 的请求，判为非浏览器客户端直接回 403
+	// "请求被安全策略拒绝"。补一个 */* 即可：实测纯 application/json 403，带 */* 返回 200
+	// 且响应体仍是 JSON，不影响解析。
+	req.Header.Set("Accept", "application/json, */*")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 	req.Header.Set("Referer", p.baseURL+"/")
 	if payload != nil {
