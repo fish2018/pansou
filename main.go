@@ -52,6 +52,7 @@ import (
 	_ "pansou/plugin/qqpd"
 	_ "pansou/plugin/quark4k"
 	_ "pansou/plugin/quarksoo"
+	_ "pansou/plugin/imjiaozi"
 	_ "pansou/plugin/quarktv"
 	_ "pansou/plugin/qupanshe"
 	_ "pansou/plugin/sousou"
