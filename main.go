@@ -80,6 +80,7 @@ import (
 	_ "pansou/plugin/quark4k"
 	_ "pansou/plugin/quarkres"
 	_ "pansou/plugin/quarksoo"
+	_ "pansou/plugin/imjiaozi"
 	_ "pansou/plugin/quarktv"
 
 	// _ "pansou/plugin/qupanshe"
