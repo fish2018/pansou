@@ -195,7 +195,107 @@ func BuildProxyFunc(rawProxyURL string, noProxy string) (func(*url.URL) (*url.UR
 	return cfg.ProxyFunc(), nil
 }
 
-// normalizeProxyURL 校验并归一化代理地址。
+// lookupIPFunc 域名解析函数，便于测试中注入 mock。
+var lookupIPFunc = net.LookupIP
+
+// isForbiddenIP 检查 IP 是否属于禁止访问的内部/专用网段（防 SSRF）。
+func isForbiddenIP(ip net.IP) error {
+	if ip == nil {
+		return fmt.Errorf("无效的 IP 地址")
+	}
+
+	// 统一处理 IPv4 以及 IPv4 映射的 IPv6 地址（如 ::ffff:127.0.0.1）
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4.IsLoopback() || ip4[0] == 127 {
+			return fmt.Errorf("禁止使用环回地址代理: %s", ip.String())
+		}
+		if ip4.IsPrivate() {
+			return fmt.Errorf("禁止使用私有地址代理: %s", ip.String())
+		}
+		if ip4.IsLinkLocalUnicast() || (ip4[0] == 169 && ip4[1] == 254) {
+			return fmt.Errorf("禁止使用链路本地/云元数据地址代理: %s", ip.String())
+		}
+		if ip4.IsMulticast() || ip4.IsLinkLocalMulticast() {
+			return fmt.Errorf("禁止使用组播地址代理: %s", ip.String())
+		}
+		if ip4.IsUnspecified() || ip4[0] == 0 {
+			return fmt.Errorf("禁止使用未指定地址代理: %s", ip.String())
+		}
+		if !ip4.IsGlobalUnicast() {
+			return fmt.Errorf("禁止使用非全局单播地址代理: %s", ip.String())
+		}
+		return nil
+	}
+
+	// IPv6 地址校验
+	if ip.IsLoopback() {
+		return fmt.Errorf("禁止使用环回地址代理: %s", ip.String())
+	}
+	if ip.IsPrivate() {
+		return fmt.Errorf("禁止使用私有地址代理: %s", ip.String())
+	}
+	if ip.IsLinkLocalUnicast() {
+		return fmt.Errorf("禁止使用链路本地/云元数据地址代理: %s", ip.String())
+	}
+	if ip.IsMulticast() || ip.IsLinkLocalMulticast() {
+		return fmt.Errorf("禁止使用组播地址代理: %s", ip.String())
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("禁止使用未指定地址代理: %s", ip.String())
+	}
+	if !ip.IsGlobalUnicast() {
+		return fmt.Errorf("禁止使用非全局单播地址代理: %s", ip.String())
+	}
+	return nil
+}
+
+// ValidateProxyHost 解析并校验代理主机，拒绝内网/环回/链路本地等目标以防止 SSRF。
+func ValidateProxyHost(host string) error {
+	trimmedHost := strings.TrimSpace(host)
+	if trimmedHost == "" {
+		return fmt.Errorf("代理主机不能为空")
+	}
+
+	// 提取主机名（去除端口）
+	if h, _, err := net.SplitHostPort(trimmedHost); err == nil {
+		trimmedHost = h
+	} else {
+		trimmedHost = strings.TrimPrefix(trimmedHost, "[")
+		trimmedHost = strings.TrimSuffix(trimmedHost, "]")
+	}
+
+	if trimmedHost == "" {
+		return fmt.Errorf("代理主机不能为空")
+	}
+
+	// 如果是 IP 字面量，直接校验
+	if ip := net.ParseIP(trimmedHost); ip != nil {
+		return isForbiddenIP(ip)
+	}
+
+	// 域名解析并校验
+	ips, err := lookupIPFunc(trimmedHost)
+	if err != nil {
+		return fmt.Errorf("代理域名解析失败: %w", err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("代理域名未解析到有效 IP: %s", trimmedHost)
+	}
+
+	for _, resolvedIP := range ips {
+		if err := isForbiddenIP(resolvedIP); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateProxyHost 是 ValidateProxyHost 的内部别名。
+func validateProxyHost(host string) error {
+	return ValidateProxyHost(host)
+}
+
+// normalizeProxyURL 校验并归一化代理地址，防范 SSRF。
 // socks5h 归一化为 socks5：Transport 原生支持 socks5，两者都本地解析域名。
 func normalizeProxyURL(raw string) (string, error) {
 	proxyURL, err := url.Parse(raw)
@@ -204,6 +304,15 @@ func normalizeProxyURL(raw string) (string, error) {
 	}
 	if proxyURL.Scheme == "" || proxyURL.Host == "" {
 		return "", fmt.Errorf("代理地址必须包含协议和主机")
+	}
+
+	hostname := proxyURL.Hostname()
+	if hostname == "" {
+		return "", fmt.Errorf("代理地址必须包含有效主机名")
+	}
+
+	if err := validateProxyHost(hostname); err != nil {
+		return "", err
 	}
 
 	switch strings.ToLower(proxyURL.Scheme) {
