@@ -196,6 +196,47 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -extldflags '-sta
 ./pansou
 ```
 
+### 影视发现 API 与片库
+
+影视发现独立于资源搜索，提供电影、电视剧、动漫、综艺、纪录片五类推荐及分页片库。列表和详情使用豆瓣评分；配置 TMDB 后补充海报、简介和类型，不用 TMDB 评分替代豆瓣评分。未关联豆瓣的作品保持暂无评分。
+
+| 接口 | 用途 |
+|------|------|
+| `GET /api/discover` | 推荐列表、片库检索与分页 |
+| `GET /api/discover/subject?id=1292052&media_type=movie` | 按需加载作品详情 |
+| `GET /api/discover/poster?url=<encoded-url>` | 获取允许的豆瓣图片域名上的海报并缓存 |
+
+接口沿用现有 API 认证配置。`category` 支持 `movie/tv/animation/variety/documentary`，`collection` 支持 `hot/top/new/random/library`，默认 `movie/hot`。所有列表先筛选再分页，`page` 从 1 开始，`page_size` 默认 24，范围 1–60。推荐页可用 12 条的小批次，避免一次传输整个候选池。
+
+片库支持组合 `q`（片名或原名）、`genre`、`tag` 与年份条件。`year=2024` 筛选精确年份，`year=unknown` 筛选年份待补充的作品；`year_from=1990&year_to=1999` 筛选闭区间，必须同时提供两端，且不能与非空 `year` 混用。年份范围为 1800 至当前 UTC 年。返回的 `total` 是筛选后的总数，`catalog_total`、`genres`、`years`、`tags` 来自整个分类，`has_more` 表示是否还有下一页。
+
+```text
+/api/discover?category=movie&collection=library&page=1&page_size=24&year_from=1990&year_to=1999
+```
+
+豆瓣条目沿用数字 ID。TMDB 独有条目使用 `tmdb:movie:<ID>` 或 `tmdb:tv:<ID>`；详情请求中的 `media_type` 应使用条目返回的实际媒体类型 `movie` 或 `tv`，不能把不同命名空间中的相同数字 ID 当成同一作品。
+
+| 环境变量 | 用途 | 默认值 |
+|----------|------|--------|
+| `DISCOVER_CACHE_DIR` | 推荐、详情、海报及完整目录的持久化目录；兼容旧名 `DISCOVER_CACHE_PATH` | `/app/data/discover` |
+| `TMDB_READ_ACCESS_TOKEN` | TMDB Read Access Token；与 API Key 至少配置一项，同时配置时优先使用此项 | 空 |
+| `TMDB_API_KEY` | TMDB API Key，作为 Read Access Token 的替代认证方式 | 空 |
+| `TMDB_CATALOG_SYNC_ENABLED` | 启用完整 TMDB 电影与剧集目录同步；需要 TMDB 凭据 | `false` |
+| `TMDB_CATALOG_MAX_MB` | 完整目录数据库、WAL 和 SHM 的总容量检查阈值，单位 MiB | `4096` |
+| `TMDB_CATALOG_RATE` | 完整目录详情请求速率，每秒请求数，上限 8 | `4` |
+| `DISCOVER_CATALOG_MAX_ITEMS` | 豆瓣来源快照每类最多条目数，上限 20000 | `10000` |
+| `DISCOVER_CATALOG_MAX_MB` | 豆瓣来源单分类快照容量，单位 MiB，上限 32 | `16` |
+
+真实凭据只通过服务端环境变量注入，例如从仓库外、权限为 `600` 的私密文件通过 Docker `--env-file` 加载；不要写入源码、前端构建变量、示例或版本库。未配置凭据时，豆瓣推荐和原有片库仍可使用，完整 TMDB 同步默认关闭。
+
+启用完整同步后，后台导入 TMDB 每日电影和剧集 ID 导出，并每小时检查资料变更。SQLite 保存批次游标，只有完整读完导出并通过 gzip 校验才标记成功，失败或重启后继续处理。成人条目会被排除。已有豆瓣片库继续更新；只有媒体类型、真实年份和片名或原名唯一对应时才合并豆瓣评分，季名及不明确的匹配保留原资料。
+
+ID 导出仅含片名和热度等少量字段。`catalog_sync.indexed` 表示已收录目录条目数，`catalog_sync.hydrated` 表示资料已补齐条目数；两者不能等同。中文名、年份、海报、简介和类型按热度在后台逐步补齐，点击条目也会按需加载详情；年份和类型筛选仅匹配已知资料。完整目录使用磁盘索引查询，三个及以上字符支持片名任意位置匹配，一至两个字符按片名或原名开头匹配。
+
+完整目录位于缓存目录下的 `tmdb-catalog.sqlite`，不受豆瓣来源快照的条目上限限制。容量在批次前检查，文件系统可用空间不足 1 GiB 时也会暂停增加资料，已收录条目仍可查询。部署应持久化整个缓存目录，保留 SQLite 数据库及 WAL/SHM 配套文件，不要将运行数据加入发行源码。
+
+热门及新片新剧每 30 分钟、口碑及随机候选池每 6 小时后台更新；已有缓存立即返回，刷新失败保留最后成功数据。列表只合并已缓存详情，不逐部等待 TMDB 抓取；海报按需缓存，避免列表请求受资料补齐速度影响。
+
 ### 其他配置参考
 
 <details>

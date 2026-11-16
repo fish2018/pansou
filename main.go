@@ -17,6 +17,7 @@ import (
 
 	"pansou/api"
 	"pansou/config"
+	"pansou/discover"
 	"pansou/plugin"
 	"pansou/service"
 	"pansou/util"
@@ -189,7 +190,10 @@ func startServer() {
 	searchService := service.NewSearchService(pluginManager)
 
 	// 设置路由
-	router := api.SetupRouter(searchService)
+	discoveryService := discover.New(discover.ConfigFromEnv())
+	discoveryService.Start()
+	defer discoveryService.Close()
+	router := api.SetupRouter(searchService, discoveryService)
 
 	// 获取端口配置
 	port := config.AppConfig.Port
