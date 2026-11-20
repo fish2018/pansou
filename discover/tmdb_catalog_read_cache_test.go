@@ -264,3 +264,94 @@ func TestJSONSubjectHintsIgnoreHistoricalBooleansAndReflectFreshness(t *testing.
 		t.Fatalf("fresh successful details should be reusable: %+v %v", item, err)
 	}
 }
+
+func TestMultipleFacetRefreshesPreserveForegroundConnectionsAndCancelSlotWaiters(t *testing.T) {
+	s := newTestService(t, Config{CacheDir: t.TempDir(), TMDBCatalogSyncEnabled: true})
+	store, err := s.openFullCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	categories := []string{"movie", "tv", "animation", "variety", "documentary"}
+	store.facetMu.Lock()
+	for _, category := range categories {
+		store.facets[category] = tmdbCatalogFacets{genres: []string{"已缓存类型"}, years: []string{"2025"}, tags: []string{}}
+	}
+	store.facetMu.Unlock()
+	connections := make([]*sql.Conn, 0, 4)
+	for range 4 {
+		connection, e := store.db.Conn(context.Background())
+		if e != nil {
+			t.Fatal(e)
+		}
+		connections = append(connections, connection)
+	}
+	before := store.db.Stats().WaitCount
+	for _, category := range categories {
+		if _, err = store.categoryFacets(context.Background(), category); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for store.db.Stats().WaitCount == before && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if got := store.db.Stats().WaitCount - before; got != 1 {
+		t.Fatalf("different category refreshes consumed %d pool waiters; expected one", got)
+	}
+	// A real page query must still make progress once a connection is released;
+	// it should not sit behind five simultaneous full-directory facet scans.
+	_ = connections[0].Close()
+	foregroundCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	var answer int
+	err = store.db.QueryRowContext(foregroundCtx, "SELECT 42").Scan(&answer)
+	cancel()
+	if err != nil || answer != 42 {
+		t.Fatalf("foreground SQL starved behind refreshes: %d %v", answer, err)
+	}
+	for _, connection := range connections[1:] {
+		_ = connection.Close()
+	}
+	// Wait until the first set of shared jobs has actually updated all caches.
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		store.facetMu.Lock()
+		fresh := 0
+		for _, category := range categories {
+			if !store.facets[category].at.IsZero() {
+				fresh++
+			}
+		}
+		store.facetMu.Unlock()
+		if fresh == len(categories) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("serialized facet refreshes did not complete")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Model an already busy refresh slot. The remaining classes must wait
+	// outside the SQL pool, and shutdown must cancel those waits immediately.
+	store.facetSlots <- struct{}{}
+	store.invalidateFacets()
+	for _, category := range categories {
+		if _, err = store.categoryFacets(context.Background(), category); err != nil {
+			t.Fatal(err)
+		}
+	}
+	foregroundCtx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+	err = store.db.QueryRowContext(foregroundCtx, "SELECT 99").Scan(&answer)
+	cancel()
+	if err != nil || answer != 99 {
+		t.Fatalf("queued slot waiters acquired SQL connections: %d %v", answer, err)
+	}
+	closed := make(chan struct{})
+	go func() { s.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not cancel refresh slot waiters")
+	}
+	<-store.facetSlots
+}

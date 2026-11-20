@@ -35,6 +35,7 @@ type tmdbCatalogStore struct {
 	facetMu        sync.Mutex
 	facets         map[string]tmdbCatalogFacets
 	facetFlight    singleflight.Group
+	facetSlots     chan struct{}
 	facetPersistMu sync.Mutex
 	owner          *Service
 }
@@ -170,7 +171,7 @@ func (s *Service) openFullCatalog() (*tmdbCatalogStore, error) {
 	for _, suffix := range []string{"-wal", "-shm"} {
 		_ = os.Chmod(path+suffix, 0600)
 	}
-	store := &tmdbCatalogStore{db: db, path: path, maxBytes: int64(s.cfg.TMDBCatalogMaxMB) << 20, facets: make(map[string]tmdbCatalogFacets), owner: s, status: CatalogSyncStatus{Enabled: true, Stage: "starting"}}
+	store := &tmdbCatalogStore{db: db, path: path, maxBytes: int64(s.cfg.TMDBCatalogMaxMB) << 20, facets: make(map[string]tmdbCatalogFacets), facetSlots: make(chan struct{}, 1), owner: s, status: CatalogSyncStatus{Enabled: true, Stage: "starting"}}
 	store.refreshStatus(ctx)
 	store.loadFacetSnapshot()
 	s.fullCatalog = store

@@ -46,6 +46,15 @@ func (store *tmdbCatalogStore) categoryFacets(ctx context.Context, category stri
 		defer s.workers.Done()
 		refreshCtx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
 		defer cancel()
+		// Different categories share the same connection pool. Serializing the
+		// expensive refreshes leaves its other connections for page queries and
+		// metadata writes, including when all five categories expire together.
+		select {
+		case store.facetSlots <- struct{}{}:
+			defer func() { <-store.facetSlots }()
+		case <-refreshCtx.Done():
+			return nil, refreshCtx.Err()
+		}
 		result, err := store.fetchCategoryFacets(refreshCtx, category)
 		if err != nil {
 			return nil, err
