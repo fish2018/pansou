@@ -151,7 +151,10 @@ func (s *Service) prefetchHot(entry cacheEntry, collection string) {
 		items = items[:12]
 	}
 	for _, item := range items {
-		if ValidSubject(item.ID, item.MediaType) {
+		// TMDB directory cards already have their own SQLite metadata lifecycle.
+		// This queue fetches numeric Douban subjects and must not send a TMDB
+		// namespaced ID to a Douban endpoint.
+		if idPattern.MatchString(item.ID) && ValidSubject(item.ID, item.MediaType) {
 			if subject, ok := s.load(s.subjectKey(item.ID, item.MediaType)); !ok || len(subject.Items) != 1 || time.Since(subject.UpdatedAt) >= 24*time.Hour {
 				s.queueSubject(item.ID, item.MediaType)
 			}

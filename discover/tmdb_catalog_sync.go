@@ -379,12 +379,30 @@ func (s *Service) syncFullChanges(ctx context.Context, store *tmdbCatalogStore, 
 }
 
 func (s *Service) syncFullChangesDay(ctx context.Context, store *tmdbCatalogStore, media, date string, completedDay bool) error {
+	day, err := time.Parse("2006-01-02", date)
+	if err != nil || !contains([]string{"movie", "tv"}, media) {
+		return errors.New("invalid catalog changes window")
+	}
 	cursorKey := "changes_cursor:" + media + ":" + date
+	windowKey := "changes_window_start:" + media + ":" + date
+	windowStart := store.meta(ctx, windowKey)
+	previousDay := day.AddDate(0, 0, -1).Format("2006-01-02")
+	if windowStart == "" {
+		windowStart = date
+	} else if windowStart != previousDay {
+		return errors.New("invalid catalog changes window")
+	}
 	page, _ := strconv.Atoi(store.meta(ctx, cursorKey))
 	if page < 1 {
 		page = 1
 	}
-	for ; page <= 500; page++ {
+	// A cached page can report fewer total pages than its neighbours. Re-read
+	// the entire day through an overlapping two-day window rather than skipping
+	// that page. Persist its start alongside the cursor so retries use the same
+	// pagination. A resumed wider window may rewind once if it actually shrank.
+	// At most two scans of 500 pages are allowed, even if the provider changes.
+	restarted := false
+	for requests := 0; page <= 500 && requests < 1000; requests++ {
 		if err := store.checkCapacity(); err != nil {
 			return err
 		}
@@ -397,13 +415,28 @@ func (s *Service) syncFullChangesDay(ctx context.Context, store *tmdbCatalogStor
 			TotalPages int `json:"total_pages"`
 		}
 		requestCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-		err := s.fullCatalogJSON(requestCtx, store, "/"+media+"/changes", url.Values{"start_date": {date}, "end_date": {date}, "page": {strconv.Itoa(page)}}, &result)
+		query := url.Values{"start_date": {windowStart}, "end_date": {date}, "page": {strconv.Itoa(page)}}
+		err := s.fullCatalogJSON(requestCtx, store, "/"+media+"/changes", query, &result)
 		cancel()
+		var httpError fullCatalogHTTPError
+		outOfRange := page > 1 && errors.As(err, &httpError) && httpError.status == http.StatusBadRequest
+		if err == nil {
+			if result.TotalPages < 0 || result.TotalPages > 500 || result.Page != page || result.Results == nil || (result.TotalPages == 0 && len(result.Results) != 0) {
+				return errors.New("catalog changes pagination invalid")
+			}
+			outOfRange = page > 1 && page > result.TotalPages
+		}
+		if outOfRange {
+			if !restarted {
+				windowStart = previousDay
+				page = 1
+				restarted = true
+				continue
+			}
+			return errors.New("catalog changes pagination invalid")
+		}
 		if err != nil {
 			return err
-		}
-		if result.TotalPages > 500 || result.Page != page || (result.TotalPages > 0 && page > result.TotalPages) {
-			return errors.New("catalog changes pagination invalid")
 		}
 		store.writeMu.Lock()
 		tx, txErr := store.db.BeginTx(ctx, nil)
@@ -424,6 +457,11 @@ func (s *Service) syncFullChangesDay(ctx context.Context, store *tmdbCatalogStor
 			}
 			last := result.TotalPages == 0 || page >= result.TotalPages
 			if txErr == nil {
+				if windowStart != date {
+					txErr = setCatalogMeta(ctx, tx, windowKey, windowStart)
+				}
+			}
+			if txErr == nil {
 				txErr = setCatalogMeta(ctx, tx, cursorKey, strconv.Itoa(page+1))
 			}
 			if txErr == nil && last {
@@ -431,7 +469,7 @@ func (s *Service) syncFullChangesDay(ctx context.Context, store *tmdbCatalogStor
 					txErr = setCatalogMeta(ctx, tx, "changes_done:"+media, date)
 				}
 				if txErr == nil {
-					_, txErr = tx.ExecContext(ctx, "DELETE FROM sync_meta WHERE key=?", cursorKey)
+					_, txErr = tx.ExecContext(ctx, "DELETE FROM sync_meta WHERE key IN (?,?)", cursorKey, windowKey)
 				}
 			}
 			if txErr == nil {
@@ -447,6 +485,7 @@ func (s *Service) syncFullChangesDay(ctx context.Context, store *tmdbCatalogStor
 		if result.TotalPages == 0 || page >= result.TotalPages {
 			return nil
 		}
+		page++
 	}
 	return errors.New("catalog changes pagination invalid")
 }

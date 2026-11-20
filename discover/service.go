@@ -223,6 +223,15 @@ func (s *Service) refreshList(ctx context.Context, category, collection string) 
 		refreshCtx, cancel := context.WithTimeout(s.ctx, 28*time.Second)
 		defer cancel()
 		items, err := s.fetchDouban(refreshCtx, category, collection)
+		if err != nil && s.cfg.TMDBCatalogSyncEnabled && (collection == "hot" || collection == "new") {
+			// A timed-out upstream context must not prevent the independent local
+			// directory from publishing a current homepage selection.
+			fallbackCtx, fallbackCancel := context.WithTimeout(s.ctx, 5*time.Second)
+			if fallback, fallbackErr := s.catalogRecommendations(fallbackCtx, category, collection, time.Now().UTC()); fallbackErr == nil {
+				items, err = fallback, nil
+			}
+			fallbackCancel()
+		}
 		if err != nil {
 			s.mu.Lock()
 			s.failures[key] = time.Now().Add(time.Minute)

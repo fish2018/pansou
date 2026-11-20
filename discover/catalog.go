@@ -651,6 +651,9 @@ func mergeCatalogItem(old, item Item) Item {
 // Current fast first pages lead the recommendation order. Expanded source
 // membership supplies the tail, so a 30-minute refresh cannot shrink it to 50.
 func (s *Service) recommendationPool(category, collection string, first []Item) []Item {
+	if isCatalogRecommendation(first) {
+		return first
+	}
 	snapshot, ok := s.peekCatalog(category)
 	if !ok {
 		return first
