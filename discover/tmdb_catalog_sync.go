@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -130,14 +131,80 @@ func waitCatalog(ctx context.Context, delay time.Duration) bool {
 }
 
 func (s *Service) seedExistingFullCatalog() {
+	store, err := s.openFullCatalog()
+	if err != nil {
+		return
+	}
 	for _, category := range []string{"movie", "tv", "animation", "variety", "documentary"} {
 		if s.ctx.Err() != nil {
 			return
 		}
 		if snapshot, ok := s.loadCatalog(category); ok {
-			_ = s.SeedFullCatalog(category, snapshot.Items)
+			items, err := store.pendingSnapshotSeed(s.ctx, category, snapshot)
+			if err == nil && len(items) > 0 {
+				_ = s.SeedFullCatalog(category, items)
+			}
 		}
 	}
+}
+
+// Existing numeric rows record when they last received a Douban snapshot.
+// Read that watermark and category membership in batches before writing: an
+// unchanged snapshot must not rewrite tens of thousands of rows on startup.
+func (store *tmdbCatalogStore) pendingSnapshotSeed(ctx context.Context, category string, snapshot catalogSnapshot) ([]Item, error) {
+	pending := []Item{}
+	for start := 0; start < len(snapshot.Items); start += 512 {
+		end := start + 512
+		if end > len(snapshot.Items) {
+			end = len(snapshot.Items)
+		}
+		items := make([]Item, 0, end-start)
+		args := []any{category}
+		placeholders := make([]string, 0, end-start)
+		for _, item := range snapshot.Items[start:end] {
+			if !idPattern.MatchString(item.ID) || item.Title == "" || !contains([]string{"movie", "tv"}, item.MediaType) {
+				continue
+			}
+			items = append(items, item)
+			args = append(args, item.ID)
+			placeholders = append(placeholders, "?")
+		}
+		if len(items) == 0 {
+			continue
+		}
+		rows, err := store.db.QueryContext(ctx, `SELECT e.key,e.updated_at,
+EXISTS(SELECT 1 FROM entry_categories c WHERE c.key=e.key AND c.category=? AND c.source='douban')
+FROM entries e WHERE e.origin='douban' AND e.key IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
+			return nil, errors.New("full catalog seed check failed")
+		}
+		type watermark struct {
+			updated  int64
+			category bool
+		}
+		known := make(map[string]watermark, len(items))
+		for rows.Next() {
+			var key string
+			var value watermark
+			if err = rows.Scan(&key, &value.updated, &value.category); err != nil {
+				rows.Close()
+				return nil, errors.New("full catalog seed check failed")
+			}
+			known[key] = value
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, errors.New("full catalog seed check failed")
+		}
+		for _, item := range items {
+			value, exists := known[item.ID]
+			if !exists || !value.category || snapshot.UpdatedAt.IsZero() || value.updated < snapshot.UpdatedAt.Unix() {
+				pending = append(pending, item)
+			}
+		}
+	}
+	return pending, nil
 }
 
 func (s *Service) syncFullExport(ctx context.Context, store *tmdbCatalogStore, media string, now time.Time) error {
