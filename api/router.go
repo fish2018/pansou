@@ -3,13 +3,14 @@ package api
 import (
 	"github.com/gin-gonic/gin"
 	"pansou/config"
+	"pansou/discover"
 	"pansou/plugin"
 	"pansou/service"
 	"pansou/util"
 )
 
 // SetupRouter 设置路由
-func SetupRouter(searchService *service.SearchService) *gin.Engine {
+func SetupRouter(searchService *service.SearchService, discoveryServices ...*discover.Service) *gin.Engine {
 	// 设置搜索服务
 	SetSearchService(searchService)
 
@@ -40,6 +41,14 @@ func SetupRouter(searchService *service.SearchService) *gin.Engine {
 		api.POST("/search", SearchHandler)
 		api.GET("/search", SearchHandler) // 添加GET方式支持
 		api.POST("/check/links", CheckHandler)
+		discoveryService := (*discover.Service)(nil)
+		if len(discoveryServices) > 0 {
+			discoveryService = discoveryServices[0]
+		}
+		if discoveryService == nil {
+			discoveryService = discover.New(discover.ConfigFromEnv())
+		}
+		registerDiscoverRoutes(api, discoveryService)
 
 		// 健康检查接口
 		api.GET("/health", func(c *gin.Context) {
