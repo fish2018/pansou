@@ -125,13 +125,7 @@ func catalogWhere(category string, options ListOptions) (string, []any) {
 	return strings.Join(clauses, " AND "), args
 }
 
-func (store *tmdbCatalogStore) categoryFacets(ctx context.Context, category string) (tmdbCatalogFacets, error) {
-	store.facetMu.Lock()
-	cached, ok := store.facets[category]
-	store.facetMu.Unlock()
-	if ok && time.Since(cached.at) < time.Minute {
-		return cached, nil
-	}
+func (store *tmdbCatalogStore) fetchCategoryFacets(ctx context.Context, category string) (tmdbCatalogFacets, error) {
 	result := tmdbCatalogFacets{at: time.Now(), genres: []string{}, years: []string{}, tags: []string{}}
 	if err := store.db.QueryRowContext(ctx, "SELECT total FROM category_counts WHERE category=?", category).Scan(&result.total); err != nil && err != sql.ErrNoRows {
 		return result, err
@@ -187,9 +181,6 @@ func (store *tmdbCatalogStore) categoryFacets(ctx context.Context, category stri
 	if err != nil {
 		return result, err
 	}
-	store.facetMu.Lock()
-	store.facets[category] = result
-	store.facetMu.Unlock()
 	return result, nil
 }
 
@@ -202,9 +193,9 @@ func (s *Service) FullCatalogSubject(ctx context.Context, id, mediaType string) 
 	if err != nil {
 		return Item{}, err
 	}
-	var updated, retryAt int64
-	var removed int
-	_ = store.db.QueryRowContext(ctx, "SELECT removed,retry_at FROM entries WHERE key=?", id).Scan(&removed, &retryAt)
+	var retryAt int64
+	var removed, hydrated int
+	_ = store.db.QueryRowContext(ctx, "SELECT removed,retry_at,hydrated FROM entries WHERE key=?", id).Scan(&removed, &retryAt, &hydrated)
 	if removed == 1 && retryAt > time.Now().Unix() {
 		return Item{}, errors.New("discovery metadata unavailable")
 	}
@@ -212,23 +203,20 @@ func (s *Service) FullCatalogSubject(ctx context.Context, id, mediaType string) 
 	if err != nil && err != sql.ErrNoRows {
 		return Item{}, errors.New("full catalog query unavailable")
 	}
-	if err == nil {
-		_ = store.db.QueryRowContext(ctx, "SELECT updated_at FROM entries WHERE key=?", id).Scan(&updated)
-	}
 	if err == sql.ErrNoRows {
 		return Item{}, errors.New("discovery metadata unavailable")
 	}
 	if err == nil && retryAt > time.Now().Unix() {
-		if item.DetailsCached {
+		if hydrated == 1 {
 			return item, nil
 		}
 		return Item{}, errors.New("discovery metadata unavailable")
 	}
-	if err == nil && item.DetailsCached && time.Since(time.Unix(updated, 0)) < 7*24*time.Hour {
+	if err == nil && item.DetailsCached {
 		return item, nil
 	}
 	if !s.TMDBConfigured() {
-		if err == nil && item.DetailsCached {
+		if err == nil && hydrated == 1 {
 			return item, nil
 		}
 		return Item{}, errors.New("discovery metadata unavailable")
@@ -237,7 +225,8 @@ func (s *Service) FullCatalogSubject(ctx context.Context, id, mediaType string) 
 	if refreshErr == nil {
 		return refreshed, nil
 	}
-	if err == nil && item.DetailsCached {
+	if err == nil && hydrated == 1 {
+		item.DetailsCached = false
 		_ = store.db.QueryRowContext(ctx, "SELECT removed FROM entries WHERE key=?", id).Scan(&removed)
 		if removed == 0 {
 			return item, nil

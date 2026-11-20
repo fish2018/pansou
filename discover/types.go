@@ -20,7 +20,7 @@ type Item struct {
 	MetadataSource string   `json:"metadata_source"`
 	Reason         string   `json:"reason"`
 	MediaType      string   `json:"media_type"`
-	DetailsCached  bool     `json:"details_cached,omitempty"`
+	DetailsCached  bool     `json:"details_cached"`
 }
 
 type Response struct {

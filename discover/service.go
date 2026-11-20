@@ -265,8 +265,11 @@ type refreshResult struct {
 
 func (s *Service) response(entry cacheEntry, collection string, stale bool) Response {
 	items := make([]Item, 0, len(entry.Items))
+	fromCatalog := isCatalogRecommendation(entry.Items)
 	for _, item := range entry.Items {
-		item.DetailsCached = false
+		// Directory pools already carry a freshness-aware SQL cache flag. JSON
+		// list snapshots do not; only a live directory pool may preserve it.
+		item.DetailsCached = item.DetailsCached && fromCatalog
 		metadata, ok := s.peek(s.subjectKey(item.ID, item.MediaType))
 		pendingEnrichment := false
 		if !ok && s.TMDBConfigured() {

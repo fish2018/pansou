@@ -48,14 +48,27 @@ func (s *Service) Subject(ctx context.Context, id, mediaType string) (Item, erro
 		if time.Since(entry.UpdatedAt) >= 24*time.Hour {
 			s.queueSubject(id, mediaType)
 		}
-		return entry.Items[0], nil
+		return s.subjectCacheHint(entry.Items[0], entry.UpdatedAt), nil
 	}
 	if s.TMDBConfigured() {
 		if entry, ok := s.load(baseSubjectKey(id, mediaType)); ok && len(entry.Items) == 1 {
 			// Keep the old subject immediately available while the new provider
 			// cache is built. Copying it to the TMDB key would suppress enrichment.
 			s.queueSubject(id, mediaType)
-			return entry.Items[0], nil
+			item := entry.Items[0]
+			item.DetailsCached = false
+			return item, nil
+		}
+	}
+	// The persistent directory can already contain a complete matched Douban
+	// subject even when it was never prefetched into the older JSON cache.
+	if s.cfg.TMDBCatalogSyncEnabled {
+		if store, err := s.openFullCatalog(); err == nil {
+			item, err := scanFullItem(store.db.QueryRowContext(ctx, "SELECT "+fullItemColumns+" FROM entries e WHERE e.key=? AND e.media_type=? AND e.origin='douban' AND e.removed=0 AND e.hydrated=1", id, mediaType))
+			if err == nil {
+				s.queueSubject(id, mediaType)
+				return item, nil
+			}
 		}
 	}
 	return s.refreshSubject(ctx, id, mediaType)
@@ -66,14 +79,16 @@ func (s *Service) refreshSubject(ctx context.Context, id, mediaType string) (Ite
 	result := s.flight.DoChan(key, func() (any, error) {
 		old, hasOld := s.load(key)
 		if hasOld && len(old.Items) == 1 && time.Since(old.UpdatedAt) < 24*time.Hour {
-			return old.Items[0], nil
+			return s.subjectCacheHint(old.Items[0], old.UpdatedAt), nil
 		}
 		s.mu.Lock()
 		retryAt := s.failures[key]
 		s.mu.Unlock()
 		if time.Now().Before(retryAt) {
 			if hasOld && len(old.Items) == 1 {
-				return old.Items[0], nil
+				item := old.Items[0]
+				item.DetailsCached = false
+				return item, nil
 			}
 			return Item{}, errors.New("discovery subject temporarily unavailable")
 		}
@@ -86,7 +101,9 @@ func (s *Service) refreshSubject(ctx context.Context, id, mediaType string) (Ite
 			s.failures[key] = time.Now().Add(time.Minute)
 			s.mu.Unlock()
 			if hasOld && len(old.Items) == 1 {
-				return old.Items[0], nil
+				item := old.Items[0]
+				item.DetailsCached = false
+				return item, nil
 			}
 			return Item{}, errors.New("discovery subject temporarily unavailable")
 		}
@@ -96,6 +113,7 @@ func (s *Service) refreshSubject(ctx context.Context, id, mediaType string) (Ite
 				item = enhanced
 			}
 		}
+		item = s.subjectCacheHint(item, time.Now().UTC())
 		s.save(key, cacheEntry{Items: []Item{item}, UpdatedAt: time.Now().UTC()})
 		return item, nil
 	})
@@ -108,4 +126,11 @@ func (s *Service) refreshSubject(ctx context.Context, id, mediaType string) (Ite
 		}
 		return result.Val.(Item), nil
 	}
+}
+
+// Old cache files may contain obsolete or absent hints. Derive freshness from
+// their timestamp and provider state rather than trusting the persisted bool.
+func (s *Service) subjectCacheHint(item Item, updated time.Time) Item {
+	item.DetailsCached = time.Since(updated) < 24*time.Hour && (!s.TMDBConfigured() || item.MetadataSource == "tmdb")
+	return item
 }

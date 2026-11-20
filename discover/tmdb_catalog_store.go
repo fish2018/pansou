@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	_ "modernc.org/sqlite"
 )
 
@@ -22,17 +23,20 @@ var errFullCatalogCapacity = errors.New("full catalog capacity reached")
 // The full directory is disk-backed. Only the current SQL page, counters and
 // small facets are held in memory; export readers never build an ID map.
 type tmdbCatalogStore struct {
-	db          *sql.DB
-	path        string
-	maxBytes    int64
-	writeMu     sync.Mutex
-	statusMu    sync.RWMutex
-	status      CatalogSyncStatus
-	rateMu      sync.Mutex
-	nextRequest time.Time
-	pauseUntil  time.Time
-	facetMu     sync.Mutex
-	facets      map[string]tmdbCatalogFacets
+	db             *sql.DB
+	path           string
+	maxBytes       int64
+	writeMu        sync.Mutex
+	statusMu       sync.RWMutex
+	status         CatalogSyncStatus
+	rateMu         sync.Mutex
+	nextRequest    time.Time
+	pauseUntil     time.Time
+	facetMu        sync.Mutex
+	facets         map[string]tmdbCatalogFacets
+	facetFlight    singleflight.Group
+	facetPersistMu sync.Mutex
+	owner          *Service
 }
 
 type tmdbCatalogFacets struct {
@@ -166,8 +170,9 @@ func (s *Service) openFullCatalog() (*tmdbCatalogStore, error) {
 	for _, suffix := range []string{"-wal", "-shm"} {
 		_ = os.Chmod(path+suffix, 0600)
 	}
-	store := &tmdbCatalogStore{db: db, path: path, maxBytes: int64(s.cfg.TMDBCatalogMaxMB) << 20, facets: make(map[string]tmdbCatalogFacets), status: CatalogSyncStatus{Enabled: true, Stage: "starting"}}
+	store := &tmdbCatalogStore{db: db, path: path, maxBytes: int64(s.cfg.TMDBCatalogMaxMB) << 20, facets: make(map[string]tmdbCatalogFacets), owner: s, status: CatalogSyncStatus{Enabled: true, Stage: "starting"}}
 	store.refreshStatus(ctx)
+	store.loadFacetSnapshot()
 	s.fullCatalog = store
 	s.fullCatalogError = ""
 	return store, nil
@@ -233,7 +238,10 @@ func (store *tmdbCatalogStore) checkpoint(ctx context.Context) {
 
 func (store *tmdbCatalogStore) invalidateFacets() {
 	store.facetMu.Lock()
-	store.facets = make(map[string]tmdbCatalogFacets)
+	for category, cached := range store.facets {
+		cached.at = time.Time{}
+		store.facets[category] = cached
+	}
 	store.facetMu.Unlock()
 }
 
@@ -381,17 +389,19 @@ func writeCatalogFacets(ctx context.Context, tx *sql.Tx, item Item) error {
 	return nil
 }
 
-const fullItemColumns = `e.key,e.title,e.original_title,e.year,e.release_date,e.poster_url,e.overview,e.genres_json,e.tags_json,e.douban_rating,e.douban_votes,e.douban_url,e.tmdb_id,e.metadata_source,e.reason,e.media_type,e.hydrated`
+const fullItemColumns = `e.key,e.title,e.original_title,e.year,e.release_date,e.poster_url,e.overview,e.genres_json,e.tags_json,e.douban_rating,e.douban_votes,e.douban_url,e.tmdb_id,e.metadata_source,e.reason,e.media_type,e.hydrated,e.updated_at,e.needs_refresh`
 
 type catalogScanner interface{ Scan(...any) error }
 
 func scanFullItem(row catalogScanner) (Item, error) {
 	var item Item
 	var year, hydrated int
+	var updated int64
+	var needsRefresh int
 	var genres, tags string
 	var rating sql.NullFloat64
 	var votes sql.NullInt64
-	err := row.Scan(&item.ID, &item.Title, &item.OriginalTitle, &year, &item.ReleaseDate, &item.PosterURL, &item.Overview, &genres, &tags, &rating, &votes, &item.DoubanURL, &item.TMDBID, &item.MetadataSource, &item.Reason, &item.MediaType, &hydrated)
+	err := row.Scan(&item.ID, &item.Title, &item.OriginalTitle, &year, &item.ReleaseDate, &item.PosterURL, &item.Overview, &genres, &tags, &rating, &votes, &item.DoubanURL, &item.TMDBID, &item.MetadataSource, &item.Reason, &item.MediaType, &hydrated, &updated, &needsRefresh)
 	if err != nil {
 		return Item{}, err
 	}
@@ -411,7 +421,7 @@ func scanFullItem(row catalogScanner) (Item, error) {
 		value := int(votes.Int64)
 		item.DoubanVotes = &value
 	}
-	item.DetailsCached = hydrated == 1
+	item.DetailsCached = hydrated == 1 && needsRefresh == 0 && updated > 0 && time.Since(time.Unix(updated, 0)) < 7*24*time.Hour
 	return item, nil
 }
 

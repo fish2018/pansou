@@ -37,6 +37,9 @@ func TestFullCatalogSeedUnchangedSnapshotDoesNotWrite(t *testing.T) {
 	// 513 items also exercises the boundary between two batched lookup queries.
 	store.db.SetMaxOpenConns(1)
 	seedSnapshotForTest(t, s, "tv", time.Now().Add(-time.Minute), items)
+	// Adopt this source watermark once when upgrading a database created by an
+	// older version. Subsequent unchanged rounds must make no SQLite writes.
+	s.seedExistingFullCatalog()
 	before := catalogChangesForTest(t, store)
 	s.seedExistingFullCatalog()
 	if after := catalogChangesForTest(t, store); after != before {

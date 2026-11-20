@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -79,44 +81,110 @@ func (s *Service) StartFullCatalog() {
 		for s.ctx.Err() == nil {
 			_ = store.refreshDatedVisibility(s.ctx)
 			s.seedExistingFullCatalog()
-			if store.checkCapacity() == nil {
-				store.setStage("indexing", "")
-				successful := true
-				for _, media := range []string{"movie", "tv"} {
-					if err = s.syncFullExport(s.ctx, store, media, time.Now().UTC()); err != nil {
-						successful = false
-						if errors.Is(err, errFullCatalogCapacity) {
-							break
-						}
-						if s.ctx.Err() == nil {
-							store.setStage("error", "export_unavailable_or_incomplete")
-						}
-					}
-				}
-				if successful {
-					store.setStage("updating", "")
-					for _, media := range []string{"movie", "tv"} {
-						if s.syncFullChanges(s.ctx, store, media) != nil {
-							successful = false
-							if s.ctx.Err() == nil {
-								store.setStage("error", "changes_temporarily_unavailable")
-							}
-							break
-						}
-					}
-				}
-				if successful {
-					store.setStage("ready", "")
-				}
-				store.refreshStatus(s.ctx)
-				store.invalidateFacets()
-				store.checkpoint(s.ctx)
-			}
+			s.syncFullCatalogRound(s.ctx, store)
 			if !waitCatalog(s.ctx, time.Hour) {
 				return
 			}
 		}
 	}()
+}
+
+// A failed export or one media type must not prevent independent changes
+// checks. Capacity and rejected credentials are shared pauses, so they still
+// stop this round without replacing their more useful public status.
+func (s *Service) syncFullCatalogRound(ctx context.Context, store *tmdbCatalogStore) {
+	defer func() {
+		store.refreshStatus(ctx)
+		store.invalidateFacets()
+		store.checkpoint(ctx)
+	}()
+	if ctx.Err() != nil || !store.beginCatalogRound() {
+		return
+	}
+	safeError := ""
+	for _, media := range []string{"movie", "tv"} {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := s.syncFullExport(ctx, store, media, time.Now().UTC()); err != nil {
+			if store.catalogRoundPaused(err) {
+				return
+			}
+			safeError = "export_unavailable_or_incomplete"
+		}
+	}
+	if ctx.Err() != nil || store.catalogRoundPaused(nil) {
+		return
+	}
+	store.setCatalogRoundStage("updating", "")
+	for _, media := range []string{"movie", "tv"} {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := s.syncFullChanges(ctx, store, media); err != nil {
+			if store.catalogRoundPaused(err) {
+				return
+			}
+			safeError = "changes_temporarily_unavailable"
+		}
+	}
+	if ctx.Err() != nil || store.catalogRoundPaused(nil) {
+		return
+	}
+	if safeError != "" {
+		store.setCatalogRoundStage("error", safeError)
+	} else {
+		store.setCatalogRoundStage("ready", "")
+	}
+}
+
+func (store *tmdbCatalogStore) beginCatalogRound() bool {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
+	if store.catalogRoundPaused(nil) {
+		return false
+	}
+	store.statusMu.Lock()
+	defer store.statusMu.Unlock()
+	if store.status.Stage == "paused" && store.status.Error == "credentials_rejected" {
+		store.rateMu.Lock()
+		until := store.pauseUntil
+		store.rateMu.Unlock()
+		if until.IsZero() || time.Now().Before(until) {
+			return false
+		}
+	}
+	store.status.Stage, store.status.Error = "indexing", ""
+	return true
+}
+
+func (store *tmdbCatalogStore) catalogRoundPaused(err error) bool {
+	if errors.Is(err, errFullCatalogCapacity) || store.checkCapacity() != nil {
+		return true
+	}
+	// Only authenticated API requests set the credential pause. A public export
+	// host rejecting a download does not mean the TMDB API token was rejected.
+	store.statusMu.RLock()
+	credentialsRejected := store.status.Stage == "paused" && store.status.Error == "credentials_rejected"
+	store.statusMu.RUnlock()
+	if !credentialsRejected {
+		return false
+	}
+	store.rateMu.Lock()
+	pauseUntil := store.pauseUntil
+	store.rateMu.Unlock()
+	return pauseUntil.IsZero() || time.Now().Before(pauseUntil)
+}
+
+func (store *tmdbCatalogStore) setCatalogRoundStage(stage, safeError string) {
+	store.statusMu.Lock()
+	defer store.statusMu.Unlock()
+	// Hydration can discover an authentication or capacity pause concurrently.
+	// A successful independent task must never erase that pause with "ready".
+	if store.status.Stage == "paused" {
+		return
+	}
+	store.status.Stage, store.status.Error = stage, safeError
 }
 
 func waitCatalog(ctx context.Context, delay time.Duration) bool {
@@ -130,28 +198,93 @@ func waitCatalog(ctx context.Context, delay time.Duration) bool {
 	}
 }
 
+func snapshotSeedKey(category string) string { return "seed_snapshot:" + category }
+
 func (s *Service) seedExistingFullCatalog() {
 	store, err := s.openFullCatalog()
 	if err != nil {
 		return
 	}
+	type seedPlan struct {
+		category string
+		snapshot catalogSnapshot
+		items    []Item
+		seen     map[string]bool
+	}
+	plans := make([]seedPlan, 0, 5)
 	for _, category := range []string{"movie", "tv", "animation", "variety", "documentary"} {
-		if s.ctx.Err() != nil {
-			return
-		}
 		if snapshot, ok := s.loadCatalog(category); ok {
-			items, err := store.pendingSnapshotSeed(s.ctx, category, snapshot)
-			if err == nil && len(items) > 0 {
-				_ = s.SeedFullCatalog(category, items)
+			plans = append(plans, seedPlan{category: category, snapshot: snapshot})
+		}
+	}
+	sort.SliceStable(plans, func(i, j int) bool { return plans[i].snapshot.UpdatedAt.Before(plans[j].snapshot.UpdatedAt) })
+	newest := make(map[string]int)
+	for index, plan := range plans {
+		for _, item := range plan.snapshot.Items {
+			if validSnapshotSeedItem(item) {
+				newest[item.ID] = index
 			}
 		}
 	}
+	touched := make(map[string]bool)
+	// Plan every category against the same pre-write state. A shared row's
+	// processing time must not make another category's newer snapshot look read.
+	for index := range plans {
+		if s.ctx.Err() != nil {
+			return
+		}
+		plan := &plans[index]
+		items, err := store.pendingSnapshotSeed(s.ctx, plan.category, plan.snapshot, newest, index)
+		if err != nil {
+			return
+		}
+		plan.items = items
+		plan.seen = make(map[string]bool, len(items))
+		for _, item := range items {
+			plan.seen[item.ID], touched[item.ID] = true, true
+		}
+	}
+	// A changed older source may overlap an unchanged newer source. Reapply
+	// that newer value last as well, so an old category cannot regress a score.
+	for index := range plans {
+		plan := &plans[index]
+		for _, item := range plan.snapshot.Items {
+			if owner, ok := newest[item.ID]; touched[item.ID] && ok && owner == index && !plan.seen[item.ID] {
+				plan.items = append(plan.items, item)
+				plan.seen[item.ID] = true
+			}
+		}
+		if len(plan.items) > 0 {
+			if err = s.SeedFullCatalog(plan.category, plan.items); err != nil {
+				continue
+			}
+		}
+		if plan.snapshot.UpdatedAt.IsZero() {
+			continue
+		}
+		if previous, parseErr := time.Parse(time.RFC3339Nano, store.meta(s.ctx, snapshotSeedKey(plan.category))); parseErr == nil && !plan.snapshot.UpdatedAt.After(previous) {
+			continue
+		}
+		value := plan.snapshot.UpdatedAt.UTC().Format(time.RFC3339Nano)
+		store.writeMu.Lock()
+		// This is a source watermark, not an entry arrival timestamp. A failed
+		// merge never advances it; old databases only need a few metadata rows.
+		_, err = store.db.ExecContext(s.ctx, `INSERT INTO sync_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value`, snapshotSeedKey(plan.category), value)
+		store.writeMu.Unlock()
+	}
 }
 
-// Existing numeric rows record when they last received a Douban snapshot.
-// Read that watermark and category membership in batches before writing: an
-// unchanged snapshot must not rewrite tens of thousands of rows on startup.
-func (store *tmdbCatalogStore) pendingSnapshotSeed(ctx context.Context, category string, snapshot catalogSnapshot) ([]Item, error) {
+// Per-category source watermarks decide whether a snapshot changed. During a
+// one-time upgrade of an old database, use existing entry timestamps to avoid
+// rewriting the whole library; missing IDs/membership are always repaired.
+func validSnapshotSeedItem(item Item) bool {
+	return idPattern.MatchString(item.ID) && item.Title != "" && contains([]string{"movie", "tv"}, item.MediaType)
+}
+
+func (store *tmdbCatalogStore) pendingSnapshotSeed(ctx context.Context, category string, snapshot catalogSnapshot, newest map[string]int, planIndex int) ([]Item, error) {
+	watermark, watermarkErr := time.Parse(time.RFC3339Nano, store.meta(ctx, snapshotSeedKey(category)))
+	hasWatermark := watermarkErr == nil
+	changed := snapshot.UpdatedAt.IsZero() || (hasWatermark && snapshot.UpdatedAt.After(watermark))
 	pending := []Item{}
 	for start := 0; start < len(snapshot.Items); start += 512 {
 		end := start + 512
@@ -162,7 +295,7 @@ func (store *tmdbCatalogStore) pendingSnapshotSeed(ctx context.Context, category
 		args := []any{category}
 		placeholders := make([]string, 0, end-start)
 		for _, item := range snapshot.Items[start:end] {
-			if !idPattern.MatchString(item.ID) || item.Title == "" || !contains([]string{"movie", "tv"}, item.MediaType) {
+			if !validSnapshotSeedItem(item) {
 				continue
 			}
 			items = append(items, item)
@@ -172,7 +305,7 @@ func (store *tmdbCatalogStore) pendingSnapshotSeed(ctx context.Context, category
 		if len(items) == 0 {
 			continue
 		}
-		rows, err := store.db.QueryContext(ctx, `SELECT e.key,e.updated_at,
+		rows, err := store.db.QueryContext(ctx, `SELECT e.key,e.updated_at,e.douban_rating,e.douban_votes,
 EXISTS(SELECT 1 FROM entry_categories c WHERE c.key=e.key AND c.category=? AND c.source='douban')
 FROM entries e WHERE e.origin='douban' AND e.key IN (`+strings.Join(placeholders, ",")+`)`, args...)
 		if err != nil {
@@ -180,13 +313,15 @@ FROM entries e WHERE e.origin='douban' AND e.key IN (`+strings.Join(placeholders
 		}
 		type watermark struct {
 			updated  int64
+			rating   sql.NullFloat64
+			votes    sql.NullInt64
 			category bool
 		}
 		known := make(map[string]watermark, len(items))
 		for rows.Next() {
 			var key string
 			var value watermark
-			if err = rows.Scan(&key, &value.updated, &value.category); err != nil {
+			if err = rows.Scan(&key, &value.updated, &value.rating, &value.votes, &value.category); err != nil {
 				rows.Close()
 				return nil, errors.New("full catalog seed check failed")
 			}
@@ -199,7 +334,12 @@ FROM entries e WHERE e.origin='douban' AND e.key IN (`+strings.Join(placeholders
 		}
 		for _, item := range items {
 			value, exists := known[item.ID]
-			if !exists || !value.category || snapshot.UpdatedAt.IsZero() || value.updated < snapshot.UpdatedAt.Unix() {
+			// An old arrival timestamp cannot prove which category supplied a
+			// shared score. Repair actual known-value differences from the newest
+			// source once, without replaying older categories' different votes.
+			scoreMismatch := !hasWatermark && newest[item.ID] == planIndex && ((item.DoubanRating != nil && (!value.rating.Valid || value.rating.Float64 != *item.DoubanRating)) ||
+				(item.DoubanVotes != nil && (!value.votes.Valid || value.votes.Int64 != int64(*item.DoubanVotes))))
+			if !exists || !value.category || changed || scoreMismatch || (!hasWatermark && value.updated < snapshot.UpdatedAt.Unix()) {
 				pending = append(pending, item)
 			}
 		}
