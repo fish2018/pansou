@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/PuerkitoBio/goquery"
@@ -264,7 +265,8 @@ func parseTgMessage(s *goquery.Selection, channel string) (model.SearchResult, b
 	}
 
 	// 为每个链接提取作品标题
-	links = extractWorkTitlesForLinks(links, messageText, title)
+	// 用带换行的正文：按行才能把汇总帖里的链接归到各自作品下
+	links = extractWorkTitlesForLinks(links, messageTextWithBreaks, title)
 
 	return model.SearchResult{
 		MessageID: messageID,
@@ -918,11 +920,99 @@ func extractWorkTitleBeforeColon(text string) string {
 	return text
 }
 
-// extractWorkTitlesFromContext 通过上下文为链接提取作品标题
+// extractWorkTitlesFromContext 通过上下文为链接提取作品标题。
+//
+// 面向多作品汇总帖（issue #164）：
+//
+//	国剧「谷雨 更新26/30集」4K
+//	夸：https://pan.quark.cn/s/...
+//	度https://pan.baidu.com/s/...
+//
+// 不含链接、且紧跟着链接行的行视为作品标题，其后的链接都归属它，直到出现下一个标题。
+// 只有识别出至少两部不同作品时才采用，否则（单作品多网盘帖）一律用消息标题，
+// 避免把"描述："之类的行误当成作品名。
 func extractWorkTitlesFromContext(links []model.Link, messageText string, defaultTitle string) []model.Link {
-	// 简单实现：如果无法精确匹配，则都使用默认标题
+	setDefault := func() []model.Link {
+		for i := range links {
+			links[i].WorkTitle = defaultTitle
+		}
+		return links
+	}
+
+	lines := strings.Split(messageText, "\n")
+	if len(lines) < 2 {
+		return setDefault()
+	}
+
+	hasURL := func(line string) bool {
+		return strings.Contains(line, "http://") || strings.Contains(line, "https://")
+	}
+
+	// blockTitle[i] 是第 i 行所属作品的标题
+	blockTitle := make([]string, len(lines))
+	current := ""
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line != "" && !hasURL(line) && !isContextMetaLine(line) {
+			// 下一个非空行含链接，当前行才是作品标题
+			for j := i + 1; j < len(lines); j++ {
+				next := strings.TrimSpace(lines[j])
+				if next == "" {
+					continue
+				}
+				if hasURL(next) {
+					current = line
+				}
+				break
+			}
+		}
+		blockTitle[i] = current
+	}
+
+	titles := make([]string, len(links))
+	distinct := make(map[string]struct{})
+	for i, link := range links {
+		base := normalizeUrl(link.URL)
+		if idx := strings.IndexAny(base, "?#"); idx > 0 {
+			base = base[:idx]
+		}
+		for j, raw := range lines {
+			if strings.Contains(normalizeUrl(raw), base) {
+				titles[i] = blockTitle[j]
+				break
+			}
+		}
+		if titles[i] != "" {
+			distinct[titles[i]] = struct{}{}
+		}
+	}
+
+	if len(distinct) < 2 {
+		return setDefault()
+	}
 	for i := range links {
-		links[i].WorkTitle = defaultTitle
+		if titles[i] != "" {
+			links[i].WorkTitle = titles[i]
+		} else {
+			links[i].WorkTitle = defaultTitle
+		}
 	}
 	return links
+}
+
+// isContextMetaLine 判断一行是否为说明性字段（提取码、简介、标签等），这类行不能当作品标题。
+func isContextMetaLine(line string) bool {
+	trimmed := strings.TrimLeftFunc(line, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	metaPrefixes := []string{
+		"链接", "地址", "网盘", "提取码", "密码", "访问码",
+		"描述", "简介", "介绍", "大小", "标签", "来自", "频道", "群组", "投稿", "版权",
+	}
+	for _, p := range metaPrefixes {
+		if strings.HasPrefix(trimmed, p) {
+			return true
+		}
+	}
+	return false
 }
