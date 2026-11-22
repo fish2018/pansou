@@ -1059,14 +1059,14 @@ func isLinkPrefix(text string) bool {
 
 	// 网盘名称（防止误将网盘名称当作标题）
 	cloudDiskNames := []string{
-		// 夸克网盘
-		"夸克", "夸克网盘", "quark", "夸克云盘",
+		// 夸克网盘（"夸："是汇总帖常见缩写）
+		"夸克", "夸克网盘", "quark", "夸克云盘", "夸",
 
-		// 百度网盘
-		"百度", "百度网盘", "baidu", "百度云", "bdwp", "bdpan",
+		// 百度网盘（"度："是汇总帖常见缩写）
+		"百度", "百度网盘", "baidu", "百度云", "bdwp", "bdpan", "度",
 
 		// 迅雷网盘
-		"迅雷", "迅雷网盘", "xunlei", "迅雷云盘",
+		"迅雷", "迅雷网盘", "xunlei", "迅雷云盘", "迅",
 
 		// 115网盘
 		"115", "115网盘", "115云盘",
@@ -1195,7 +1195,8 @@ func mergeResultsByType(results []model.SearchResult, keyword string, cloudTypes
 			}
 		}
 
-		for _, link := range result.Links {
+		// 解析每个链接对应的作品标题
+		resolveLinkTitle := func(link model.Link) string {
 			// 优先使用链接的WorkTitle字段，如果为空则回退到传统方式
 			title := result.Title // 默认使用消息标题
 
@@ -1217,6 +1218,20 @@ func mergeResultsByType(results []model.SearchResult, keyword string, cloudTypes
 					}
 				}
 			}
+			return title
+		}
+
+		linkTitles := make([]string, len(result.Links))
+		anyLinkTitleMatched := false
+		for i, link := range result.Links {
+			linkTitles[i] = resolveLinkTitle(link)
+			if lowerKeyword != "" && strings.Contains(strings.ToLower(linkTitles[i]), lowerKeyword) {
+				anyLinkTitleMatched = true
+			}
+		}
+
+		for i, link := range result.Links {
+			title := linkTitles[i]
 
 			// 检查插件是否需要跳过Service层过滤
 			var skipKeywordFilter bool = false
@@ -1233,10 +1248,13 @@ func mergeResultsByType(results []model.SearchResult, keyword string, cloudTypes
 
 			// 关键词过滤：插件结果依赖链接标题；Telegram 结果已经经过
 			// t.me/s 的服务端搜索，关键词也可能只出现在简介/正文中，
-			// 不能因为标题字段被日期、格式名或另一作品覆盖而丢弃。
+			// 不能因为标题字段被日期、格式名覆盖而丢弃。
+			// 但若同条消息里已有链接的标题命中关键词，说明这是多作品汇总帖，
+			// 关键词属于那部作品，其余作品的链接不能借正文命中放行（issue #164）。
 			if !skipKeywordFilter && keyword != "" {
 				titleMatched := strings.Contains(strings.ToLower(title), lowerKeyword)
-				contentMatched := result.Channel != "" && strings.Contains(strings.ToLower(result.Content), lowerKeyword)
+				contentMatched := result.Channel != "" && !anyLinkTitleMatched &&
+					strings.Contains(strings.ToLower(result.Content), lowerKeyword)
 				if !titleMatched && !contentMatched {
 					continue
 				}
