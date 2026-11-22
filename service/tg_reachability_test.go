@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // 这套用例盯的是门的三条硬约束：
@@ -253,5 +256,50 @@ func snapshotGateState() func() {
 		tgLoggedOnce.Store(loggedOnce)
 		tgLastLoggedOK.Store(lastLoggedOK)
 		tgProbeFailStreak.Store(failStreak)
+	}
+}
+
+// deadAfterFirstServer 模拟"池里的连接已被 NAT / 代理静默丢弃"：每条连接只正常应答第一个请求，
+// 之后在这条连接上的请求一律不回（直到客户端放弃）。新建的连接照常应答。
+func deadAfterFirstServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	type connKey struct{}
+	var mu sync.Mutex
+	served := map[net.Conn]int{}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn := r.Context().Value(connKey{}).(net.Conn)
+		mu.Lock()
+		served[conn]++
+		n := served[conn]
+		mu.Unlock()
+		if n > 1 {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	server.Config.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
+		return context.WithValue(ctx, connKey{}, c)
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestDefaultTGProbeClientSurvivesSilentlyDroppedPooledConn(t *testing.T) {
+	// 回归：可达结论保鲜 5 分钟后的重探若复用池里那条闲置连接，而它已被中间设备静默丢弃，
+	// 探测会打满预算超时，把一直可达的 t.me 误判成不可达。探测客户端必须每次新建连接。
+	server := deadAfterFirstServer(t)
+
+	for i := 1; i <= 2; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		reachable, reason := probeTGURL(ctx, nil, server.URL) // nil = 生产路径用的默认探测客户端
+		cancel()
+		if !reachable {
+			t.Fatalf("第 %d 次探测应可达（新建连接即可拿到响应），实际: %s", i, reason)
+		}
 	}
 }
