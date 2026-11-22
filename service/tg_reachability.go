@@ -213,6 +213,40 @@ func tgProbeURL() string {
 	return fmt.Sprintf("https://t.me/s/%s", channel)
 }
 
+var (
+	tgProbeClient     *http.Client
+	tgProbeClientOnce sync.Once
+)
+
+// defaultTGProbeClient 返回探测专用的客户端：代理规则与共享客户端一致，但每次探测都新建连接。
+//
+// 不能复用共享客户端（util.GetHTTPClient）的连接池。实测（Docker Desktop + 本机代理）：
+// 可达结论保鲜 5 分钟后的那次重探，会拿到池里那条跟 t.me 闲了 5 分钟的连接，它已被中间的
+// NAT / 代理静默丢弃，请求发出去没有任何回应，3 秒预算打满报 context deadline exceeded；
+// 3 秒后的复检又拿到同一条死连接，于是连续 2 次失败、门被关上，约 1 分钟后连接彻底断开才恢复。
+// 结果是 t.me 一直通，TG 阶段却每 5 分钟被跳过一两分钟。同一时刻在容器里新建连接 HEAD
+// 同一个地址只要约 1 秒。
+//
+// 探测要回答的是"现在新建一条连接能不能拿到响应"，多付一次 TCP+TLS 握手正是要测的东西；
+// 探测频率低（可达时 5 分钟一次），这点开销可以忽略。
+func defaultTGProbeClient() *http.Client {
+	tgProbeClientOnce.Do(func() {
+		proxyURL := ""
+		if config.AppConfig != nil {
+			proxyURL = config.AppConfig.ProxyURL
+		}
+		client, err := util.NewHTTPClient(proxyURL)
+		if err != nil {
+			client, _ = util.NewHTTPClient("")
+		}
+		if transport, ok := client.Transport.(*http.Transport); ok {
+			transport.DisableKeepAlives = true
+		}
+		tgProbeClient = client
+	})
+	return tgProbeClient
+}
+
 // probeTGURL 判断给定 URL 是否可达。返回 (可达, 原因)。
 //
 // 用 HEAD 而不是 GET：只取响应头，不下载正文。频道页正文有 133KB，探测只需要"能不能拿到响应"
@@ -222,7 +256,7 @@ func tgProbeURL() string {
 // （DNS、连接、TLS、超时）才算不可达。因此即使某个站点不支持 HEAD 而回 405，结论依然正确。
 func probeTGURL(ctx context.Context, client *http.Client, target string) (bool, string) {
 	if client == nil {
-		client = util.GetHTTPClient()
+		client = defaultTGProbeClient()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, target, nil)
 	if err != nil {
